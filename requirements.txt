@@ -1,0 +1,41 @@
+# ==========================================
+# Python 依赖（后端 FastAPI）
+# ==========================================
+
+# Web 框架
+fastapi
+uvicorn[standard]
+python-multipart
+
+# HTTP 客户端
+httpx[http2]
+requests
+aiohttp
+
+# 数据库
+sqlalchemy
+pymysql
+
+# 认证与安全
+python-jose[cryptography]
+passlib[bcrypt]
+bcrypt
+
+# 定时任务与榜单调度（chart_scrapers 可选依赖 schedule）
+schedule
+
+# 浏览器自动化（browser_pool / 部分抓取）
+playwright
+
+# 配置
+python-dotenv
+
+# 缓存
+redis
+
+# 字符串匹配
+fuzzywuzzy
+python-Levenshtein
+
+# HTML 解析（榜单抓取）
+beautifulsoup4

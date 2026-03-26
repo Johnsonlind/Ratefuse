@@ -1,0 +1,151 @@
+<!-- ==========================================
+* 前端入口
+* ========================================== -->
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/png" href="/logos/home.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1" />
+
+    <!-- SEO 核心 -->
+    <title>Ratefuse - 影视评分对比平台</title>
+    <meta name="description" content="Ratefuse 是一个聚合豆瓣、IMDb、烂番茄、Metacritic、TMDB、Trakt 等平台评分对比的影视搜索工具，帮助你快速对比电影和剧集评分。" />
+    <link rel="canonical" href="https://ratefuse.cn/" />
+
+    <!-- 结构化数据 (Schema.org) -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "WebSite",
+      "name": "Ratefuse",
+      "url": "https://ratefuse.cn",
+      "description": "聚合豆瓣、IMDb、烂番茄、Metacritic、TMDB、Trakt 等平台评分对比的影视搜索工具",
+      "potentialAction": {
+        "@type": "SearchAction",
+        "target": "https://ratefuse.cn/search?q={search_term_string}",
+        "query-input": "required name=search_term_string"
+      }
+    }
+    </script>
+
+    <!-- DNS 预解析 & 预连接 (提升图片加载性能) -->
+    <link rel="dns-prefetch" href="//image.tmdb.org">
+    <link rel="preconnect" href="//image.tmdb.org" crossorigin="anonymous">
+    <meta http-equiv="x-dns-prefetch-control" content="on" />
+
+    <!-- GA4 分析 (延迟加载 + 防重复) -->
+    <script>
+      (function() {
+        window.dataLayer = window.dataLayer || [];
+        function gtag(){dataLayer.push(arguments);}
+        window.gtag = gtag;
+
+        function loadGA() {
+          if (window.__gaLoaded) return;
+          window.__gaLoaded = true;
+
+          var script = document.createElement('script');
+          script.async = true;
+          script.src = 'https://www.googletagmanager.com/gtag/js?id=G-J2305JG26B';
+          script.onload = function() {
+            gtag('js', new Date());
+            gtag('config', 'G-J2305JG26B');
+          };
+          document.head.appendChild(script);
+        }
+
+        if (document.readyState === 'complete') {
+          loadGA();
+        } else {
+          window.addEventListener('load', loadGA);
+          setTimeout(loadGA, 5000);
+        }
+      })();
+    </script>
+
+    <!-- iOS / PWA 增强 -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="theme-color" content="#0a0e1a" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#f0f9ff" media="(prefers-color-scheme: light)" />
+
+    <!-- 全局基础样式 + SEO隐藏内容样式 + 性能优化 -->
+    <style>
+      /* 系统字体，渲染优化 */
+      :root {
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+        text-size-adjust: 100%;
+        -webkit-text-size-adjust: 100%;
+      }
+
+      body {
+        margin: 0;
+        padding: 0;
+        text-rendering: optimizeLegibility;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+        font-synthesis: none;
+        background-color: transparent;
+        transition: background-color 0.2s ease;
+      }
+
+      /* 对搜索引擎可见，对用户完全隐藏的SEO内容区块 */
+      #seo-content {
+        position: absolute;
+        left: -9999px;
+        top: 0;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      /* 确保React根容器占满全屏，无额外边距 */
+      #root {
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+      }
+    </style>
+
+    <!-- 主题初始化 (深色/浅色模式，同时支持 data-theme 和 .dark 类) -->
+    <script>
+      (function() {
+        const storedTheme = localStorage.getItem('theme');
+        let theme = storedTheme || 'light';
+        // 检测系统偏好（若从未存储）
+        if (!storedTheme) {
+          const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+          theme = prefersDark ? 'dark' : 'light';
+        }
+        document.documentElement.setAttribute('data-theme', theme);
+        if (theme === 'dark') {
+          document.documentElement.classList.add('dark');
+        } else {
+          document.documentElement.classList.remove('dark');
+        }
+      })();
+    </script>
+  </head>
+
+  <body>
+    <!-- 
+      SEO 静态内容 —— 对搜索引擎完全可见，提升关键词密度和站点描述。
+      包含电影评分聚合的核心关键词: 豆瓣、IMDb、烂番茄、Metacritic、TMDB、Trakt 等。
+    -->
+    <div id="seo-content">
+      <h1>Ratefuse - 多平台影视评分对比平台 | 豆瓣 IMDb 烂番茄 Metacritic TMDB Trakt 评分对比</h1>
+      <p>Ratefuse 是一款专业的影视评分对比工具，实时整合豆瓣、IMDb、烂番茄、Metacritic、TMDB、Trakt 等全球主流平台的评分。帮助影迷快速对比不同平台口碑，发现真正值得一看的高分电影和热门剧集。</p>
+      <p>支持海量影视作品搜索，提供详细的评分，以及一键跳转至各平台详情页。无论您想看最新的院线大片，还是回顾经典老片，Ratefuse 都能给您最全面的评分参考。</p>
+      <p>关键词：电影评分、电视剧评分、豆瓣电影、IMDb Top250、烂番茄新鲜度、Metacritic 必看、影视排行榜、新片推荐。</p>
+    </div>
+
+    <!-- React 应用挂载点 —— 动态交互界面 -->
+    <div id="root"></div>
+
+    <!-- React 应用入口 (Vite / 现代构建工具) -->
+    <script type="module" src="/src/core/main.tsx"></script>
+  </body>
+</html>
