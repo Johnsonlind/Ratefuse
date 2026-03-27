@@ -21,6 +21,29 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+def _request_trace_id(request: Optional["Request"]) -> str:
+    if not request:
+        return "-"
+    return (
+        request.headers.get("x-request-id")
+        or request.headers.get("cf-ray")
+        or "-"
+    )
+
+def _log_favorite_api(
+    request: Optional["Request"],
+    endpoint: str,
+    start_ts: float,
+    list_count: int = 0,
+    favorites_count: int = 0,
+    payload_bytes: int = 0,
+):
+    elapsed_ms = int((time.perf_counter() - start_ts) * 1000)
+    logger.info(
+        f"[favorite_api] endpoint={endpoint} request_id={_request_trace_id(request)} "
+        f"elapsed_ms={elapsed_ms} lists={list_count} favorites={favorites_count} bytes={payload_bytes}"
+    )
+
 from fastapi import FastAPI, HTTPException, Request, Depends, APIRouter, Response, UploadFile, File, Form
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -1031,9 +1054,11 @@ async def update_favorite(
 
 @app.get("/api/favorite-lists")
 async def get_favorite_lists(
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    start_ts = time.perf_counter()
     try:
         lists = (
             db.query(FavoriteList)
@@ -1108,6 +1133,16 @@ async def get_favorite_lists(
                 }
             )
 
+        favorites_count = sum(len(item.get("favorites") or []) for item in result)
+        payload_bytes = len(json.dumps(result, ensure_ascii=False))
+        _log_favorite_api(
+            request=request,
+            endpoint="/api/favorite-lists",
+            start_ts=start_ts,
+            list_count=len(result),
+            favorites_count=favorites_count,
+            payload_bytes=payload_bytes,
+        )
         return result
     except Exception as e:
         logger.error(f"获取收藏列表失败: {str(e)}")
@@ -1115,9 +1150,11 @@ async def get_favorite_lists(
 
 @app.get("/api/favorite-lists/light")
 async def get_favorite_lists_light(
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    start_ts = time.perf_counter()
     try:
         lists = (
             db.query(FavoriteList)
@@ -1186,6 +1223,16 @@ async def get_favorite_lists_light(
                 }
             )
 
+        favorites_count = sum(len(item.get("favorites") or []) for item in result)
+        payload_bytes = len(json.dumps(result, ensure_ascii=False))
+        _log_favorite_api(
+            request=request,
+            endpoint="/api/favorite-lists/light",
+            start_ts=start_ts,
+            list_count=len(result),
+            favorites_count=favorites_count,
+            payload_bytes=payload_bytes,
+        )
         return result
     except Exception as e:
         logger.error(f"获取轻量收藏列表失败: {str(e)}")
@@ -1257,10 +1304,12 @@ async def create_favorite_list(
 
 @app.get("/api/favorite-lists/{list_id}")
 async def get_favorite_list(
+    request: Request,
     list_id: int,
     current_user: Optional[User] = Depends(get_current_user_optional),
     db: Session = Depends(get_db)
 ):
+    start_ts = time.perf_counter()
     list_data = (
         db.query(FavoriteList)
         .options(
@@ -1350,6 +1399,16 @@ async def get_favorite_list(
                 "is_following": is_following_original
             }
 
+    favorites_count = len(response_data.get("favorites") or [])
+    payload_bytes = len(json.dumps(response_data, ensure_ascii=False))
+    _log_favorite_api(
+        request=request,
+        endpoint="/api/favorite-lists/{list_id}",
+        start_ts=start_ts,
+        list_count=1,
+        favorites_count=favorites_count,
+        payload_bytes=payload_bytes,
+    )
     return response_data
 
 @app.put("/api/favorite-lists/{list_id}")
@@ -1905,10 +1964,12 @@ async def get_user_favorite_lists(
 
 @app.get("/api/users/{user_id}/favorite-lists/light")
 async def get_user_favorite_lists_light(
+    request: Request,
     user_id: int,
     current_user: User = Depends(get_current_user_optional),
     db: Session = Depends(get_db)
 ):
+    start_ts = time.perf_counter()
     try:
         query = (
             db.query(FavoriteList)
@@ -1962,6 +2023,16 @@ async def get_user_favorite_lists_light(
                 } for fav in favorites]
             })
 
+        favorites_count = sum(len(item.get("favorites") or []) for item in result)
+        payload_bytes = len(json.dumps(result, ensure_ascii=False))
+        _log_favorite_api(
+            request=request,
+            endpoint="/api/users/{user_id}/favorite-lists/light",
+            start_ts=start_ts,
+            list_count=len(result),
+            favorites_count=favorites_count,
+            payload_bytes=payload_bytes,
+        )
         return result
     except Exception as e:
         raise HTTPException(
