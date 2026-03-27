@@ -49,7 +49,10 @@ export function MiniFavoriteButton({
     setNewList,
     handleCreateList,
     handleFavorite,
-    handleButtonClick
+    handleButtonClick,
+    isListsLoading,
+    listsLoadError,
+    reloadLists,
   } = useFavorite({
     mediaId,
     mediaType,
@@ -135,17 +138,28 @@ export function MiniFavoriteButton({
                   创建新列表
                 </Button>
               </div>
-              <select
-                value={selectedList || ''}
-                onChange={(e) => setSelectedList(Number(e.target.value))}
-                className="w-full rounded-md border-2 border-gray-300 dark:border-gray-600 
-                  bg-white dark:bg-gray-700 
-                  text-gray-900 dark:text-gray-100"
-              >
-                {lists.map(list => (
-                  <option key={list.id} value={list.id}>{list.name}</option>
-                ))}
-              </select>
+              {isListsLoading ? (
+                <div className="text-sm text-gray-500 dark:text-gray-400">收藏列表加载中...</div>
+              ) : listsLoadError ? (
+                <div className="space-y-2">
+                  <div className="text-sm text-gray-500 dark:text-gray-400">{listsLoadError}</div>
+                  <Button variant="outline" onClick={() => { void reloadLists(); }}>
+                    重新加载
+                  </Button>
+                </div>
+              ) : (
+                <select
+                  value={selectedList || ''}
+                  onChange={(e) => setSelectedList(Number(e.target.value))}
+                  className="w-full rounded-md border-2 border-gray-300 dark:border-gray-600 
+                    bg-white dark:bg-gray-700 
+                    text-gray-900 dark:text-gray-100"
+                >
+                  {lists.map(list => (
+                    <option key={list.id} value={list.id}>{list.name}</option>
+                  ))}
+                </select>
+              )}
               <Textarea
                 label="添加备注（可选）"
                 value={note}
@@ -162,7 +176,7 @@ export function MiniFavoriteButton({
                 <Button variant="outline" onClick={() => setShowDialog(false)}>
                   取消
                 </Button>
-                <Button onClick={handleFavorite} disabled={isLoading || !selectedList}>
+                <Button onClick={handleFavorite} disabled={isLoading || isListsLoading || !!listsLoadError || !selectedList}>
                   {isLoading ? '保存中...' : '保存'}
                 </Button>
               </div>
