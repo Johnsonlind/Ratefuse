@@ -463,6 +463,14 @@ def _notify_admins(
         created += 1
     return created
 
+def _avatar_url_or_none(user: Optional[User]) -> Optional[str]:
+    if not user:
+        return None
+    avatar = getattr(user, "avatar", None)
+    if not avatar:
+        return None
+    return f"/api/users/{user.id}/avatar"
+
 @app.get("/api/users/{user_id}/avatar")
 async def get_user_avatar(user_id: int, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.id == user_id).first()
@@ -1084,13 +1092,13 @@ async def get_favorite_lists(
                     original_creators_map[ol.id] = {
                         "id": ol.user.id,
                         "username": ol.user.username,
-                        "avatar": ol.user.avatar,
+                        "avatar": _avatar_url_or_none(ol.user),
                     }
 
         creator = {
             "id": current_user.id,
             "username": current_user.username,
-            "avatar": current_user.avatar,
+            "avatar": _avatar_url_or_none(current_user),
         }
 
         result = []
@@ -1178,13 +1186,13 @@ async def get_favorite_lists_light(
                     original_creators_map[ol.id] = {
                         "id": ol.user.id,
                         "username": ol.user.username,
-                        "avatar": ol.user.avatar,
+                        "avatar": _avatar_url_or_none(ol.user),
                     }
 
         creator = {
             "id": current_user.id,
             "username": current_user.username,
-            "avatar": current_user.avatar,
+            "avatar": _avatar_url_or_none(current_user),
         }
 
         result = []
@@ -1369,7 +1377,7 @@ async def get_favorite_list(
     response_data["creator"] = {
         "id": creator.id,
         "username": creator.username,
-        "avatar": creator.avatar,
+        "avatar": _avatar_url_or_none(creator),
         "is_following": is_following_creator
     }
 
@@ -1395,7 +1403,7 @@ async def get_favorite_list(
             response_data["original_creator"] = {
                 "id": original_creator.id,
                 "username": original_creator.username,
-                "avatar": original_creator.avatar,
+                "avatar": _avatar_url_or_none(original_creator),
                 "is_following": is_following_original
             }
 
