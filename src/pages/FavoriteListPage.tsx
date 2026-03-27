@@ -57,10 +57,12 @@ type ViewMode = 'list' | 'grid';
 export default function FavoriteListPage() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, isLoading: isAuthLoading } = useAuth();
   const contentRef = useRef<HTMLDivElement>(null);
   const [list, setList] = useState<FavoriteList | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [isNotFound, setIsNotFound] = useState(false);
   const [showEditDialog, setShowEditDialog] = useState(false);
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [editingList, setEditingList] = useState<FavoriteList | null>(null);
@@ -87,18 +89,34 @@ export default function FavoriteListPage() {
 
   useAggressiveImagePreload(contentRef, !!list && !isLoading);
 
-  useEffect(() => {
-    const fetchListDetails = async () => {
-      try {
-        setIsLoading(true);
-        
-        // 添加时间戳防止缓存
-        const timestamp = new Date().getTime();
-        const response = await authFetch(`/api/favorite-lists/${id}?_=${timestamp}`, { withAuth: !!user });
-        
-        if (response.ok) {
+  const fetchListDetails = useCallback(async () => {
+    if (!id) return;
+
+    setIsLoading(true);
+    setLoadError(null);
+    setIsNotFound(false);
+
+    const maxAttempts = 3;
+    try {
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+          const timestamp = Date.now();
+          const response = await authFetch(`/api/favorite-lists/${id}?_=${timestamp}`, { withAuth: !!user });
+
+          if (response.status === 404) {
+            setIsNotFound(true);
+            setList(null);
+            setEditingList(null);
+            setSortedFavorites([]);
+            return;
+          }
+
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+          }
+
           const data = await response.json();
-          
+
           if (data && Array.isArray(data.favorites)) {
             const processedData: FavoriteList = {
               ...data,
@@ -124,27 +142,41 @@ export default function FavoriteListPage() {
             setSortedFavorites(defaultSortedFavorites);
             setSortType(defaultSortType);
           } else {
-            setList({...data, favorites: []});
-            setEditingList({...data, favorites: []});
+            setList({ ...data, favorites: [] });
+            setEditingList({ ...data, favorites: [] });
             setSortedFavorites([]);
             setSortType('time_asc');
           }
+          return;
+        } catch (error) {
+          if (attempt === maxAttempts) throw error;
+          await new Promise((resolve) => window.setTimeout(resolve, attempt * 400));
         }
-      } catch (error) {
-        toast.error('获取列表详情失败');
-        console.error('获取列表详情失败:', error);
-      } finally {
-        setIsLoading(false);
       }
-    };
-
-    fetchListDetails();
-
-    if (list?.original_list_id) {
-      const pollInterval = setInterval(fetchListDetails, 60000);
-      return () => clearInterval(pollInterval);
+    } catch (error) {
+      toast.error('获取列表详情失败');
+      console.error('获取列表详情失败:', error);
+      setLoadError('收藏列表加载失败，请稍后重试');
+      setList(null);
+      setEditingList(null);
+      setSortedFavorites([]);
+    } finally {
+      setIsLoading(false);
     }
   }, [id, user]);
+
+  useEffect(() => {
+    if (isAuthLoading) return;
+
+    void fetchListDetails();
+
+    if (list?.original_list_id) {
+      const pollInterval = setInterval(() => {
+        void fetchListDetails();
+      }, 60000);
+      return () => clearInterval(pollInterval);
+    }
+  }, [fetchListDetails, list?.original_list_id, isAuthLoading]);
 
   const sortFavorites = useCallback((favorites: Favorite[], type: SortType) => {
     const favoritesToSort = [...favorites];
@@ -569,7 +601,25 @@ export default function FavoriteListPage() {
     );
   }
 
-  if (!list) {
+  if (loadError) {
+    return (
+      <PageShell maxWidth="5xl" contentClassName="flex items-center justify-center py-12">
+        <div className="text-center">
+          <div className="text-gray-600 dark:text-gray-400 mb-3">{loadError}</div>
+          <Button
+            variant="outline"
+            onClick={() => {
+              void fetchListDetails();
+            }}
+          >
+            重新加载
+          </Button>
+        </div>
+      </PageShell>
+    );
+  }
+
+  if (!list || isNotFound) {
     return (
       <PageShell maxWidth="5xl" contentClassName="flex items-center justify-center py-12">
         <div className="text-gray-600 dark:text-gray-400">未找到收藏列表</div>
