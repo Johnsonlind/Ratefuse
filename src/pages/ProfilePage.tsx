@@ -34,8 +34,8 @@ interface Favorite {
   media_type: string;
   title: string;
   poster: string;
-  year: string;
-  overview: string;
+  year?: string;
+  overview?: string;
   sort_order?: number | null;
 }
 
@@ -117,6 +117,7 @@ export default function ProfilePage() {
   const [showNoteDialog, setShowNoteDialog] = useState(false);
   const [editingFollow, setEditingFollow] = useState<Following | null>(null);
   const [isLoadingLists, setIsLoadingLists] = useState(true);
+  const [listsLoadError, setListsLoadError] = useState<string | null>(null);
   const [isLoadingFollowing, setIsLoadingFollowing] = useState(true);
   const [confirmLogoutOpen, setConfirmLogoutOpen] = useState(false);
   const [confirmDeleteList, setConfirmDeleteList] = useState<FavoriteList | null>(null);
@@ -286,23 +287,42 @@ export default function ProfilePage() {
     });
   }, [activeTab, activeFeedbackId, feedbacks]);
 
-  useEffect(() => {
-    const fetchLists = async () => {
-      try {
-        const response = await authFetch('/api/favorite-lists');
-        if (response.ok) {
-          const data = await response.json();
-          setLists(data);
-        }
-      } catch (error) {
-        console.error('获取收藏列表失败:', error);
-      } finally {
-        setIsLoadingLists(false);
-      }
-    };
+  const fetchLists = async () => {
+    setIsLoadingLists(true);
+    setListsLoadError(null);
+    const maxAttempts = 3;
 
+    try {
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+          const response = await authFetch(`/api/favorite-lists/light?_=${Date.now()}`);
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+          }
+          const data = await response.json();
+          setLists(Array.isArray(data) ? data : []);
+          setListsLoadError(null);
+          return;
+        } catch (error) {
+          if (attempt === maxAttempts) throw error;
+          await new Promise((resolve) => window.setTimeout(resolve, attempt * 400));
+        }
+      }
+    } catch (error) {
+      console.error('获取收藏列表失败:', error);
+      setListsLoadError('收藏列表加载失败，请稍后重试');
+    } finally {
+      setIsLoadingLists(false);
+    }
+  };
+
+  useEffect(() => {
     if (user) {
       fetchLists();
+    } else {
+      setIsLoadingLists(false);
+      setListsLoadError(null);
+      setLists([]);
     }
   }, [user]);
 
@@ -1054,6 +1074,18 @@ export default function ProfilePage() {
                   {[1, 2, 3, 4, 5, 6].map(i => (
                     <div key={i} className="rounded-lg p-4 bg-gray-300 dark:bg-gray-600 h-64 animate-pulse"></div>
                   ))}
+                </div>
+              ) : listsLoadError ? (
+                <div className="text-center py-12">
+                  <p className="text-gray-500 dark:text-gray-400 mb-4">{listsLoadError}</p>
+                  <button
+                    onClick={() => {
+                      void fetchLists();
+                    }}
+                    className="bg-blue-500 text-white px-4 py-2 rounded-md hover:bg-blue-600"
+                  >
+                    重新加载
+                  </button>
                 </div>
               ) : lists.length === 0 ? (
                 <div className="text-center py-12">
