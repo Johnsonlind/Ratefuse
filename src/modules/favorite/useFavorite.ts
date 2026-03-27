@@ -16,8 +16,8 @@ interface FavoriteList {
     media_type: string;
     title: string;
     poster: string;
-    year: string;
-    overview: string;
+    year?: string;
+    overview?: string;
   }>;
 }
 
@@ -53,6 +53,9 @@ interface UseFavoriteReturn {
   handleFavorite: () => Promise<void>;
   handleButtonClick: (e: React.MouseEvent) => void;
   refetch?: () => void;
+  isListsLoading: boolean;
+  listsLoadError: string | null;
+  reloadLists: () => Promise<void>;
 }
 
 export function useFavorite({
@@ -79,48 +82,88 @@ export function useFavorite({
     is_public: false
   });
 
-  const { data: queryLists = [], refetch } = useQuery<FavoriteList[]>({
-    queryKey: ['favorite-lists'],
-    queryFn: async () => {
-      const response = await fetch('/api/favorite-lists', {
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token')}`
+  const fetchFavoriteListsWithRetry = async (): Promise<FavoriteList[]> => {
+    const maxAttempts = 3;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const response = await fetch(`/api/favorite-lists/light?_=${Date.now()}`, {
+          headers: {
+            Authorization: `Bearer ${localStorage.getItem('token')}`,
+          },
+          cache: 'no-store',
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
         }
-      });
-      if (!response.ok) throw new Error('Failed to fetch lists');
-      return await response.json();
-    },
+
+        const data = await response.json();
+        return Array.isArray(data) ? data : [];
+      } catch (error) {
+        if (attempt === maxAttempts) throw error;
+        await new Promise((resolve) => window.setTimeout(resolve, attempt * 400));
+      }
+    }
+    return [];
+  };
+
+  const {
+    data: queryLists = [],
+    refetch,
+    isLoading: isQueryListsLoading,
+    isFetching: isQueryListsFetching,
+    error: queryListsError
+  } = useQuery<FavoriteList[]>({
+    queryKey: ['favorite-lists'],
+    queryFn: fetchFavoriteListsWithRetry,
     enabled: !!user && useReactQuery,
     staleTime: 1000 * 60 * 5,
+    retry: 0,
   });
 
   const [lists, setLists] = useState<FavoriteList[]>([]);
+  const [isManualListsLoading, setIsManualListsLoading] = useState(false);
+  const [manualListsError, setManualListsError] = useState<string | null>(null);
+
+  const reloadLists = async () => {
+    if (!user) return;
+
+    if (useReactQuery) {
+      await refetch();
+      return;
+    }
+
+    setIsManualListsLoading(true);
+    setManualListsError(null);
+    try {
+      const data = await fetchFavoriteListsWithRetry();
+      setLists(data);
+      if (data.length > 0) {
+        setSelectedList((prev) => prev ?? data[0].id);
+      }
+    } catch (error) {
+      console.error('获取收藏列表失败:', error);
+      setManualListsError('收藏列表加载失败，请稍后重试');
+    } finally {
+      setIsManualListsLoading(false);
+    }
+  };
 
   useEffect(() => {
-    if (!useReactQuery && user) {
-      const fetchLists = async () => {
-        try {
-          const response = await fetch('/api/favorite-lists', {
-            headers: {
-              'Authorization': `Bearer ${localStorage.getItem('token')}`
-            }
-          });
-          if (response.ok) {
-            const data = await response.json();
-            setLists(data);
-            if (data.length > 0) {
-              setSelectedList(data[0].id);
-            }
-          }
-        } catch (error) {
-          console.error('获取收藏列表失败:', error);
-        }
-      };
-      fetchLists();
+    if (user) {
+      void reloadLists();
+    } else {
+      setLists([]);
+      setManualListsError(null);
+      setIsManualListsLoading(false);
     }
   }, [user, useReactQuery]);
 
   const currentLists = useReactQuery ? queryLists : lists;
+  const isListsLoading = useReactQuery ? (isQueryListsLoading || isQueryListsFetching) : isManualListsLoading;
+  const listsLoadError = useReactQuery
+    ? (queryListsError ? '收藏列表加载失败，请稍后重试' : null)
+    : manualListsError;
 
   useEffect(() => {
     if (currentLists.length > 0 && !selectedList) {
@@ -164,7 +207,7 @@ export function useFavorite({
         setSelectedList(data.id);
         setShowCreateList(false);
         setNewList({ name: '', description: '', is_public: false });
-        refetch?.();
+        await reloadLists();
       } else {
         setLists([...lists, data]);
         setSelectedList(data.id);
@@ -231,7 +274,7 @@ export function useFavorite({
       setNote('');
       setSortOrderInput('');
       if (useReactQuery) {
-        refetch?.();
+        await reloadLists();
       }
       toast.success('收藏保存成功');
     } catch (error) {
@@ -275,6 +318,9 @@ export function useFavorite({
     handleCreateList,
     handleFavorite,
     handleButtonClick,
-    refetch: useReactQuery ? refetch : undefined
+    refetch: useReactQuery ? (() => { void refetch(); }) : undefined,
+    isListsLoading,
+    listsLoadError,
+    reloadLists,
   };
 }
