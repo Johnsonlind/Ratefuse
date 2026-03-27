@@ -584,7 +584,7 @@ async def login(request: Request):
             "id": user.id,
             "email": user.email,
             "username": user.username,
-            "avatar": f"/api/users/{user.id}/avatar" if getattr(user, "avatar", None) else None,
+            "avatar": _avatar_url_or_none(user),
             "is_admin": getattr(user, "is_admin", False),
         }
         
@@ -764,7 +764,7 @@ async def get_current_user_info(
         "id": current_user.id,
         "email": current_user.email,
         "username": current_user.username,
-        "avatar": current_user.avatar,
+        "avatar": _avatar_url_or_none(current_user),
         "is_admin": current_user.is_admin
     }
 
@@ -848,7 +848,7 @@ async def update_profile(
                 "id": current_user.id,
                 "email": current_user.email,
                 "username": current_user.username,
-                "avatar": current_user.avatar
+                "avatar": _avatar_url_or_none(current_user)
             }
         }
     except Exception as e:
@@ -1743,7 +1743,7 @@ async def search_users(
             {
                 "id": u.id,
                 "username": u.username,
-                "avatar": f"/api/users/{u.id}/avatar" if getattr(u, "avatar", None) else None,
+                "avatar": _avatar_url_or_none(u),
                 "is_following": follow_id is not None,
             }
             for (u, follow_id) in rows
@@ -1793,7 +1793,7 @@ async def admin_list_users(
                 "id": u.id,
                 "username": u.username,
                 "email": u.email,
-                "avatar": f"/api/users/{u.id}/avatar" if getattr(u, "avatar", None) else None,
+                "avatar": _avatar_url_or_none(u),
                 "is_admin": getattr(u, "is_admin", False),
                 "is_banned": getattr(u, "is_banned", False),
                 "created_at": u.created_at.isoformat() if getattr(u, "created_at", None) else None,
@@ -1890,7 +1890,7 @@ async def get_user_info(
         return {
             "id": user.id,
             "username": user.username,
-            "avatar": user.avatar,
+            "avatar": _avatar_url_or_none(user),
             "email": user.email if current_user and current_user.id == user_id else None,
             "is_following": is_following
         }
@@ -2131,9 +2131,7 @@ async def get_following(
             {
                 "id": follow.following.id,
                 "username": follow.following.username,
-                "avatar": f"/api/users/{follow.following.id}/avatar"
-                if getattr(follow.following, "avatar", None)
-                else None,
+                "avatar": _avatar_url_or_none(follow.following),
                 "note": follow.note,
                 "created_at": _to_shanghai_iso(follow.created_at),
             }
