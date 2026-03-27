@@ -1841,37 +1841,48 @@ async def get_user_favorite_lists(
     db: Session = Depends(get_db)
 ):
     try:
-        query = db.query(FavoriteList).filter(FavoriteList.user_id == user_id)
-        
+        query = (
+            db.query(FavoriteList)
+            .options(selectinload(FavoriteList.favorites))
+            .filter(FavoriteList.user_id == user_id)
+        )
+
         if not current_user or current_user.id != user_id:
             query = query.filter(FavoriteList.is_public == True)
-            
+
         lists = query.all()
-        
-        result = []
-        for list in lists:
-            favorites = db.query(Favorite).filter(
-                Favorite.list_id == list.id
-            ).order_by(
-                Favorite.sort_order.is_(None),
-                Favorite.sort_order,
-                Favorite.id
-            ).all()
-            
-            is_collected = False
-            if current_user:
-                is_collected = db.query(FavoriteList).filter(
+        list_ids = [lst.id for lst in lists]
+        collected_ids = set()
+        if current_user and list_ids:
+            collected_ids = {
+                row[0]
+                for row in db.query(FavoriteList.original_list_id)
+                .filter(
                     FavoriteList.user_id == current_user.id,
-                    FavoriteList.original_list_id == list.id
-                ).first() is not None
-            
+                    FavoriteList.original_list_id.in_(list_ids),
+                )
+                .all()
+                if row[0] is not None
+            }
+
+        result = []
+        for list_item in lists:
+            favorites = sorted(
+                list_item.favorites or [],
+                key=lambda fav: (
+                    fav.sort_order is None,
+                    fav.sort_order if fav.sort_order is not None else 0,
+                    fav.id,
+                ),
+            )
+
             result.append({
-                "id": list.id,
-                "name": list.name,
-                "description": list.description,
-                "is_public": list.is_public,
-                "is_collected": is_collected,
-                "created_at": _to_shanghai_iso(list.created_at),
+                "id": list_item.id,
+                "name": list_item.name,
+                "description": list_item.description,
+                "is_public": list_item.is_public,
+                "is_collected": list_item.id in collected_ids,
+                "created_at": _to_shanghai_iso(list_item.created_at),
                 "favorites": [{
                     "id": fav.id,
                     "media_id": fav.media_id,
@@ -1884,12 +1895,78 @@ async def get_user_favorite_lists(
                     "sort_order": fav.sort_order
                 } for fav in favorites]
             })
-            
+
         return result
     except Exception as e:
         raise HTTPException(
             status_code=500,
             detail=f"获取用户收藏列表失败: {str(e)}"
+        )
+
+@app.get("/api/users/{user_id}/favorite-lists/light")
+async def get_user_favorite_lists_light(
+    user_id: int,
+    current_user: User = Depends(get_current_user_optional),
+    db: Session = Depends(get_db)
+):
+    try:
+        query = (
+            db.query(FavoriteList)
+            .options(selectinload(FavoriteList.favorites))
+            .filter(FavoriteList.user_id == user_id)
+        )
+
+        if not current_user or current_user.id != user_id:
+            query = query.filter(FavoriteList.is_public == True)
+
+        lists = query.all()
+        list_ids = [lst.id for lst in lists]
+        collected_ids = set()
+        if current_user and list_ids:
+            collected_ids = {
+                row[0]
+                for row in db.query(FavoriteList.original_list_id)
+                .filter(
+                    FavoriteList.user_id == current_user.id,
+                    FavoriteList.original_list_id.in_(list_ids),
+                )
+                .all()
+                if row[0] is not None
+            }
+
+        result = []
+        for list_item in lists:
+            favorites = sorted(
+                list_item.favorites or [],
+                key=lambda fav: (
+                    fav.sort_order is None,
+                    fav.sort_order if fav.sort_order is not None else 0,
+                    fav.id,
+                ),
+            )
+
+            result.append({
+                "id": list_item.id,
+                "name": list_item.name,
+                "description": list_item.description,
+                "is_public": list_item.is_public,
+                "is_collected": list_item.id in collected_ids,
+                "created_at": _to_shanghai_iso(list_item.created_at),
+                "favorites": [{
+                    "id": fav.id,
+                    "media_id": fav.media_id,
+                    "media_type": fav.media_type,
+                    "title": fav.title,
+                    "poster": fav.poster,
+                    "sort_order": fav.sort_order
+                } for fav in favorites]
+            })
+
+        return result
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"获取用户轻量收藏列表失败: {str(e)}"
         )
 
 @app.post("/api/users/{user_id}/follow")
