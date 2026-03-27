@@ -35,9 +35,9 @@ interface Favorite {
   media_type: string;
   title: string;
   poster: string;
-  year: string;
-  overview: string;
-  note: string | null;
+  year?: string;
+  overview?: string;
+  note?: string | null;
   sort_order: number | null;
 }
 
@@ -47,6 +47,8 @@ export default function UserProfilePage() {
   const [userInfo, setUserInfo] = useState<Creator | null>(null);
   const [lists, setLists] = useState<FavoriteList[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [reloadTick, setReloadTick] = useState(0);
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [confirmUnfollowOpen, setConfirmUnfollowOpen] = useState(false);
 
@@ -64,26 +66,50 @@ export default function UserProfilePage() {
       
       try {
         setIsLoading(true);
-        const timestamp = new Date().getTime();
-        
-        const [userResponse, listsResponse] = await Promise.all([
-          fetch(`/api/users/${id}?_=${timestamp}`, {
-            headers: user ? {
-              'Authorization': `Bearer ${localStorage.getItem('token')}`
-            } : undefined,
-            cache: 'no-store'
-          }),
-          fetch(`/api/users/${id}/favorite-lists`, {
-            headers: user ? {
-              'Authorization': `Bearer ${localStorage.getItem('token')}`
-            } : undefined
-          })
-        ]);
-        
-        const [userData, listsData] = await Promise.all([
-          userResponse.ok ? userResponse.json() : null,
-          listsResponse.ok ? listsResponse.json() : []
-        ]);
+        setLoadError(null);
+
+        const maxAttempts = 3;
+        let userData: Creator | null = null;
+        let listsData: FavoriteList[] = [];
+
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+          try {
+            const timestamp = Date.now();
+            const [userResponse, listsResponse] = await Promise.all([
+              fetch(`/api/users/${id}?_=${timestamp}`, {
+                headers: user ? {
+                  'Authorization': `Bearer ${localStorage.getItem('token')}`
+                } : undefined,
+                cache: 'no-store'
+              }),
+              fetch(`/api/users/${id}/favorite-lists/light?_=${timestamp}`, {
+                headers: user ? {
+                  'Authorization': `Bearer ${localStorage.getItem('token')}`
+                } : undefined,
+                cache: 'no-store'
+              })
+            ]);
+
+            if (!userResponse.ok) {
+              throw new Error(`用户请求失败: ${userResponse.status}`);
+            }
+            if (!listsResponse.ok) {
+              throw new Error(`片单请求失败: ${listsResponse.status}`);
+            }
+
+            const [nextUserData, nextListsData] = await Promise.all([
+              userResponse.json(),
+              listsResponse.json()
+            ]);
+
+            userData = nextUserData;
+            listsData = Array.isArray(nextListsData) ? nextListsData : [];
+            break;
+          } catch (error) {
+            if (attempt === maxAttempts) throw error;
+            await new Promise((resolve) => window.setTimeout(resolve, attempt * 400));
+          }
+        }
         
         if (isMounted) {
           if (userData) setUserInfo(userData);
@@ -103,6 +129,7 @@ export default function UserProfilePage() {
       } catch (error) {
         console.error('获取数据失败:', error);
         if (isMounted) {
+          setLoadError('用户主页加载失败，请稍后重试');
           toast.error('获取数据失败');
         }
       } finally {
@@ -117,7 +144,7 @@ export default function UserProfilePage() {
     return () => {
       isMounted = false;
     };
-  }, [id, user]);
+  }, [id, user, reloadTick]);
 
   const handleCollectList = async (listId: number) => {
     if (!user) {
@@ -507,11 +534,29 @@ export default function UserProfilePage() {
           <h2 className="text-xl font-semibold text-gray-800 dark:text-white">片单</h2>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-          {lists.filter(list => list.is_public || user?.id === parseInt(id!)).map(list => (
-            <FavoriteListCard key={list.id} list={list} />
-          ))}
-        </div>
+        {loadError && (
+          <div className="text-center py-8">
+            <p className="text-gray-600 dark:text-gray-400 mb-3">{loadError}</p>
+            <button
+              onClick={() => {
+                setIsLoading(true);
+                setLoadError(null);
+                setReloadTick((v) => v + 1);
+              }}
+              className="bg-blue-500 text-white px-4 py-2 rounded-md hover:bg-blue-600"
+            >
+              重新加载
+            </button>
+          </div>
+        )}
+
+        {!loadError && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+            {lists.filter(list => list.is_public || user?.id === parseInt(id!)).map(list => (
+              <FavoriteListCard key={list.id} list={list} />
+            ))}
+          </div>
+        )}
       </div>
       <ConfirmDialog
         open={confirmUnfollowOpen}
