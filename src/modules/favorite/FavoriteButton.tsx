@@ -38,7 +38,10 @@ export function FavoriteButton({ mediaId, mediaType, title, poster, year, overvi
     setShowCreateList,
     setNewList,
     handleCreateList,
-    handleFavorite
+    handleFavorite,
+    isListsLoading,
+    listsLoadError,
+    reloadLists,
   } = useFavorite({
     mediaId,
     mediaType,
@@ -111,15 +114,26 @@ export function FavoriteButton({ mediaId, mediaType, title, poster, year, overvi
                   创建新列表
                 </Button>
               </div>
-              <select
-                value={selectedList || ''}
-                onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setSelectedList(Number(e.target.value))}
-                className="w-full rounded-md glass-dropdown text-gray-900 dark:text-gray-100 px-3 py-2"
-              >
-                {lists.map((list: { id: number; name: string }) => (
-                  <option key={list.id} value={list.id}>{list.name}</option>
-                ))}
-              </select>
+              {isListsLoading ? (
+                <div className="text-sm text-gray-500 dark:text-gray-400">收藏列表加载中...</div>
+              ) : listsLoadError ? (
+                <div className="space-y-2">
+                  <div className="text-sm text-gray-500 dark:text-gray-400">{listsLoadError}</div>
+                  <Button variant="outline" onClick={() => { void reloadLists(); }}>
+                    重新加载
+                  </Button>
+                </div>
+              ) : (
+                <select
+                  value={selectedList || ''}
+                  onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setSelectedList(Number(e.target.value))}
+                  className="w-full rounded-md glass-dropdown text-gray-900 dark:text-gray-100 px-3 py-2"
+                >
+                  {lists.map((list: { id: number; name: string }) => (
+                    <option key={list.id} value={list.id}>{list.name}</option>
+                  ))}
+                </select>
+              )}
               <Textarea
                 label="添加备注（可选）"
                 value={note}
@@ -136,7 +150,7 @@ export function FavoriteButton({ mediaId, mediaType, title, poster, year, overvi
                 <Button variant="outline" onClick={() => setShowDialog(false)}>
                   取消
                 </Button>
-                <Button onClick={handleFavorite} disabled={isLoading}>
+                <Button onClick={handleFavorite} disabled={isLoading || isListsLoading || !!listsLoadError || !selectedList}>
                   {isLoading ? '保存中...' : '保存'}
                 </Button>
               </div>
