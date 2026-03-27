@@ -1113,6 +1113,84 @@ async def get_favorite_lists(
         logger.error(f"获取收藏列表失败: {str(e)}")
         raise HTTPException(status_code=500, detail=f"获取收藏列表失败: {str(e)}")
 
+@app.get("/api/favorite-lists/light")
+async def get_favorite_lists_light(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    try:
+        lists = (
+            db.query(FavoriteList)
+            .options(selectinload(FavoriteList.favorites))
+            .filter(FavoriteList.user_id == current_user.id)
+            .all()
+        )
+
+        original_list_ids = {lst.original_list_id for lst in lists if lst.original_list_id}
+        original_creators_map = {}
+
+        if original_list_ids:
+            original_lists = (
+                db.query(FavoriteList)
+                .options(selectinload(FavoriteList.user))
+                .filter(FavoriteList.id.in_(original_list_ids))
+                .all()
+            )
+            for ol in original_lists:
+                if ol.user:
+                    original_creators_map[ol.id] = {
+                        "id": ol.user.id,
+                        "username": ol.user.username,
+                        "avatar": ol.user.avatar,
+                    }
+
+        creator = {
+            "id": current_user.id,
+            "username": current_user.username,
+            "avatar": current_user.avatar,
+        }
+
+        result = []
+        for lst in lists:
+            original_creator = original_creators_map.get(lst.original_list_id)
+            favorites = sorted(
+                lst.favorites or [],
+                key=lambda fav: (
+                    fav.sort_order is None,
+                    fav.sort_order if fav.sort_order is not None else 0,
+                    fav.id,
+                ),
+            )
+
+            result.append(
+                {
+                    "id": lst.id,
+                    "name": lst.name,
+                    "description": lst.description,
+                    "is_public": lst.is_public,
+                    "created_at": _to_shanghai_iso(lst.created_at),
+                    "original_list_id": lst.original_list_id,
+                    "original_creator": original_creator,
+                    "creator": creator,
+                    "favorites": [
+                        {
+                            "id": fav.id,
+                            "media_id": fav.media_id,
+                            "media_type": fav.media_type,
+                            "title": fav.title,
+                            "poster": fav.poster,
+                            "sort_order": fav.sort_order,
+                        }
+                        for fav in favorites
+                    ],
+                }
+            )
+
+        return result
+    except Exception as e:
+        logger.error(f"获取轻量收藏列表失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"获取轻量收藏列表失败: {str(e)}")
+
 @app.post("/api/favorite-lists")
 async def create_favorite_list(
     request: Request,
@@ -1183,9 +1261,26 @@ async def get_favorite_list(
     current_user: Optional[User] = Depends(get_current_user_optional),
     db: Session = Depends(get_db)
 ):
-    list_data = db.query(FavoriteList).filter(FavoriteList.id == list_id).first()
+    list_data = (
+        db.query(FavoriteList)
+        .options(
+            selectinload(FavoriteList.favorites),
+            selectinload(FavoriteList.user),
+        )
+        .filter(FavoriteList.id == list_id)
+        .first()
+    )
     if not list_data:
         raise HTTPException(status_code=404, detail="列表不存在")
+
+    favorites = sorted(
+        list_data.favorites or [],
+        key=lambda fav: (
+            fav.sort_order is None,
+            fav.sort_order if fav.sort_order is not None else 0,
+            fav.id,
+        ),
+    )
 
     response_data = {
         "id": list_data.id,
@@ -1206,11 +1301,13 @@ async def get_favorite_list(
                 "note": f.note,
                 "sort_order": f.sort_order
             }
-            for f in list_data.favorites
-        ] if list_data.favorites else []
+            for f in favorites
+        ]
     }
 
-    creator = db.query(User).filter(User.id == list_data.user_id).first()
+    creator = list_data.user
+    if not creator:
+        raise HTTPException(status_code=404, detail="列表创建者不存在")
     is_following_creator = False
     
     if current_user:
@@ -1228,13 +1325,16 @@ async def get_favorite_list(
     }
 
     if list_data.original_list_id:
-        original_list = db.query(FavoriteList).filter(
-            FavoriteList.id == list_data.original_list_id
-        ).first()
+        original_list = (
+            db.query(FavoriteList)
+            .options(selectinload(FavoriteList.user))
+            .filter(FavoriteList.id == list_data.original_list_id)
+            .first()
+        )
         if original_list:
-            original_creator = db.query(User).filter(
-                User.id == original_list.user_id
-            ).first()
+            original_creator = original_list.user
+            if not original_creator:
+                return response_data
             
             is_following_original = False
             if current_user:
