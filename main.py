@@ -55,7 +55,6 @@ import bcrypt
 from datetime import datetime, timedelta
 from urllib.parse import parse_qs, quote, unquote, urlparse, urlunparse
 
-
 def _effective_redis_url() -> str:
     url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     pw = (os.getenv("REDIS_PASSWORD") or "").strip()
@@ -141,9 +140,8 @@ TRAKT_BASE_URL = os.getenv("TRAKT_BASE_URL", "").rstrip("/")
 TMDB_API_BASE_URL = os.getenv("TMDB_API_BASE_URL", "").rstrip("/")
 TMDB_IMAGE_ORIGIN = os.getenv("TMDB_IMAGE_ORIGIN", "https://tmdb.ratefuse.cn").rstrip("/")
 
-
 def unwrap_tmdb_image_proxy(s: str) -> str:
-    """将错误拼接的 …/t/p/w500/api/image-proxy?url=… 或 /api/image-proxy?url=… 还原为 url 参数中的真实路径。"""
+    """将错误拼接的图片链接还原为真实路径"""
     if not s or "image-proxy" not in s:
         return s
     try:
@@ -155,19 +153,16 @@ def unwrap_tmdb_image_proxy(s: str) -> str:
     except Exception:
         return s
 
-
 _TMDI_IMAGES_PREFIX = re.compile(r"^/tmdb-images/(?:original|w\d+)(/.+)$", re.I)
 
-
 def strip_tmdb_images_dev_prefix(poster_path: str) -> str:
-    """将 /tmdb-images/w500/file.jpg 转为 TMDB 风格的 /file.jpg，便于再接 /t/p/{size}。"""
+    """转为 TMDB 风格"""
     if not poster_path:
         return poster_path
     m = _TMDI_IMAGES_PREFIX.match(poster_path if poster_path.startswith("/") else f"/{poster_path}")
     if m:
         return m.group(1)
     return poster_path if poster_path.startswith("/") else f"/{poster_path}"
-
 
 def tmdb_image_poster_url(poster_path: str, size: str = "w500") -> str:
     """TMDB poster_path → 镜像站完整图片 URL"""
