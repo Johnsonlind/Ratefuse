@@ -5,6 +5,7 @@ import { TMDB } from './api';
 import { fetchTMDBWithLanguageFallback } from './tmdbLanguageHelper';
 import { transformTMDBMovie, transformTMDBTVShow } from './transformers';
 import type { Movie, TVShow } from '../shared/types/media';
+import { posterPathToSiteUrl } from './image';
 
 export async function searchByImdbId(imdbId: string): Promise<{ movies: Movie[], tvShows: TVShow[] }> {
   try {
@@ -29,12 +30,12 @@ export async function searchByImdbId(imdbId: string): Promise<{ movies: Movie[],
 
 export async function getMediaDetails(mediaType: string, mediaId: string) {
   const data = await fetchTMDBWithLanguageFallback(
-    `/api/tmdb-proxy/${mediaType}/${mediaId}`
+    `${TMDB.baseUrl}/${mediaType}/${mediaId}`
   );
   
   let posterPath = '';
   if (data.poster_path) {
-    posterPath = `/tmdb-images${data.poster_path}`;
+    posterPath = posterPathToSiteUrl(data.poster_path, 'w500');
   }
   
   return {
