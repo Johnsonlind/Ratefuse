@@ -3066,6 +3066,16 @@ async def image_proxy(url: str, response: Response):
         print(f"图片代理失败: {str(e)}, URL: {url}")
         raise HTTPException(status_code=500, detail=f"图片代理失败: {str(e)}")
 
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate"
+        }
+    )
+    
 @router.get("/api/trakt-proxy/{path:path}")
 async def trakt_proxy(path: str, request: Request):
     try:
