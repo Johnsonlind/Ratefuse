@@ -17,10 +17,10 @@ const DOWNSCALE_SIZE = 'w500';
 const downscaleTmdb = (url: string) => {
   const tmdbPattern = /https?:\/\/image\.tmdb\.org\/t\/p\/(original|w\d+)(\/.+)/;
   const match = url.match(tmdbPattern);
-  if (match) return `https://image.tmdb.org/t/p/${DOWNSCALE_SIZE}${match[2]}`;
+  if (match) return `https://tmdb.ratefuse.cn/t/p/${DOWNSCALE_SIZE}${match[2]}`;
   if (url.startsWith('/tmdb-images/')) {
     const path = url.replace(/^\/tmdb-images\/(?:original|w\d+)/, '');
-    return `https://image.tmdb.org/t/p/${DOWNSCALE_SIZE}${path}`;
+    return `https://tmdb.ratefuse.cn/t/p/${DOWNSCALE_SIZE}${path}`;
   }
   return url;
 };
