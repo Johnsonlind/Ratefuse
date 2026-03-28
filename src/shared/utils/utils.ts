@@ -40,7 +40,7 @@ export function formatDate(dateString: string): string {
 }
 
 export function getImageUrl(path: string): string {
-  return `https://image.tmdb.org/t/p/original${path}`;
+  return `https://tmdb.ratefuse.cn/t/p/original${path}`;
 }
 
 export function formatRuntime(minutes: number): string {
