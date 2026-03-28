@@ -20,6 +20,7 @@ import { useAuth } from '../modules/auth/AuthContext';
 import { authFetch } from '../api/authFetch';
 import { toast } from 'sonner';
 import { ConfirmDialog } from '../shared/ui/ConfirmDialog';
+import { toSiteTmdbImageUrl } from '../api/image';
 
 const DOWNSCALE_SIZE = 'w500';
 const HERO_IMAGE_SIZE = 'original';
@@ -56,26 +57,23 @@ const downscaleTmdb = (url: string, size = DOWNSCALE_SIZE) => {
     const path = url.replace(/^\/tmdb-images\/(?:original|w\d+)/, '');
     return `https://tmdb.ratefuse.cn/t/p/${size}${path}`;
   }
+  if (url.startsWith('/tmdb/')) {
+    const path = url.replace(/^\/tmdb\/(?:original|w\d+)/, '');
+    return `https://tmdb.ratefuse.cn/t/p/${size}${path}`;
+  }
   return url;
 };
 
 const resolvePosterUrl = (poster: string, size = DOWNSCALE_SIZE) => {
   if (!poster) return '';
-  const safePoster = downscaleTmdb(poster, size);
-  if (safePoster.startsWith('/api/') || safePoster.startsWith('/tmdb-images/')) {
-    return safePoster;
-  }
-  return `/api/image-proxy?url=${encodeURIComponent(safePoster)}`;
+  return toSiteTmdbImageUrl(downscaleTmdb(poster, size));
 };
 
 const resolveHeroImageUrl = (url: string) => {
   if (!url) return '';
-  if (url.startsWith('/api/')) return url;
-  if (url.startsWith('/tmdb-images/')) {
-    return `/api/image-proxy?url=${encodeURIComponent(url)}`;
-  }
-  if (url.startsWith('http://') || url.startsWith('https://')) {
-    return `/api/image-proxy?url=${encodeURIComponent(url)}`;
+  if (url.startsWith('/api/')) return toSiteTmdbImageUrl(url);
+  if (url.startsWith('/tmdb-images/') || url.startsWith('http://') || url.startsWith('https://')) {
+    return toSiteTmdbImageUrl(url);
   }
   return resolvePosterUrl(url, HERO_IMAGE_SIZE);
 };
@@ -502,18 +500,7 @@ function HeroCarousel({
   const toHeroBgSrc = (url: string) => {
     if (!url) return '';
     try {
-      const m = url.match(/^\/api\/image-proxy\?url=(.+)$/);
-      if (m?.[1]) {
-        const inner = decodeURIComponent(m[1]);
-        return downscaleTmdb(inner, HERO_BG_SIZE);
-      }
-      if (url.startsWith('/tmdb-images/')) {
-        return downscaleTmdb(url, HERO_BG_SIZE);
-      }
-      if (url.startsWith('http://') || url.startsWith('https://')) {
-        return downscaleTmdb(url, HERO_BG_SIZE);
-      }
-      return url;
+      return toSiteTmdbImageUrl(downscaleTmdb(toSiteTmdbImageUrl(url), HERO_BG_SIZE));
     } catch {
       return url;
     }
@@ -524,13 +511,12 @@ function HeroCarousel({
     if (resolvedUrl) candidates.add(resolvedUrl);
 
     try {
-      const m = resolvedUrl.match(/^\/api\/image-proxy\?url=(.+)$/);
-      if (m?.[1]) {
-        const inner = decodeURIComponent(m[1]);
-        if (inner.startsWith('/tmdb-images/')) candidates.add(downscaleTmdb(inner, downscaleSize));
-        if (inner.startsWith('http://') || inner.startsWith('https://')) candidates.add(inner);
-      } else if (resolvedUrl.startsWith('/tmdb-images/')) {
-        candidates.add(downscaleTmdb(resolvedUrl, downscaleSize));
+      const inner = toSiteTmdbImageUrl(resolvedUrl);
+      if (inner.startsWith('/tmdb-images/') || inner.startsWith('/tmdb/')) {
+        candidates.add(toSiteTmdbImageUrl(downscaleTmdb(inner, downscaleSize)));
+      }
+      if (inner.startsWith('http://') || inner.startsWith('https://')) {
+        candidates.add(inner);
       }
     } catch {
     }
