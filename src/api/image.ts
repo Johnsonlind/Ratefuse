@@ -27,15 +27,6 @@ function normalizeRelativeTmdbSitePath(input: string): string {
 
 export function toSiteTmdbImageUrl(input: string): string {
   if (!input) return input;
-  if (input.startsWith('/api/image-proxy')) {
-    try {
-      const u = new URL(input, 'https://ratefuse.cn');
-      const raw = u.searchParams.get('url');
-      if (raw) return toSiteTmdbImageUrl(decodeURIComponent(raw));
-    } catch {
-    }
-    return input;
-  }
   if (input.startsWith('http')) {
     try {
       const parsed = new URL(input);
@@ -58,9 +49,6 @@ export function toSiteTmdbImageUrl(input: string): string {
 
 export function posterPathToSiteUrl(poster: string, width: string): string {
   if (!poster) return '';
-  if (poster.startsWith('/api/image-proxy')) {
-    return toSiteTmdbImageUrl(poster);
-  }
 
   const tmdbPattern = /https?:\/\/image\.tmdb\.org\/t\/p\/(original|w\d+)(\/.+)/i;
   const m = poster.match(tmdbPattern);
