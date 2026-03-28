@@ -1359,7 +1359,7 @@ export default function AdminChartsPage() {
                                           <div className={`w-12 h-18 overflow-hidden rounded bg-gray-700`}>
                                             {current?.poster ? (
                                               <img
-                                                src={posterPathToSiteUrl(current.poster, 'w342')}
+                                                src={posterPathToSiteUrl(current.poster, 'w500')}
                                                 alt="thumb"
                                                 className="w-full h-full object-cover"
                                               />
@@ -1491,7 +1491,7 @@ export default function AdminChartsPage() {
                                     <div className={`w-12 h-18 overflow-hidden rounded mb-1 bg-gray-700`}>
                                       {current?.poster ? (
                                         <img
-                                          src={posterPathToSiteUrl(current.poster, 'w342')}
+                                          src={posterPathToSiteUrl(current.poster, 'w500')}
                                           alt="thumb"
                                           className="w-full h-full object-cover"
                                         />
