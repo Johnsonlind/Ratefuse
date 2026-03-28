@@ -11,24 +11,11 @@ import { ExportChartCard } from '../modules/export/ExportChartCard';
 import { useAggressiveImagePreload } from '../shared/hooks/useAggressiveImagePreload';
 import { PageShell } from '../modules/layout/PageShell';
 import { usePageMeta } from '../shared/hooks/usePageMeta';
+import { posterPathToSiteUrl } from '../api/image';
 
 const DOWNSCALE_SIZE = 'w500';
 
-const downscaleTmdb = (url: string) => {
-  const tmdbPattern = /https?:\/\/image\.tmdb\.org\/t\/p\/(original|w\d+)(\/.+)/;
-  const match = url.match(tmdbPattern);
-  if (match) return `https://tmdb.ratefuse.cn/t/p/${DOWNSCALE_SIZE}${match[2]}`;
-  if (url.startsWith('/tmdb-images/')) {
-    const path = url.replace(/^\/tmdb-images\/(?:original|w\d+)/, '');
-    return `https://tmdb.ratefuse.cn/t/p/${DOWNSCALE_SIZE}${path}`;
-  }
-  return url;
-};
-
-const resolvePosterUrl = (poster: string) =>
-  /^(http|\/api|\/tmdb-images)/.test(poster)
-    ? downscaleTmdb(poster)
-    : `/api/image-proxy?url=${encodeURIComponent(downscaleTmdb(poster))}`;
+const resolvePosterUrl = (poster: string) => posterPathToSiteUrl(poster, DOWNSCALE_SIZE);
 
 // 榜单顺序
 const CHART_ORDER = ['豆瓣', 'IMDb', 'Rotten Tomatoes', 'Metacritic', 'Letterboxd', 'TMDB', 'Trakt'];
