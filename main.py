@@ -2964,9 +2964,9 @@ async def tmdb_proxy(path: str, request: Request):
 async def image_proxy(url: str, response: Response):
     try:
         if url.startswith('/tmdb-images/'):
-            url = f"https://image.tmdb.org/t/p{url[12:]}"
+            url = f"https://tmdb.ratefuse.cn/t/p{url[12:]}"
         elif url.startswith('/tmdb/'):
-            url = f"https://image.tmdb.org/t/p{url[5:]}"
+            url = f"https://tmdb.ratefuse.cn/t/p{url[5:]}"
         
         if not url.startswith("http"):
             raise HTTPException(status_code=400, detail="Invalid image url")
@@ -5973,3 +5973,4 @@ async def shutdown_event():
             print("TMDB 客户端连接池已关闭")
         except Exception as e:
             print(f"TMDB 客户端清理失败: {e}")
+            
