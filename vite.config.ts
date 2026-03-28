@@ -35,10 +35,18 @@ export default defineConfig({
             }
           },
           {
-            urlPattern: /\/api\/image-proxy/i,
+            urlPattern: /^\/tmdb\//i,
             handler: 'CacheFirst',
             options: {
-              cacheName: 'image-proxy-cache',
+              cacheName: 'tmdb-site-proxy',
+              expiration: { maxEntries: 200, maxAgeSeconds: 30 * 24 * 60 * 60 }
+            }
+          },
+          {
+            urlPattern: /^\/tmdb-images\//i,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'tmdb-images-site-proxy',
               expiration: { maxEntries: 200, maxAgeSeconds: 30 * 24 * 60 * 60 }
             }
           },
@@ -95,6 +103,18 @@ export default defineConfig({
             }
           });
         },
+      },
+      '/tmdb': {
+        target: 'https://tmdb.ratefuse.cn',
+        changeOrigin: true,
+        secure: true,
+        rewrite: (path) => path.replace(/^\/tmdb/, '/t/p'),
+      },
+      '/tmdb-images': {
+        target: 'https://tmdb.ratefuse.cn',
+        changeOrigin: true,
+        secure: true,
+        rewrite: (path) => path.replace(/^\/tmdb-images/, '/t/p'),
       },
     },
   },
