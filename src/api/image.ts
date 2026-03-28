@@ -7,6 +7,22 @@ type ImageSize = keyof typeof TMDB.posterSizes;
 
 const TMDB_IMAGE_FILE_RE = /\.(?:jpe?g|png|webp|gif)$/i;
 
+/** 开发环境或错误拼接可能产生 /api/image-proxy?url=… 或 …/t/p/w500/api/image-proxy?url=…，解包为内层真实路径 */
+function unwrapTmdbImageProxyUrl(input: string): string {
+  if (!input || !input.includes('image-proxy')) return input;
+  try {
+    const u = input.startsWith('http')
+      ? new URL(input)
+      : new URL(input, 'http://local.invalid');
+    if (!u.pathname.includes('image-proxy') || !u.searchParams.has('url')) return input;
+    const inner = u.searchParams.get('url');
+    if (!inner) return input;
+    return inner.startsWith('/') || inner.startsWith('http') ? inner : `/${inner}`;
+  } catch {
+    return input;
+  }
+}
+
 function collapseTmdbImagePrefixes(input: string): string {
   let p = input.replace(/\/tmdb-images\//g, '/tmdb/');
   while (p.includes('/tmdb/tmdb/')) {
@@ -37,6 +53,7 @@ function asAbsoluteTmdbImageUrl(normalized: string): string {
 
 export function toSiteTmdbImageUrl(input: string): string {
   if (!input) return input;
+  input = unwrapTmdbImageProxyUrl(input);
   if (input.startsWith('http')) {
     try {
       const parsed = new URL(input);
@@ -60,6 +77,7 @@ export function toSiteTmdbImageUrl(input: string): string {
 
 export function posterPathToSiteUrl(poster: string, width: string): string {
   if (!poster) return '';
+  poster = unwrapTmdbImageProxyUrl(poster);
 
   const tmdbPattern = /https?:\/\/image\.tmdb\.org\/t\/p\/(original|w\d+)(\/.+)/i;
   const m = poster.match(tmdbPattern);
@@ -90,6 +108,7 @@ export function getImageUrl(path: string | null, size: ImageSize = '中', type: 
   if (!path) {
     return type === 'poster' ? '/placeholder-poster.png' : '/placeholder-avatar.png';
   }
+  path = unwrapTmdbImageProxyUrl(path);
   if (path.startsWith('http')) {
     return toSiteTmdbImageUrl(path);
   }
