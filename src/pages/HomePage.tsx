@@ -71,7 +71,6 @@ const resolvePosterUrl = (poster: string, size = DOWNSCALE_SIZE) => {
 
 const resolveHeroImageUrl = (url: string) => {
   if (!url) return '';
-  if (url.startsWith('/api/')) return toSiteTmdbImageUrl(url);
   if (url.startsWith('/tmdb-images/') || url.startsWith('http://') || url.startsWith('https://')) {
     return toSiteTmdbImageUrl(url);
   }
