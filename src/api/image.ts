@@ -25,6 +25,16 @@ function normalizeRelativeTmdbSitePath(input: string): string {
   return p;
 }
 
+function relativeTmdbPathToAbsolute(p: string): string {
+  if (!p.startsWith('/tmdb/')) return p;
+  return `${TMDB.imageOrigin}/t/p/${p.slice('/tmdb/'.length)}`;
+}
+
+function asAbsoluteTmdbImageUrl(normalized: string): string {
+  if (!normalized.startsWith('/tmdb/')) return normalized;
+  return relativeTmdbPathToAbsolute(normalized);
+}
+
 export function toSiteTmdbImageUrl(input: string): string {
   if (!input) return input;
   if (input.startsWith('http')) {
@@ -35,14 +45,15 @@ export function toSiteTmdbImageUrl(input: string): string {
         parsed.pathname.startsWith('/t/p/')
       ) {
         const rest = parsed.pathname.slice('/t/p/'.length);
-        return normalizeRelativeTmdbSitePath(`/tmdb/${rest}`);
+        return asAbsoluteTmdbImageUrl(normalizeRelativeTmdbSitePath(`/tmdb/${rest}`));
       }
     } catch {
     }
     return input;
   }
   if (input.startsWith('/')) {
-    return normalizeRelativeTmdbSitePath(input);
+    const n = normalizeRelativeTmdbSitePath(input);
+    return asAbsoluteTmdbImageUrl(n);
   }
   return input;
 }
@@ -63,16 +74,16 @@ export function posterPathToSiteUrl(poster: string, width: string): string {
   const p = normalizeRelativeTmdbSitePath(poster.startsWith('/') ? poster : `/${poster}`);
   const sized = p.match(/^\/tmdb\/(original|w\d+)\/(.+)$/i);
   if (sized && TMDB_IMAGE_FILE_RE.test(sized[2])) {
-    return `/tmdb/${width}/${sized[2]}`;
+    return relativeTmdbPathToAbsolute(`/tmdb/${width}/${sized[2]}`);
   }
   if (/^\/[^/]+\.(?:jpe?g|png|webp|gif)$/i.test(p)) {
-    return `/tmdb/${width}${p}`;
+    return relativeTmdbPathToAbsolute(`/tmdb/${width}${p}`);
   }
   if (p.startsWith('/tmdb/')) {
-    return p;
+    return asAbsoluteTmdbImageUrl(p);
   }
   const p2 = p.startsWith('/') ? p : `/${p}`;
-  return `/tmdb/${width}${p2}`;
+  return relativeTmdbPathToAbsolute(`/tmdb/${width}${p2}`);
 }
 
 export function getImageUrl(path: string | null, size: ImageSize = '中', type: 'poster' | 'profile' = 'poster'): string {
@@ -86,15 +97,15 @@ export function getImageUrl(path: string | null, size: ImageSize = '中', type: 
   const sz = TMDB.posterSizes[size];
   const sized = p.match(/^\/tmdb\/(original|w\d+)\/(.+)$/i);
   if (sized && TMDB_IMAGE_FILE_RE.test(sized[2])) {
-    return `/tmdb/${sz}/${sized[2]}`;
+    return relativeTmdbPathToAbsolute(`/tmdb/${sz}/${sized[2]}`);
   }
   if (/^\/[^/]+\.(?:jpe?g|png|webp|gif)$/i.test(p)) {
-    return `/tmdb/${sz}${p}`;
+    return relativeTmdbPathToAbsolute(`/tmdb/${sz}${p}`);
   }
   if (p.startsWith('/tmdb/')) {
-    return p;
+    return asAbsoluteTmdbImageUrl(p);
   }
-  return `/tmdb/${sz}${p.startsWith('/') ? p : `/${p}`}`;
+  return relativeTmdbPathToAbsolute(`/tmdb/${sz}${p.startsWith('/') ? p : `/${p}`}`);
 }
 
 export async function getBase64Image(input: string | File): Promise<string> {
