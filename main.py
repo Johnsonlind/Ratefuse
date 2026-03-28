@@ -67,7 +67,7 @@ def _effective_redis_url() -> str:
     new_netloc = f":{enc}@{p.netloc}"
     return urlunparse((p.scheme, new_netloc, p.path, p.params, p.query, p.fragment))
 from models import (
-    SQLALCHEMY_DATABASE_URL,
+    engine,
     User,
     Favorite,
     FavoriteList,
@@ -109,8 +109,7 @@ import secrets
 import aiohttp
 from fastapi.security.utils import get_authorization_scheme_param
 from fastapi.openapi.models import OAuthFlows as OAuthFlowsModel
-from sqlalchemy import func, or_, not_, and_, create_engine, case, text
-from sqlalchemy.pool import QueuePool
+from sqlalchemy import func, or_, not_, and_, case, text
 from fastapi.middleware.gzip import GZipMiddleware
 from browser_pool import browser_pool
 import traceback
@@ -190,15 +189,6 @@ app.add_middleware(
 )
 
 app.add_middleware(GZipMiddleware, minimum_size=1000)
-
-engine = create_engine(
-    SQLALCHEMY_DATABASE_URL,
-    poolclass=QueuePool,
-    pool_size=10,
-    max_overflow=20,
-    pool_timeout=30,
-    pool_recycle=1800
-)
 
 # ==========================================
 # 2. 辅助类
