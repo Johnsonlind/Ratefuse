@@ -1,6 +1,8 @@
 // ==========================================
 // 榜单导出卡片组件
 // ==========================================
+import { posterPathToSiteUrl } from '../../api/image';
+
 interface ChartEntry {
   tmdb_id: number;
   rank: number;
@@ -25,28 +27,14 @@ export function ExportChartCard({
   layout = 'portrait'
 }: ExportChartCardProps) {
   const processedEntries = entries.map(entry => {
-    let posterUrl = entry.poster || '';
+    const posterUrl = entry.poster || '';
     if (!posterUrl || posterUrl.trim() === '') {
       return { ...entry, poster: '' };
     }
     if (posterUrl.startsWith('data:image/')) {
       return { ...entry, poster: posterUrl };
     }
-    if (posterUrl.startsWith('http')) {
-      return { ...entry, poster: `/api/image-proxy?url=${encodeURIComponent(posterUrl)}` };
-    }
-    if (posterUrl.startsWith('/api/image-proxy')) {
-      return { ...entry, poster: posterUrl };
-    }
-    if (posterUrl.startsWith('/tmdb-images/')) {
-      const fullUrl = `https://tmdb.ratefuse.cn/t/p${posterUrl.substring(12)}`;
-      return { ...entry, poster: `/api/image-proxy?url=${encodeURIComponent(fullUrl)}` };
-    }
-    if (posterUrl.startsWith('/')) {
-      const fullUrl = `https://tmdb.ratefuse.cn/t/p/w500${posterUrl}`;
-      return { ...entry, poster: `/api/image-proxy?url=${encodeURIComponent(fullUrl)}` };
-    }
-    return { ...entry, poster: `/api/image-proxy?url=${encodeURIComponent(posterUrl)}` };
+    return { ...entry, poster: posterPathToSiteUrl(posterUrl, 'w500') };
   });
 
   const isDark = typeof document !== 'undefined' && document.documentElement.getAttribute('data-theme') === 'dark';
