@@ -116,6 +116,11 @@ export async function fetchTMDBWithLanguageFallback(
         params.append('append_to_response', appendToResponse);
       }
 
+      const apiKey = import.meta.env.VITE_TMDB_API_KEY as string | undefined;
+      if (apiKey) {
+        params.append('api_key', apiKey);
+      }
+
       const response = await fetch(`${url}?${params.toString()}`, {
         signal: controller.signal,
       });
