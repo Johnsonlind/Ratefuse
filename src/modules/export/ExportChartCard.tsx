@@ -34,7 +34,7 @@ export function ExportChartCard({
     if (posterUrl.startsWith('data:image/')) {
       return { ...entry, poster: posterUrl };
     }
-    return { ...entry, poster: posterPathToSiteUrl(posterUrl, 'w500') };
+    return { ...entry, poster: posterPathToSiteUrl(posterUrl, 'original') };
   });
 
   const isDark = typeof document !== 'undefined' && document.documentElement.getAttribute('data-theme') === 'dark';
