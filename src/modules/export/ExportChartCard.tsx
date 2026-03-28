@@ -39,11 +39,11 @@ export function ExportChartCard({
       return { ...entry, poster: posterUrl };
     }
     if (posterUrl.startsWith('/tmdb-images/')) {
-      const fullUrl = `https://image.tmdb.org/t/p${posterUrl.substring(12)}`;
+      const fullUrl = `https://tmdb.ratefuse.cn/t/p${posterUrl.substring(12)}`;
       return { ...entry, poster: `/api/image-proxy?url=${encodeURIComponent(fullUrl)}` };
     }
     if (posterUrl.startsWith('/')) {
-      const fullUrl = `https://image.tmdb.org/t/p/w500${posterUrl}`;
+      const fullUrl = `https://tmdb.ratefuse.cn/t/p/w500${posterUrl}`;
       return { ...entry, poster: `/api/image-proxy?url=${encodeURIComponent(fullUrl)}` };
     }
     return { ...entry, poster: `/api/image-proxy?url=${encodeURIComponent(posterUrl)}` };
