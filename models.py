@@ -2,6 +2,7 @@
 # 数据模型层（ORM）
 # ==========================================
 import os
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, ForeignKey, Boolean, Text, UniqueConstraint, text, BigInteger
@@ -11,7 +12,21 @@ from datetime import datetime
 
 load_dotenv()
 
-SQLALCHEMY_DATABASE_URL = os.getenv("SQLALCHEMY_DATABASE_URL", "")
+
+def _ensure_mysql_utf8mb4(url: str) -> str:
+    if not url or not url.startswith("mysql+"):
+        return url
+    parsed = urlparse(url)
+    q = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    enc = (q.get("charset") or "").lower()
+    if enc not in ("utf8mb4", "utf8"):
+        q["charset"] = "utf8mb4"
+    return urlunparse(parsed._replace(query=urlencode(q)))
+
+
+SQLALCHEMY_DATABASE_URL = _ensure_mysql_utf8mb4(
+    (os.getenv("SQLALCHEMY_DATABASE_URL") or "").strip()
+)
 if not SQLALCHEMY_DATABASE_URL:
     raise RuntimeError("缺少环境变量 SQLALCHEMY_DATABASE_URL，请在 .env 中配置数据库连接串")
 engine = create_engine(SQLALCHEMY_DATABASE_URL)
