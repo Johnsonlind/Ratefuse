@@ -14,7 +14,7 @@ const downscaleTmdb = (url: string) => {
   const tmdbPattern = /https?:\/\/image\.tmdb\.org\/t\/p\/(original|w\d+)(\/.+)/;
   const match = url.match(tmdbPattern);
   if (match) {
-    return `https://image.tmdb.org/t/p/w342${match[2]}`;
+    return `https://tmdb.ratefuse.cn/t/p/w342${match[2]}`;
   }
   if (url.startsWith('/tmdb-images/')) {
     return url.replace(/\/tmdb-images\/(original|w\d+)\//, '/tmdb-images/w342/');
