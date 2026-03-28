@@ -140,6 +140,29 @@ TMDB_TOKEN = os.getenv("TMDB_TOKEN", "")
 TRAKT_CLIENT_ID = os.getenv("TRAKT_CLIENT_ID", "")
 TRAKT_BASE_URL = os.getenv("TRAKT_BASE_URL", "").rstrip("/")
 TMDB_API_BASE_URL = os.getenv("TMDB_API_BASE_URL", "").rstrip("/")
+TMDB_IMAGE_ORIGIN = os.getenv("TMDB_IMAGE_ORIGIN", "https://tmdb.ratefuse.cn").rstrip("/")
+
+def tmdb_image_poster_url(poster_path: str, size: str = "w500") -> str:
+    """TMDB poster_path → 镜像站完整图片 URL"""
+    if not poster_path:
+        return ""
+    p = poster_path if poster_path.startswith("/") else f"/{poster_path}"
+    return f"{TMDB_IMAGE_ORIGIN}/t/p/{size}{p}"
+
+def normalize_chart_entry_poster(poster: str) -> str:
+    """将裸 poster_path 规范为镜像站 URL"""
+    if not poster:
+        return ""
+    if (
+        poster.startswith("/tmdb-images/")
+        or poster.startswith("/tmdb/")
+        or poster.startswith("/api/")
+        or poster.startswith("http")
+        or "tmdb.ratefuse.cn" in poster
+    ):
+        return poster
+    p = poster if poster.startswith("/") else f"/{poster}"
+    return tmdb_image_poster_url(p, "w500")
 
 FRONTEND_URL = os.getenv(
     "FRONTEND_URL",
@@ -4742,7 +4765,7 @@ async def tmdb_enrich(tmdb_id: int, media_type: str):
         
         title = data.get("title") if media_type == "movie" else data.get("name")
         poster_path = data.get("poster_path")
-        poster = f"/tmdb-images/w500{poster_path}" if poster_path else ""
+        poster = tmdb_image_poster_url(poster_path, "w500") if poster_path else ""
         original_language = data.get("original_language", "")
         
         return {
@@ -4916,11 +4939,7 @@ def aggregate_top(
     result = []
     for tmdb_id in ranked_keys[:limit]:
         e = sample[int(tmdb_id)]
-        poster = e.poster or ""
-        if poster and not (poster.startswith("/tmdb-images/") or poster.startswith("/api/") or poster.startswith("http")):
-            if not poster.startswith("/"):
-                poster = "/" + poster
-            poster = f"/tmdb-images{poster}"
+        poster = normalize_chart_entry_poster(e.poster or "")
         result.append({"id": e.tmdb_id, "type": media_type, "title": e.title, "poster": poster})
     return result
 
@@ -4943,11 +4962,7 @@ def latest_chart_top_by_rank(
     rows = db.query(ChartEntry).join(sub, ChartEntry.id == sub.c.max_id).order_by(ChartEntry.rank.asc()).limit(limit).all()
     result = []
     for e in rows:
-        poster = e.poster or ""
-        if poster and not (poster.startswith("/tmdb-images/") or poster.startswith("/api/") or poster.startswith("http")):
-            if not poster.startswith("/"):
-                poster = "/" + poster
-            poster = f"/tmdb-images{poster}"
+        poster = normalize_chart_entry_poster(e.poster or "")
         result.append({
             "id": e.tmdb_id,
             "type": media_type,
@@ -5173,15 +5188,7 @@ async def get_public_charts(db: Session = Depends(get_db)):
 
             chart_entries = []
             for e in entries:
-                poster = e.poster or ""
-                if poster and not (
-                    poster.startswith("/tmdb-images/")
-                    or poster.startswith("/api/")
-                    or poster.startswith("http")
-                ):
-                    if not poster.startswith("/"):
-                        poster = "/" + poster
-                    poster = f"/tmdb-images{poster}"
+                poster = normalize_chart_entry_poster(e.poster or "")
 
                 chart_entries.append(
                     {
@@ -5269,11 +5276,7 @@ async def get_chart_detail(
         is_metacritic_top250 = backend_chart_name in metacritic_top250_charts
         
         for e in entries:
-            poster = e.poster or ""
-            if poster and not (poster.startswith("/tmdb-images/") or poster.startswith("/api/") or poster.startswith("http")):
-                if not poster.startswith("/"):
-                    poster = "/" + poster
-                poster = f"/tmdb-images{poster}"
+            poster = normalize_chart_entry_poster(e.poster or "")
             
             entry_media_type = getattr(e, 'media_type', None)
             if not media_type and entry_media_type:
