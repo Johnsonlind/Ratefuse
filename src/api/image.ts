@@ -5,12 +5,28 @@ import { TMDB } from './api';
 
 type ImageSize = keyof typeof TMDB.posterSizes;
 
+const TMDB_IMAGE_FILE_RE = /\.(?:jpe?g|png|webp|gif)$/i;
+
+function collapseTmdbImagePrefixes(input: string): string {
+  let p = input.replace(/\/tmdb-images\//g, '/tmdb/');
+  while (p.includes('/tmdb/tmdb/')) {
+    p = p.replace(/\/tmdb\/tmdb\//g, '/tmdb/');
+  }
+  return p;
+}
+
+function normalizeRelativeTmdbSitePath(input: string): string {
+  let p = input.startsWith('/') ? input : `/${input}`;
+  p = collapseTmdbImagePrefixes(p);
+  const tail = p.match(/\/(original|w\d+)\/([^/]+\.(?:jpe?g|png|webp|gif))$/i);
+  if (tail) {
+    return `/tmdb/${tail[1]}/${tail[2]}`;
+  }
+  return p;
+}
+
 export function toSiteTmdbImageUrl(input: string): string {
   if (!input) return input;
-  if (input.startsWith('/tmdb/')) return input;
-  if (input.startsWith('/tmdb-images/')) {
-    return `/tmdb/${input.slice('/tmdb-images/'.length)}`;
-  }
   if (input.startsWith('/api/image-proxy')) {
     try {
       const u = new URL(input, 'https://ratefuse.cn');
@@ -28,11 +44,14 @@ export function toSiteTmdbImageUrl(input: string): string {
         parsed.pathname.startsWith('/t/p/')
       ) {
         const rest = parsed.pathname.slice('/t/p/'.length);
-        return `/tmdb/${rest}`;
+        return normalizeRelativeTmdbSitePath(`/tmdb/${rest}`);
       }
     } catch {
     }
     return input;
+  }
+  if (input.startsWith('/')) {
+    return normalizeRelativeTmdbSitePath(input);
   }
   return input;
 }
@@ -53,18 +72,19 @@ export function posterPathToSiteUrl(poster: string, width: string): string {
     return toSiteTmdbImageUrl(poster);
   }
 
-  if (poster.startsWith('/tmdb-images/')) {
-    const path = poster.replace(/^\/tmdb-images\/(?:original|w\d+)/, '');
-    const suffix = path.startsWith('/') ? path : `/${path}`;
-    return `/tmdb/${width}${suffix}`;
+  const p = normalizeRelativeTmdbSitePath(poster.startsWith('/') ? poster : `/${poster}`);
+  const sized = p.match(/^\/tmdb\/(original|w\d+)\/(.+)$/i);
+  if (sized && TMDB_IMAGE_FILE_RE.test(sized[2])) {
+    return `/tmdb/${width}/${sized[2]}`;
   }
-
-  if (poster.startsWith('/tmdb/')) {
-    return poster;
+  if (/^\/[^/]+\.(?:jpe?g|png|webp|gif)$/i.test(p)) {
+    return `/tmdb/${width}${p}`;
   }
-
-  const p = poster.startsWith('/') ? poster : `/${poster}`;
-  return `/tmdb/${width}${p}`;
+  if (p.startsWith('/tmdb/')) {
+    return p;
+  }
+  const p2 = p.startsWith('/') ? p : `/${p}`;
+  return `/tmdb/${width}${p2}`;
 }
 
 export function getImageUrl(path: string | null, size: ImageSize = '中', type: 'poster' | 'profile' = 'poster'): string {
@@ -74,8 +94,19 @@ export function getImageUrl(path: string | null, size: ImageSize = '中', type: 
   if (path.startsWith('http')) {
     return toSiteTmdbImageUrl(path);
   }
-  if (!path.startsWith('/')) path = '/' + path;
-  return `/tmdb/${TMDB.posterSizes[size]}${path}`;
+  const p = normalizeRelativeTmdbSitePath(path.startsWith('/') ? path : `/${path}`);
+  const sz = TMDB.posterSizes[size];
+  const sized = p.match(/^\/tmdb\/(original|w\d+)\/(.+)$/i);
+  if (sized && TMDB_IMAGE_FILE_RE.test(sized[2])) {
+    return `/tmdb/${sz}/${sized[2]}`;
+  }
+  if (/^\/[^/]+\.(?:jpe?g|png|webp|gif)$/i.test(p)) {
+    return `/tmdb/${sz}${p}`;
+  }
+  if (p.startsWith('/tmdb/')) {
+    return p;
+  }
+  return `/tmdb/${sz}${p.startsWith('/') ? p : `/${p}`}`;
 }
 
 export async function getBase64Image(input: string | File): Promise<string> {
