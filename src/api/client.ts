@@ -3,15 +3,15 @@
 // ==========================================
 import axios from 'axios';
 import { getPrimaryLanguage } from './tmdbLanguageHelper';
+import { TMDB } from './api';
 
 export const tmdbClient = axios.create({
-  baseURL: '/api/tmdb-proxy',
+  baseURL: TMDB.baseUrl,
 });
 
 tmdbClient.interceptors.request.use((config) => {
-  if (config.params && config.params.api_key) {
-    delete config.params.api_key;
-  }
+  const key = import.meta.env.VITE_TMDB_API_KEY as string | undefined;
+  config.params = { ...(config.params || {}), ...(key ? { api_key: key } : {}) };
   return config;
 });
 
