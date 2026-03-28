@@ -599,7 +599,6 @@ async function exportWithSnapdom(element: HTMLElement, filename: string, isChart
   const imgElement = await snapdom.snapdom.toPng(element, {
     scale: scale,
     backgroundColor: backgroundColor,
-    useProxy: '/api/image-proxy?url={url}',
     embedFonts: true,
   });
   
