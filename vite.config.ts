@@ -35,6 +35,14 @@ export default defineConfig({
             }
           },
           {
+            urlPattern: /^https:\/\/tmdb\.ratefuse\.cn\/.*/i,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'tmdb-ratefuse-mirror',
+              expiration: { maxEntries: 200, maxAgeSeconds: 30 * 24 * 60 * 60 }
+            }
+          },
+          {
             urlPattern: /^\/tmdb\//i,
             handler: 'CacheFirst',
             options: {
