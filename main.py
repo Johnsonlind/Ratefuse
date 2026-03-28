@@ -11,6 +11,7 @@ from datetime import timezone
 from typing import Optional, Any
 from pydantic import BaseModel
 import hashlib
+import re
 import httpx
 import logging
 import mimetypes
@@ -52,7 +53,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from jose import JWTError, jwt
 import bcrypt
 from datetime import datetime, timedelta
-from urllib.parse import quote, urlparse, urlunparse
+from urllib.parse import parse_qs, quote, unquote, urlparse, urlunparse
 
 
 def _effective_redis_url() -> str:
@@ -115,7 +116,6 @@ from browser_pool import browser_pool
 import traceback
 import fcntl
 from sqlalchemy import desc
-import re
 
 # ==========================================
 # 1. 配置和初始化
@@ -141,10 +141,40 @@ TRAKT_BASE_URL = os.getenv("TRAKT_BASE_URL", "").rstrip("/")
 TMDB_API_BASE_URL = os.getenv("TMDB_API_BASE_URL", "").rstrip("/")
 TMDB_IMAGE_ORIGIN = os.getenv("TMDB_IMAGE_ORIGIN", "https://tmdb.ratefuse.cn").rstrip("/")
 
+
+def unwrap_tmdb_image_proxy(s: str) -> str:
+    """将错误拼接的 …/t/p/w500/api/image-proxy?url=… 或 /api/image-proxy?url=… 还原为 url 参数中的真实路径。"""
+    if not s or "image-proxy" not in s:
+        return s
+    try:
+        parsed = urlparse(s if "://" in s else f"http://p.local{s}")
+        qs = parse_qs(parsed.query)
+        if "url" not in qs or not qs["url"]:
+            return s
+        return unquote(qs["url"][0])
+    except Exception:
+        return s
+
+
+_TMDI_IMAGES_PREFIX = re.compile(r"^/tmdb-images/(?:original|w\d+)(/.+)$", re.I)
+
+
+def strip_tmdb_images_dev_prefix(poster_path: str) -> str:
+    """将 /tmdb-images/w500/file.jpg 转为 TMDB 风格的 /file.jpg，便于再接 /t/p/{size}。"""
+    if not poster_path:
+        return poster_path
+    m = _TMDI_IMAGES_PREFIX.match(poster_path if poster_path.startswith("/") else f"/{poster_path}")
+    if m:
+        return m.group(1)
+    return poster_path if poster_path.startswith("/") else f"/{poster_path}"
+
+
 def tmdb_image_poster_url(poster_path: str, size: str = "w500") -> str:
     """TMDB poster_path → 镜像站完整图片 URL"""
     if not poster_path:
         return ""
+    poster_path = unwrap_tmdb_image_proxy(poster_path)
+    poster_path = strip_tmdb_images_dev_prefix(poster_path)
     p = poster_path if poster_path.startswith("/") else f"/{poster_path}"
     return f"{TMDB_IMAGE_ORIGIN}/t/p/{size}{p}"
 
@@ -152,6 +182,7 @@ def normalize_chart_entry_poster(poster: str) -> str:
     """将裸 poster_path 规范为镜像站 URL"""
     if not poster:
         return ""
+    poster = unwrap_tmdb_image_proxy(poster)
     if (
         poster.startswith("/tmdb-images/")
         or poster.startswith("/tmdb/")
