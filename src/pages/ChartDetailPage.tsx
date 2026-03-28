@@ -167,7 +167,7 @@ export default function ChartDetailPage() {
                         >
                           {entry.poster ? (
                             <img
-                              src={posterPathToSiteUrl(entry.poster, 'w342')}
+                              src={posterPathToSiteUrl(entry.poster, 'w500')}
                               alt={entry.title}
                               className="w-full h-full object-cover transition-opacity duration-200 group-hover:scale-105"
                               loading={idx < 10 ? 'eager' : 'lazy'}
