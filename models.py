@@ -7,6 +7,7 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, ForeignKey, Boolean, Text, UniqueConstraint, text, BigInteger
 from sqlalchemy.orm import sessionmaker, relationship, declarative_base
+from sqlalchemy.pool import QueuePool
 from sqlalchemy.dialects.mysql import LONGTEXT
 from datetime import datetime
 
@@ -29,7 +30,14 @@ SQLALCHEMY_DATABASE_URL = _ensure_mysql_utf8mb4(
 )
 if not SQLALCHEMY_DATABASE_URL:
     raise RuntimeError("缺少环境变量 SQLALCHEMY_DATABASE_URL，请在 .env 中配置数据库连接串")
-engine = create_engine(SQLALCHEMY_DATABASE_URL)
+engine = create_engine(
+    SQLALCHEMY_DATABASE_URL,
+    poolclass=QueuePool,
+    pool_size=10,
+    max_overflow=20,
+    pool_timeout=30,
+    pool_recycle=1800,
+)
 SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
 
