@@ -24,7 +24,7 @@ export function Credits({ cast, crew, className }: CreditsProps) {
     if (!profilePath) {
       return `/default-avatar.png`;
     }
-    if (profilePath.includes('/api/image-proxy')) {
+    if (profilePath.includes('/tmdb/') || profilePath.includes('/tmdb-images/')) {
       return profilePath;
     }
     return getImageUrl(profilePath, '中', 'profile');
