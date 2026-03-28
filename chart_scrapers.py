@@ -1164,10 +1164,10 @@ class ChartScraper:
                     title = self._safe_get_title(info, title)
                     poster = info.get('poster_url', '')
                 else:
-                    poster = f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else ""
+                    poster = f"https://tmdb.ratefuse.cn/t/p/w500{poster_path}" if poster_path else ""
             except Exception as e:
                 logger.warning(f"TMDB Top 250 Movies 获取详细信息失败 (rank {rank}, tmdb_id {tmdb_id}): {e}")
-                poster = f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else ""
+                poster = f"https://tmdb.ratefuse.cn/t/p/w500{poster_path}" if poster_path else ""
             
             entries.append(
                 {
@@ -1244,10 +1244,10 @@ class ChartScraper:
                     title = self._safe_get_title(info, title)
                     poster = info.get('poster_url', '')
                 else:
-                    poster = f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else ""
+                    poster = f"https://tmdb.ratefuse.cn/t/p/w500{poster_path}" if poster_path else ""
             except Exception as e:
                 logger.warning(f"TMDB Top 250 TV Shows 获取详细信息失败 (rank {rank}, tmdb_id {tmdb_id}): {e}")
-                poster = f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else ""
+                poster = f"https://tmdb.ratefuse.cn/t/p/w500{poster_path}" if poster_path else ""
             
             entries.append(
                 {
@@ -3791,7 +3791,7 @@ class TMDBMatcher:
                     year = en_data.get("first_air_date", "")[:4] if en_data.get("first_air_date") else ""
                 
                 poster_path = en_data.get("poster_path", "")
-                poster_url = f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else ""
+                poster_url = f"https://tmdb.ratefuse.cn/t/p/w500{poster_path}" if poster_path else ""
                 
                 result = {
                     "type": media_type,
