@@ -51,10 +51,10 @@ type ChartEntry = { id: number; type: 'movie' | 'tv'; title: string; poster: str
 const downscaleTmdb = (url: string, size = DOWNSCALE_SIZE) => {
   const tmdbPattern = /https?:\/\/image\.tmdb\.org\/t\/p\/(original|w\d+)(\/.+)/;
   const match = url.match(tmdbPattern);
-  if (match) return `https://image.tmdb.org/t/p/${size}${match[2]}`;
+  if (match) return `https://tmdb.ratefuse.cn/t/p/${size}${match[2]}`;
   if (url.startsWith('/tmdb-images/')) {
     const path = url.replace(/^\/tmdb-images\/(?:original|w\d+)/, '');
-    return `https://image.tmdb.org/t/p/${size}${path}`;
+    return `https://tmdb.ratefuse.cn/t/p/${size}${path}`;
   }
   return url;
 };
