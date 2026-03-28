@@ -87,14 +87,17 @@ export default function AdminRatingInputPage() {
         case 'douban':
           payload.rating = formData.get('rating');
           payload.rating_people = formData.get('rating_people');
+          payload.url = formData.get('url');
           break;
         case 'imdb':
           payload.rating = formData.get('rating');
           payload.rating_people = formData.get('rating_people');
+          payload.url = formData.get('url');
           break;
         case 'letterboxd':
           payload.rating = formData.get('rating');
           payload.rating_count = formData.get('rating_count');
+          payload.url = formData.get('url');
           break;
         case 'rottentomatoes':
           payload.tomatometer = formData.get('tomatometer');
@@ -103,25 +106,29 @@ export default function AdminRatingInputPage() {
           payload.audience_avg = formData.get('audience_avg');
           payload.critics_count = formData.get('critics_count');
           payload.audience_count = formData.get('audience_count');
+          payload.url = formData.get('url');
           break;
         case 'metacritic':
           payload.metascore = formData.get('metascore');
           payload.userscore = formData.get('userscore');
           payload.critics_count = formData.get('critics_count');
           payload.users_count = formData.get('users_count');
+          payload.url = formData.get('url');
           break;
         case 'tmdb':
           payload.rating = formData.get('rating');
           payload.vote_count = formData.get('vote_count');
+          payload.url = formData.get('url');
           break;
         case 'trakt':
           payload.rating = formData.get('rating');
           payload.votes = formData.get('votes');
+          payload.url = formData.get('url');
           break;
       }
       if (selectedMedia.type === 'tv' && SEASON_PLATFORMS.includes(activePlatform) && seasons.length > 0) {
         payload.seasons = seasons.map((s) => {
-          const base: Record<string, unknown> = { season_number: s.season_number };
+          const base: Record<string, unknown> = { season_number: s.season_number, url: s.url ?? '' };
           if (activePlatform === '豆瓣') {
             base.rating = s.rating ?? '';
             base.rating_people = s.rating_people ?? '';
