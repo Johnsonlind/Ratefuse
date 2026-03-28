@@ -3,7 +3,7 @@
 // ==========================================
 import { type ClassValue, clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
-import { TMDB } from '../../api/api';
+import { toSiteTmdbImageUrl } from '../../api/image';
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -41,8 +41,10 @@ export function formatDate(dateString: string): string {
 }
 
 export function getImageUrl(path: string): string {
+  if (!path) return '';
+  if (path.startsWith('http')) return toSiteTmdbImageUrl(path);
   const p = path.startsWith('/') ? path : `/${path}`;
-  return `${TMDB.imageOrigin}/t/p/w500${p}`;
+  return toSiteTmdbImageUrl(p);
 }
 
 export function formatRuntime(minutes: number): string {
