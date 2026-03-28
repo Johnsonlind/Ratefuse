@@ -24,7 +24,11 @@ export function Credits({ cast, crew, className }: CreditsProps) {
     if (!profilePath) {
       return `/default-avatar.png`;
     }
-    if (profilePath.includes('/tmdb/') || profilePath.includes('/tmdb-images/')) {
+    if (
+      profilePath.includes('/tmdb/') ||
+      profilePath.includes('/tmdb-images/') ||
+      profilePath.includes('tmdb.ratefuse.cn')
+    ) {
       return profilePath;
     }
     return getImageUrl(profilePath, '中', 'profile');
