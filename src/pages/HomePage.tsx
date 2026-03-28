@@ -21,6 +21,7 @@ import { authFetch } from '../api/authFetch';
 import { toast } from 'sonner';
 import { ConfirmDialog } from '../shared/ui/ConfirmDialog';
 import { toSiteTmdbImageUrl } from '../api/image';
+import { buildTmdbApiUrl, TMDB } from '../api/api';
 
 const DOWNSCALE_SIZE = 'w500';
 const HERO_IMAGE_SIZE = 'original';
@@ -52,14 +53,14 @@ type ChartEntry = { id: number; type: 'movie' | 'tv'; title: string; poster: str
 const downscaleTmdb = (url: string, size = DOWNSCALE_SIZE) => {
   const tmdbPattern = /https?:\/\/image\.tmdb\.org\/t\/p\/(original|w\d+)(\/.+)/;
   const match = url.match(tmdbPattern);
-  if (match) return `https://tmdb.ratefuse.cn/t/p/${size}${match[2]}`;
+  if (match) return `${TMDB.imageOrigin}/t/p/${size}${match[2]}`;
   if (url.startsWith('/tmdb-images/')) {
     const path = url.replace(/^\/tmdb-images\/(?:original|w\d+)/, '');
-    return `https://tmdb.ratefuse.cn/t/p/${size}${path}`;
+    return `${TMDB.imageOrigin}/t/p/${size}${path}`;
   }
   if (url.startsWith('/tmdb/')) {
     const path = url.replace(/^\/tmdb\/(?:original|w\d+)/, '');
-    return `https://tmdb.ratefuse.cn/t/p/${size}${path}`;
+    return `${TMDB.imageOrigin}/t/p/${size}${path}`;
   }
   return url;
 };
@@ -79,7 +80,8 @@ const resolveHeroImageUrl = (url: string) => {
 
 const toTmdbImagePath = (path: string | null | undefined, size = 'original') => {
   if (!path) return '';
-  return `/tmdb-images/${size}${path}`;
+  const p = path.startsWith('/') ? path : `/${path}`;
+  return `${TMDB.imageOrigin}/t/p/${size}${p}`;
 };
 
 const shuffle = <T,>(arr: T[]) => [...arr].sort(() => Math.random() - 0.5);
@@ -625,7 +627,11 @@ function HeroCarousel({
       queryKey: ['hero-detail', item.type, item.id, 'poster-hero'],
       queryFn: async () => {
         const res = await fetch(
-          `/api/tmdb-proxy/${item.type}/${item.id}?language=zh-CN&append_to_response=images&include_image_language=zh,cn,${NO_LANG},en`
+          buildTmdbApiUrl(`${item.type}/${item.id}`, {
+            language: 'zh-CN',
+            append_to_response: 'images',
+            include_image_language: `zh,cn,${NO_LANG},en`,
+          })
         );
         if (!res.ok) throw new Error('加载轮播详情失败');
         const data = await res.json();
