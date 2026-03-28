@@ -9,18 +9,7 @@ import { ArrowLeft } from 'lucide-react';
 import { useAggressiveImagePreload } from '../shared/hooks/useAggressiveImagePreload';
 import { PageShell } from '../modules/layout/PageShell';
 import { usePageMeta } from '../shared/hooks/usePageMeta';
-
-const downscaleTmdb = (url: string) => {
-  const tmdbPattern = /https?:\/\/image\.tmdb\.org\/t\/p\/(original|w\d+)(\/.+)/;
-  const match = url.match(tmdbPattern);
-  if (match) {
-    return `https://tmdb.ratefuse.cn/t/p/w342${match[2]}`;
-  }
-  if (url.startsWith('/tmdb-images/')) {
-    return url.replace(/\/tmdb-images\/(original|w\d+)\//, '/tmdb-images/w342/');
-  }
-  return url;
-};
+import { posterPathToSiteUrl } from '../api/image';
 
 const PLATFORM_LOGOS: Record<string, string> = {
   '豆瓣': '/logos/douban.png',
@@ -178,11 +167,7 @@ export default function ChartDetailPage() {
                         >
                           {entry.poster ? (
                             <img
-                              src={
-                                /^(http|\/api|\/tmdb-images)/.test(entry.poster)
-                                  ? downscaleTmdb(entry.poster)
-                                  : `/api/image-proxy?url=${encodeURIComponent(downscaleTmdb(entry.poster))}`
-                              }
+                              src={posterPathToSiteUrl(entry.poster, 'w342')}
                               alt={entry.title}
                               className="w-full h-full object-cover transition-opacity duration-200 group-hover:scale-105"
                               loading={idx < 10 ? 'eager' : 'lazy'}
