@@ -14,7 +14,7 @@ export interface AdminSearchResult {
   tvShows: { results: AdminMediaItem[] };
 }
 
-function toPosterUrl(path: string | null, size = 'w342'): string {
+function toPosterUrl(path: string | null, size = 'w185'): string {
   if (!path) return '';
   const p = path.startsWith('/') ? path : `/${path}`;
   return `/tmdb/${size}${p}`;
