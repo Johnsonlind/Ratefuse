@@ -10,6 +10,7 @@ import { CardTabs } from '../../shared/ui/CardTabs';
 import { adminSearchMedia } from '../../api/adminSearch';
 import { ConfirmDialog } from '../../shared/ui/ConfirmDialog';
 import { formatChinaDateTime } from '../../shared/utils/time';
+import { posterPathToSiteUrl } from '../../api/image';
 
 interface MediaItem {
   id: number;
@@ -1358,13 +1359,7 @@ export default function AdminChartsPage() {
                                           <div className={`w-12 h-18 overflow-hidden rounded bg-gray-700`}>
                                             {current?.poster ? (
                                               <img
-                                                src={
-                                                  /^(http|\/api|\/tmdb-images)/.test(current.poster)
-                                                    ? current.poster
-                                                    : `/api/image-proxy?url=${encodeURIComponent(
-                                                        current.poster,
-                                                      )}`
-                                                }
+                                                src={posterPathToSiteUrl(current.poster, 'w342')}
                                                 alt="thumb"
                                                 className="w-full h-full object-cover"
                                               />
@@ -1496,11 +1491,7 @@ export default function AdminChartsPage() {
                                     <div className={`w-12 h-18 overflow-hidden rounded mb-1 bg-gray-700`}>
                                       {current?.poster ? (
                                         <img
-                                          src={
-                                            /^(http|\/api|\/tmdb-images)/.test(current.poster)
-                                              ? current.poster
-                                              : `/api/image-proxy?url=${encodeURIComponent(current.poster)}`
-                                          }
+                                          src={posterPathToSiteUrl(current.poster, 'w342')}
                                           alt="thumb"
                                           className="w-full h-full object-cover"
                                         />
