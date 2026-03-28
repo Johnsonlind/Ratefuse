@@ -7,7 +7,6 @@ type ImageSize = keyof typeof TMDB.posterSizes;
 
 const TMDB_IMAGE_FILE_RE = /\.(?:jpe?g|png|webp|gif)$/i;
 
-/** 开发环境或错误拼接可能产生 /api/image-proxy?url=… 或 …/t/p/w500/api/image-proxy?url=…，解包为内层真实路径 */
 function unwrapTmdbImageProxyUrl(input: string): string {
   if (!input || !input.includes('image-proxy')) return input;
   try {
