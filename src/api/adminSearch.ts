@@ -16,7 +16,8 @@ export interface AdminSearchResult {
 
 function toPosterUrl(path: string | null, size = 'w342'): string {
   if (!path) return '';
-  return `/api/image-proxy?url=${encodeURIComponent(`/tmdb-images/${size}${path}`)}`;
+  const p = path.startsWith('/') ? path : `/${path}`;
+  return `/tmdb/${size}${p}`;
 }
 
 function parseSearchQuery(query: string): {
