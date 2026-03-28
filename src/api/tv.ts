@@ -5,10 +5,11 @@ import { searchMedia } from './client';
 import { transformTMDBTVShow } from './transformers';
 import type { TVShow } from '../shared/types/media';
 import { fetchTMDBWithLanguageFallback } from './tmdbLanguageHelper';
+import { TMDB } from './api';
 
 export async function getTVShow(id: string): Promise<TVShow> {
   const data = await fetchTMDBWithLanguageFallback(
-    `/api/tmdb-proxy/tv/${id}`,
+    `${TMDB.baseUrl}/tv/${id}`,
     {},
     'credits,external_ids'
   );
