@@ -3,7 +3,7 @@
 // ==========================================
 import { TMDB } from './api';
 
-const TMDB_IMAGE_BASE = 'https://image.tmdb.org/t/p';
+const TMDB_IMAGE_BASE = 'https://tmdb.ratefuse.cn/t/p';
 
 type ImageSize = keyof typeof TMDB.posterSizes;
 
@@ -12,7 +12,7 @@ export function getImageUrl(path: string | null, size: ImageSize = '中', type: 
     return type === 'poster' ? '/placeholder-poster.png' : '/placeholder-avatar.png';
   }
   if (path.startsWith('http')) {
-    if (path.includes('image.tmdb.org')) return path;
+    if (path.includes('tmdb.ratefuse.cn')) return path;
     return `/api/image-proxy?url=${encodeURIComponent(path)}`;
   }
   if (!path.startsWith('/')) path = '/' + path;
