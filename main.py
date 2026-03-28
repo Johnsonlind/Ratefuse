@@ -2960,112 +2960,6 @@ async def tmdb_proxy(path: str, request: Request):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"代理请求失败: {str(e)}")
 
-@app.get("/api/image-proxy")
-async def image_proxy(url: str, response: Response):
-    try:
-        if url.startswith('/tmdb-images/'):
-            url = f"https://tmdb.ratefuse.cn/t/p{url[12:]}"
-        elif url.startswith('/tmdb/'):
-            url = f"https://tmdb.ratefuse.cn/t/p{url[5:]}"
-        
-        if not url.startswith("http"):
-            raise HTTPException(status_code=400, detail="Invalid image url")
-
-        url_hash = hashlib.md5(url.encode('utf-8')).hexdigest()
-        cache_key = f"imgbin:{url_hash}"
-        etag = f'W/"{url_hash}"'
-
-        cached_item = None
-        if redis:
-            try:
-                cached_raw = await redis.get(cache_key)
-                if cached_raw:
-                    cached_item = json.loads(cached_raw)
-            except Exception as e:
-                print(f"[Redis] 读取失败: {e}")
-
-        if cached_item:
-            try:
-                img_bytes = base64.b64decode(cached_item.get('data', ''))
-                content_type = cached_item.get('content_type', 'image/jpeg')
-
-                print(f"[ImageProxy] HIT: {url}")
-
-                headers = {
-                    "Cache-Control": "public, max-age=31536000, immutable",
-                    "ETag": etag,
-                    "Content-Type": content_type,
-                }
-                return Response(content=img_bytes, media_type=content_type, headers=headers)
-            except Exception as e:
-                print(f"[Redis] 解析失败，忽略缓存: {e}")
-
-        print(f"[ImageProxy] FETCH: {url}")
-
-        timeout = aiohttp.ClientTimeout(total=10)
-
-        async with aiohttp.ClientSession(
-            timeout=timeout,
-            connector=aiohttp.TCPConnector(ssl=False)
-        ) as session:
-            try:
-                async with session.get(url) as img_response:
-                    if img_response.status != 200:
-                        print(f"❌ 图片获取失败: {img_response.status}, URL: {url}")
-                        raise HTTPException(status_code=img_response.status, detail="图片获取失败")
-
-                    content_type = img_response.headers.get("Content-Type", "")
-
-                    if not content_type.startswith("image/"):
-                        text = await img_response.text()
-                        print(f"❌ 非图片响应: {url}, 返回: {text[:200]}")
-                        raise HTTPException(status_code=502, detail="Upstream did not return image")
-
-                    image_data = await img_response.read()
-
-                    if len(image_data) < 100:
-                        print(f"❌ 图片数据异常过小: {url}")
-                        raise HTTPException(status_code=502, detail="Invalid image data")
-
-                    if redis:
-                        try:
-                            if len(image_data) <= 5 * 1024 * 1024:
-                                await redis.setex(
-                                    cache_key,
-                                    31536000,
-                                    json.dumps({
-                                        'content_type': content_type,
-                                        'data': base64.b64encode(image_data).decode('utf-8')
-                                    })
-                                )
-                            else:
-                                print(f"[Redis] 图片太大，不缓存: {url} ({len(image_data)/1024/1024:.2f} MB)")
-                        except Exception as e:
-                            print(f"[Redis] 写入失败: {url}, 错误: {e}")
-
-                    headers = {
-                        "Cache-Control": "public, max-age=31536000, immutable",
-                        "ETag": etag,
-                        "Content-Type": content_type,
-                    }
-
-                    return Response(content=image_data, media_type=content_type, headers=headers)
-
-            except aiohttp.ClientError as client_error:
-                print(f"AIOHTTP客户端错误: {str(client_error)}, URL: {url}")
-                raise HTTPException(status_code=500, detail=f"图片获取失败: {str(client_error)}")
-
-            except asyncio.TimeoutError:
-                print(f"请求超时: URL: {url}")
-                raise HTTPException(status_code=504, detail="图片请求超时")
-
-    except HTTPException:
-        raise
-
-    except Exception as e:
-        print(f"图片代理失败: {str(e)}, URL: {url}")
-        raise HTTPException(status_code=500, detail=f"图片代理失败: {str(e)}")
-
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
     return JSONResponse(
@@ -3075,7 +2969,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
             "Cache-Control": "no-store, no-cache, must-revalidate"
         }
     )
-    
+
 @router.get("/api/trakt-proxy/{path:path}")
 async def trakt_proxy(path: str, request: Request):
     try:
