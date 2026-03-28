@@ -5,10 +5,11 @@ import { searchMedia } from './client';
 import { transformTMDBMovie } from './transformers';
 import type { Movie } from '../shared/types/media';
 import { fetchTMDBWithLanguageFallback } from './tmdbLanguageHelper';
+import { TMDB } from './api';
 
 export async function getMovie(id: string): Promise<Movie> {
   const data = await fetchTMDBWithLanguageFallback(
-    `/api/tmdb-proxy/movie/${id}`,
+    `${TMDB.baseUrl}/movie/${id}`,
     {},
     'credits,release_dates'
   );
