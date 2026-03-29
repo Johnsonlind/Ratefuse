@@ -9,7 +9,7 @@ import { ArrowLeft } from 'lucide-react';
 import { useAggressiveImagePreload } from '../shared/hooks/useAggressiveImagePreload';
 import { PageShell } from '../modules/layout/PageShell';
 import { usePageMeta } from '../shared/hooks/usePageMeta';
-import { posterPathToSiteUrl } from '../api/image';
+import { toSiteRelativePosterSrc } from '../api/image';
 
 const PLATFORM_LOGOS: Record<string, string> = {
   '豆瓣': '/logos/douban.png',
@@ -146,7 +146,7 @@ export default function ChartDetailPage() {
             </div>
           ) : (
             <div className="glass-card rounded-2xl p-3 sm:p-6">
-              <div className="grid grid-cols-3 min-[420px]:grid-cols-4 sm:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-2 sm:gap-3" style={{ contain: 'layout style' }}>
+              <div className="grid grid-cols-3 min-[420px]:grid-cols-4 sm:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-2 sm:gap-3">
                 {displayedEntries.map((entry, idx) => {
                   const mediaType = entry.media_type || 
                     (data.media_type === 'both' ? 'movie' : data.media_type);
@@ -158,7 +158,6 @@ export default function ChartDetailPage() {
                     <div
                       key={`${entry.tmdb_id}-${entry.rank}`}
                       className="group relative"
-                      style={{ contain: 'layout style' }}
                     >
                       <Link to={linkPath}>
                         <div
@@ -167,26 +166,27 @@ export default function ChartDetailPage() {
                         >
                           {entry.poster ? (
                             <img
-                              src={posterPathToSiteUrl(entry.poster, 'w500')}
+                              src={toSiteRelativePosterSrc(entry.poster, 'w500')}
                               alt={entry.title}
                               className="w-full h-full object-cover transition-opacity duration-200 group-hover:scale-105"
-                              loading={idx < 36 ? 'eager' : 'lazy'}
-                              fetchPriority={idx < 12 ? 'high' : idx < 48 ? 'auto' : 'low'}
+                              loading={idx < 72 ? 'eager' : 'lazy'}
+                              fetchPriority={idx < 16 ? 'high' : idx < 64 ? 'auto' : 'low'}
                               style={{
                                 willChange: 'transform',
                                 minHeight: '100%',
                                 display: 'block',
-                                opacity: 0,
-                                transition: 'opacity 0.2s ease-in, transform 0.2s ease-out',
                               }}
                               decoding="async"
                               sizes="(min-width:1280px) 10vw, (min-width:1024px) 14vw, (min-width:640px) 20vw, 33vw"
+                              ref={(el) => {
+                                if (el?.complete && el.naturalWidth > 0) {
+                                  el.style.opacity = '1';
+                                }
+                              }}
                               onLoad={(e) => {
                                 const target = e.target as HTMLImageElement;
-                                if (target && target.complete && target.naturalWidth > 0) {
-                                  requestAnimationFrame(() => {
-                                    target.style.opacity = '1';
-                                  });
+                                if (target?.complete && target.naturalWidth > 0) {
+                                  target.style.opacity = '1';
                                 }
                               }}
                               onError={(e) => {
