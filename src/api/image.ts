@@ -74,6 +74,39 @@ export function toSiteTmdbImageUrl(input: string): string {
   return input;
 }
 
+export function toSiteRelativePosterSrc(poster: string, width: string): string {
+  if (!poster) return '';
+  if (poster.startsWith('data:')) return poster;
+
+  if (typeof window !== 'undefined' && poster.startsWith('http')) {
+    try {
+      const u = new URL(poster);
+      if (u.origin === window.location.origin && u.pathname.startsWith('/tmdb/')) {
+        return `${u.pathname}${u.search}`;
+      }
+      const marker = '/t/p/';
+      const idx = u.pathname.indexOf(marker);
+      if (
+        idx !== -1 &&
+        (u.hostname === 'tmdb.ratefuse.cn' || u.hostname === 'image.tmdb.org')
+      ) {
+        return `/tmdb/${u.pathname.slice(idx + marker.length)}`;
+      }
+    } catch {
+    }
+  }
+
+  const full = posterPathToSiteUrl(poster, width);
+  if (!full) return '';
+  const marker = '/t/p/';
+  const i = full.indexOf(marker);
+  if (i !== -1) {
+    return `/tmdb/${full.slice(i + marker.length)}`;
+  }
+  if (full.startsWith('/tmdb/')) return full;
+  return full;
+}
+
 export function posterPathToSiteUrl(poster: string, width: string): string {
   if (!poster) return '';
   poster = unwrapTmdbImageProxyUrl(poster);
@@ -132,7 +165,7 @@ export async function getBase64Image(input: string | File): Promise<string> {
 
 export async function getBase64ImageWithOptions(
   input: string | File,
-  options?: { cacheBust?: boolean }
+  options?: { cacheBust?: boolean; posterWidth?: string }
 ): Promise<string> {
   if (input instanceof File) {
     return new Promise((resolve, reject) => {
@@ -143,11 +176,18 @@ export async function getBase64ImageWithOptions(
     });
   }
 
-  const imageUrl = toSiteTmdbImageUrl(input);
+  const posterWidth = options?.posterWidth ?? 'original';
+  const relative = toSiteRelativePosterSrc(input, posterWidth);
+  const imageUrl =
+    relative.startsWith('/tmdb/') || relative.startsWith('data:')
+      ? relative
+      : toSiteTmdbImageUrl(input);
 
   return new Promise((resolve, reject) => {
     const img = new Image();
-    img.crossOrigin = 'anonymous';
+    if (!imageUrl.startsWith('data:')) {
+      img.crossOrigin = 'anonymous';
+    }
 
     img.onload = () => {
       try {
@@ -165,7 +205,6 @@ export async function getBase64ImageWithOptions(
         ctx.drawImage(img, 0, 0);
 
         const base64 = canvas.toDataURL('image/png');
-        console.log('Base64 conversion successful (PNG format)');
         resolve(base64);
       } catch (error) {
         console.error('Error during base64 conversion:', error);
