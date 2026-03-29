@@ -420,9 +420,9 @@ export default function ChartsPage() {
                         (navigator.maxTouchPoints && navigator.maxTouchPoints > 2 && /MacIntel/.test(navigator.platform));
 
         const maxConcurrent = isMobile ? 4 : 10;
-        const timeout = isMobile ? 2000 : 3000;
-        const maxEntriesToConvert = 24;
-        const prepDeadline = Date.now() + 20000;
+        const timeout = isMobile ? 3500 : 4000;
+        const maxEntriesToConvert = 280;
+        const prepDeadline = Date.now() + 90000;
 
         const { getBase64Image } = await import('../api/image');
 
@@ -430,6 +430,31 @@ export default function ChartsPage() {
           .sort((a, b) => a.rank - b.rank)
           .filter(entry => entry.poster && entry.poster.trim() !== '')
           .slice(0, maxEntriesToConvert);
+
+        const applyBase64ToPosterImg = async (entry: (typeof entriesToConvert)[0], base64: string) => {
+          const key = `${entry.tmdb_id}-${entry.rank}`;
+          const img = element.querySelector(`img[data-export-poster-key="${key}"]`) as HTMLImageElement | null;
+          if (!img) {
+            console.warn(`导出: 未找到海报节点 (${key} ${entry.title})`);
+            return;
+          }
+          const parent = img.parentElement;
+          if (parent) {
+            parent.querySelectorAll('.placeholder').forEach((el) => el.remove());
+          }
+          img.style.display = 'block';
+          img.removeAttribute('width');
+          img.removeAttribute('height');
+          img.src = base64;
+          await new Promise<void>((resolve) => {
+            if (img.complete && img.naturalWidth > 0) resolve();
+            else {
+              img.onload = () => resolve();
+              img.onerror = () => resolve();
+              setTimeout(() => resolve(), timeout);
+            }
+          });
+        };
 
         for (let i = 0; i < entriesToConvert.length; i += maxConcurrent) {
           if (Date.now() >= prepDeadline) break;
@@ -443,22 +468,7 @@ export default function ChartsPage() {
                 posterBase64CacheRef.current.set(entry.poster!, base64);
               }
               if (Date.now() >= prepDeadline) return;
-              const images = element.getElementsByTagName('img');
-              for (let j = 0; j < images.length; j++) {
-                const img = images[j];
-                if (img.getAttribute('alt') === entry.title) {
-                  img.src = base64;
-                  await new Promise<void>((resolve) => {
-                    if (img.complete && img.naturalWidth > 0) resolve();
-                    else {
-                      img.onload = () => resolve();
-                      img.onerror = () => resolve();
-                      setTimeout(() => resolve(), timeout);
-                    }
-                  });
-                  break;
-                }
-              }
+              await applyBase64ToPosterImg(entry, base64);
             } catch (error) {
               console.warn(`海报转换失败 (${entry.title}):`, error);
             }
