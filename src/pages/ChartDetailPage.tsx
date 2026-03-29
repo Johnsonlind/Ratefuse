@@ -9,7 +9,7 @@ import { ArrowLeft } from 'lucide-react';
 import { useAggressiveImagePreload } from '../shared/hooks/useAggressiveImagePreload';
 import { PageShell } from '../modules/layout/PageShell';
 import { usePageMeta } from '../shared/hooks/usePageMeta';
-import { toSiteRelativePosterSrc } from '../api/image';
+import { posterPathToSiteUrl } from '../api/image';
 
 const PLATFORM_LOGOS: Record<string, string> = {
   '豆瓣': '/logos/douban.png',
@@ -166,7 +166,7 @@ export default function ChartDetailPage() {
                         >
                           {entry.poster ? (
                             <img
-                              src={toSiteRelativePosterSrc(entry.poster, 'w500')}
+                              src={posterPathToSiteUrl(entry.poster, 'w500')}
                               alt={entry.title}
                               className="w-full h-full object-cover transition-opacity duration-200 group-hover:scale-105"
                               loading={idx < 72 ? 'eager' : 'lazy'}
