@@ -173,6 +173,7 @@ export function ExportChartCard({
                             <img
                               src={entry.poster}
                               alt={entry.title}
+                              data-export-poster-key={`${entry.tmdb_id}-${entry.rank}`}
                               crossOrigin="anonymous"
                               loading="eager"
                               style={{ 
@@ -186,6 +187,7 @@ export function ExportChartCard({
                               }}
                               onError={(e) => {
                                 const target = e.target as HTMLImageElement;
+                                if (target.src.startsWith('data:')) return;
                                 target.style.display = 'none';
                                 const parent = target.parentElement;
                                 if (parent && !parent.querySelector('.placeholder')) {
@@ -495,6 +497,7 @@ export function ExportChartCard({
                     <img
                       src={top1Entry.poster}
                       alt={top1Entry.title}
+                      data-export-poster-key={`${top1Entry.tmdb_id}-${top1Entry.rank}`}
                       crossOrigin="anonymous"
                       loading="eager"
                       style={{ 
@@ -592,6 +595,7 @@ export function ExportChartCard({
                             <img
                               src={entry.poster}
                               alt={entry.title}
+                              data-export-poster-key={`${entry.tmdb_id}-${entry.rank}`}
                               crossOrigin="anonymous"
                               loading="eager"
                               style={{ 
@@ -602,10 +606,12 @@ export function ExportChartCard({
                               }}
                               onError={(e) => {
                                 const target = e.target as HTMLImageElement;
+                                if (target.src.startsWith('data:')) return;
                                 target.style.display = 'none';
                                 const parent = target.parentElement;
                                 if (parent && !parent.querySelector('.placeholder')) {
                                   const placeholder = document.createElement('div');
+                                  placeholder.className = 'placeholder';
                                   placeholder.style.width = '100%';
                                   placeholder.style.height = '100%';
                                   placeholder.style.display = 'flex';
