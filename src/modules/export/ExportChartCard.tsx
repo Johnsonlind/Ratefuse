@@ -1,7 +1,7 @@
 // ==========================================
 // 榜单导出卡片组件
 // ==========================================
-import { toSiteRelativePosterSrc } from '../../api/image';
+import { posterPathToSiteUrl } from '../../api/image';
 
 interface ChartEntry {
   tmdb_id: number;
@@ -34,7 +34,7 @@ export function ExportChartCard({
     if (posterUrl.startsWith('data:image/')) {
       return { ...entry, poster: posterUrl };
     }
-    return { ...entry, poster: toSiteRelativePosterSrc(posterUrl, 'original') };
+    return { ...entry, poster: posterPathToSiteUrl(posterUrl, 'original)') };
   });
 
   const isDark = typeof document !== 'undefined' && document.documentElement.getAttribute('data-theme') === 'dark';
