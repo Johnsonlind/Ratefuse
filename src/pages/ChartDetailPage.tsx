@@ -1,7 +1,7 @@
 // ==========================================
 // 榜单详情页
 // ==========================================
-import { useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { MiniFavoriteButton } from '../modules/favorite/MiniFavoriteButton';
@@ -10,6 +10,9 @@ import { useAggressiveImagePreload } from '../shared/hooks/useAggressiveImagePre
 import { PageShell } from '../modules/layout/PageShell';
 import { usePageMeta } from '../shared/hooks/usePageMeta';
 import { posterPathToSiteUrl } from '../api/image';
+import { TMDB } from '../api/api';
+
+const POSTER_WIDTH = 'w500' as const;
 
 const PLATFORM_LOGOS: Record<string, string> = {
   '豆瓣': '/logos/douban.png',
@@ -75,6 +78,20 @@ export default function ChartDetailPage() {
   });
 
   useAggressiveImagePreload(contentRef, false);
+
+  useEffect(() => {
+    const origin = new URL(TMDB.imageOrigin).origin;
+    const id = 'chart-detail-preconnect-tmdb';
+    if (document.getElementById(id)) return;
+    const link = document.createElement('link');
+    link.id = id;
+    link.rel = 'preconnect';
+    link.href = origin;
+    document.head.appendChild(link);
+    return () => {
+      link.remove();
+    };
+  }, []);
 
   if (isLoading) {
     return (
@@ -149,7 +166,7 @@ export default function ChartDetailPage() {
           ) : (
             <div className="glass-card rounded-2xl p-3 sm:p-6">
               <div className="grid grid-cols-3 min-[420px]:grid-cols-4 sm:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-2 sm:gap-3">
-                {displayedEntries.map((entry, idx) => {
+                {displayedEntries.map((entry) => {
                   const mediaType = entry.media_type || 
                     (data.media_type === 'both' ? 'movie' : data.media_type);
                   const linkPath = mediaType === 'movie' 
@@ -168,18 +185,17 @@ export default function ChartDetailPage() {
                         >
                           {entry.poster ? (
                             <img
-                              src={posterPathToSiteUrl(entry.poster, 'w500')}
+                              src={posterPathToSiteUrl(entry.poster, POSTER_WIDTH)}
                               alt={entry.title}
                               className="w-full h-full object-cover transition-opacity duration-200 group-hover:scale-105"
-                              loading={idx < 96 ? 'eager' : 'lazy'}
-                              fetchPriority={idx < 24 ? 'high' : idx < 96 ? 'auto' : 'low'}
+                              loading="eager"
                               style={{
                                 willChange: 'transform',
                                 minHeight: '100%',
                                 display: 'block',
                               }}
                               decoding="async"
-                              sizes="(min-width:1280px) 10vw, (min-width:1024px) 12vw, (min-width:640px) 16vw, 33vw"
+                              sizes="(min-width:1280px) 10vw, (min-width:1024px) 14vw, (min-width:640px) 20vw, 33vw"
                               onError={(e) => {
                                 const target = e.target as HTMLImageElement;
                                 if (target) {
