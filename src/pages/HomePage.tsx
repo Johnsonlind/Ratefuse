@@ -384,7 +384,7 @@ function TopHorizontalSection({
         >
           {items.map((item, idx) => (
             <div key={`${item.type}-${item.id}`} className={desktop ? 'min-w-0' : 'shrink-0'}>
-              <TopChartCard item={item} eager={idx === 0} compact={desktop} />
+              <TopChartCard item={item} eager={!desktop || idx === 0} compact={desktop} />
             </div>
           ))}
         </div>
@@ -1046,7 +1046,7 @@ function HeroCarousel({
           </div>
 
           {/* 右侧轮播区域（三张卡片） */}
-          <div className="flex min-h-0 min-w-0 flex-1 flex-col items-center justify-start max-lg:mt-10 lg:justify-center lg:flex-[0.85] lg:max-w-[min(44vw,440px)]">
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col items-center justify-start max-lg:mt-20 lg:justify-center lg:flex-[0.85] lg:max-w-[min(44vw,440px)]">
             <div className="relative flex w-full items-center justify-center py-3 sm:py-6 max-lg:py-0 max-lg:pb-5">
               <div
                 className="relative flex w-full max-w-full items-center justify-center max-lg:min-h-[clamp(240px,38vh,380px)] lg:min-h-[clamp(280px,45vh,460px)]"
@@ -1142,7 +1142,7 @@ function HeroCarousel({
             </div>
 
             {/* 指示器 */}
-            <div className="relative z-20 mt-5 flex shrink-0 justify-center gap-2 pb-1 pt-1 max-lg:mt-20 lg:mt-0 lg:pb-0 lg:pt-2">
+            <div className="relative z-20 mt-32 flex shrink-0 justify-center gap-2 pb-1 pt-1 max-lg:mt-19 lg:mt-0 lg:pb-0 lg:pt-2">
               {Array.from({ length: currentSegmentLength }, (_, idx) => (
                 <button
                   key={idx}
@@ -1175,7 +1175,7 @@ function HeroCarousel({
         </div>
 
         {/* 底部移动端榜单 */}
-        <div className="shrink-0 border-t border-white/5 px-4 pb-8 pt-8 max-lg:border-t-0 max-lg:pt-6 lg:hidden">
+        <div className="shrink-0 border-t border-white/5 px-4 pb-8 pt-8 max-lg:border-t-0 max-lg:pt-5 lg:hidden">
           <TopSectionsPanel chartData={chartData} isLoading={chartsLoading} variant="mobile" />
         </div>
       </div>
