@@ -11,11 +11,11 @@ import { ExportChartCard } from '../modules/export/ExportChartCard';
 import { useAggressiveImagePreload } from '../shared/hooks/useAggressiveImagePreload';
 import { PageShell } from '../modules/layout/PageShell';
 import { usePageMeta } from '../shared/hooks/usePageMeta';
-import { toSiteRelativePosterSrc } from '../api/image';
+import { posterPathToSiteUrl } from '../api/image';
 
 const DOWNSCALE_SIZE = 'w500';
 
-const resolvePosterUrl = (poster: string) => toSiteRelativePosterSrc(poster, DOWNSCALE_SIZE);
+const resolvePosterUrl = (poster: string) => posterPathToSiteUrl(poster, DOWNSCALE_SIZE);
 
 // 榜单顺序
 const CHART_ORDER = ['豆瓣', 'IMDb', 'Rotten Tomatoes', 'Metacritic', 'Letterboxd', 'TMDB', 'Trakt'];
