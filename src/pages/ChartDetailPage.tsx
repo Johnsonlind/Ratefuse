@@ -70,6 +70,8 @@ export default function ChartDetailPage() {
     },
     enabled: !!platform && !!chartName,
     placeholderData: (previousData) => previousData,
+    staleTime: 5 * 60 * 1000,
+    gcTime: 30 * 60 * 1000,
   });
 
   useAggressiveImagePreload(contentRef, false);
@@ -169,26 +171,15 @@ export default function ChartDetailPage() {
                               src={posterPathToSiteUrl(entry.poster, 'w500')}
                               alt={entry.title}
                               className="w-full h-full object-cover transition-opacity duration-200 group-hover:scale-105"
-                              loading={idx < 72 ? 'eager' : 'lazy'}
-                              fetchPriority={idx < 16 ? 'high' : idx < 64 ? 'auto' : 'low'}
+                              loading={idx < 96 ? 'eager' : 'lazy'}
+                              fetchPriority={idx < 24 ? 'high' : idx < 96 ? 'auto' : 'low'}
                               style={{
                                 willChange: 'transform',
                                 minHeight: '100%',
                                 display: 'block',
                               }}
                               decoding="async"
-                              sizes="(min-width:1280px) 10vw, (min-width:1024px) 14vw, (min-width:640px) 20vw, 33vw"
-                              ref={(el) => {
-                                if (el?.complete && el.naturalWidth > 0) {
-                                  el.style.opacity = '1';
-                                }
-                              }}
-                              onLoad={(e) => {
-                                const target = e.target as HTMLImageElement;
-                                if (target?.complete && target.naturalWidth > 0) {
-                                  target.style.opacity = '1';
-                                }
-                              }}
+                              sizes="(min-width:1280px) 10vw, (min-width:1024px) 12vw, (min-width:640px) 16vw, 33vw"
                               onError={(e) => {
                                 const target = e.target as HTMLImageElement;
                                 if (target) {
