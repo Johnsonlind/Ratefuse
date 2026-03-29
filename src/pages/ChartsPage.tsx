@@ -211,6 +211,7 @@ export default function ChartsPage() {
       }));
     },
     placeholderData: (previousData) => previousData,
+    staleTime: 60 * 1000,
   });
 
   useAggressiveImagePreload(contentRef, false);
@@ -296,23 +297,20 @@ export default function ChartsPage() {
     return [...ordered, ...others];
   }, [chartsByPlatform]);
 
-  const [activePlatform, setActivePlatform] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!platformsWithCharts.length) return;
-    const platformFromQuery = searchParams.get('platform');
-    setActivePlatform((prev) => {
-      if (platformFromQuery && platformsWithCharts.includes(platformFromQuery)) {
-        return platformFromQuery;
-      }
-      return prev && platformsWithCharts.includes(prev) ? prev : platformsWithCharts[0];
-    });
+  const activePlatform = useMemo(() => {
+    if (!platformsWithCharts.length) return null;
+    const q = searchParams.get('platform');
+    if (q && platformsWithCharts.includes(q)) return q;
+    return platformsWithCharts[0];
   }, [platformsWithCharts, searchParams]);
 
-  const handlePlatformChange = useCallback((platform: string) => {
-    setActivePlatform(platform);
-    setSearchParams({ platform }, { replace: true });
-  }, [setSearchParams]);
+  const handlePlatformChange = useCallback(
+    (platform: string) => {
+      setSearchParams({ platform }, { replace: true });
+    },
+    [setSearchParams],
+  );
 
   const [exportingChart, setExportingChart] = useState<string | null>(null);
   const desktopStripRefs = useRef<Record<string, HTMLDivElement | null>>({});
@@ -649,10 +647,7 @@ export default function ChartsPage() {
                               {/* 移动端横滑 */}
                               <div
                                 className={`${isCoarsePointer ? 'flex sm:hidden' : 'hidden'} gap-2 overflow-x-auto overscroll-x-contain snap-x snap-mandatory pb-1 scrollbar-hide`}
-                                style={{
-                                  contain: 'layout style',
-                                  WebkitOverflowScrolling: 'touch',
-                                }}
+                                style={{ WebkitOverflowScrolling: 'touch' }}
                               >
                                 {displayEntries.map((entry, idx) => {
                                     const mediaType = entry.media_type || 
@@ -661,16 +656,15 @@ export default function ChartsPage() {
                                       ? `/movie/${entry.tmdb_id}` 
                                       : `/tv/${entry.tmdb_id}`;
                                     
-                                    const shouldUseEager = !isSafariMobile && idx < 20;
-                                    const fetchPriorityValue = isSafariMobile 
-                                      ? (idx < 5 ? 'high' : 'low')
+                                    const shouldUseEager = idx < 12;
+                                    const fetchPriorityValue = isSafariMobile
+                                      ? (idx < 8 ? 'high' : idx < 20 ? 'auto' : 'low')
                                       : (idx < 20 ? 'high' : idx < 60 ? 'auto' : 'low');
                                     
                                     return (
 <div
                                             key={`${entry.tmdb_id}-${entry.rank}`}
                                             className="group relative shrink-0 snap-start w-[31vw] min-w-[104px] max-w-[146px]"
-                                            style={{ contain: 'layout style' }}
                                           >
                                         <Link to={linkPath} className="block">
                                           <div
@@ -685,20 +679,10 @@ export default function ChartsPage() {
                                                 loading={shouldUseEager ? 'eager' : 'lazy'}
                                                 fetchPriority={fetchPriorityValue}
                                                 decoding="async"
-                                                sizes="(min-width:1280px) 10vw, (min-width:1024px) 14vw, (min-width:640px) 20vw, 33vw"
+                                                sizes="(max-width:639px) 33vw, 120px"
                                                 style={{
                                                   minHeight: '100%',
                                                   display: 'block',
-                                                  opacity: 0,
-                                                  transition: 'opacity 0.2s ease-in',
-                                                }}
-                                                onLoad={(e) => {
-                                                  const target = e.target as HTMLImageElement;
-                                                  if (target && target.complete && target.naturalWidth > 0) {
-                                                    requestAnimationFrame(() => {
-                                                      target.style.opacity = '1';
-                                                    });
-                                                  }
                                                 }}
                                                 onError={(e) => {
                                                   const target = e.target as HTMLImageElement;
@@ -773,7 +757,6 @@ export default function ChartsPage() {
                                     desktopStripRefs.current[chartKey] = el;
                                   }}
                                   className="grid grid-flow-col auto-cols-[minmax(96px,calc((100%-6.75rem)/10))] gap-2 sm:gap-3 overflow-x-auto scrollbar-hide pr-8"
-                                  style={{ contain: 'layout style' }}
                                 >
                                 {displayEntries.map((entry, idx) => {
                                     const mediaType = entry.media_type || 
@@ -782,9 +765,9 @@ export default function ChartsPage() {
                                       ? `/movie/${entry.tmdb_id}` 
                                       : `/tv/${entry.tmdb_id}`;
                                     
-                                    const shouldUseEager = !isSafariMobile && idx < 20;
-                                    const fetchPriorityValue = isSafariMobile 
-                                      ? (idx < 5 ? 'high' : 'low')
+                                    const shouldUseEager = idx < 12;
+                                    const fetchPriorityValue = isSafariMobile
+                                      ? (idx < 8 ? 'high' : idx < 20 ? 'auto' : 'low')
                                       : (idx < 20 ? 'high' : idx < 60 ? 'auto' : 'low');
                                     
                                     return (
@@ -792,7 +775,6 @@ export default function ChartsPage() {
                                             key={`${entry.tmdb_id}-${entry.rank}`}
                                             data-chart-card
                                             className="group relative"
-                                            style={{ contain: 'layout style' }}
                                           >
                                         <Link to={linkPath} className="block">
                                           <div
@@ -807,20 +789,10 @@ export default function ChartsPage() {
                                                 loading={shouldUseEager ? 'eager' : 'lazy'}
                                                 fetchPriority={fetchPriorityValue}
                                                 decoding="async"
-                                                sizes="(min-width:1280px) 10vw, (min-width:1024px) 14vw, (min-width:640px) 20vw, 33vw"
+                                                sizes="(min-width:1280px) 120px, (min-width:640px) 12vw, 96px"
                                                 style={{
                                                   minHeight: '100%',
                                                   display: 'block',
-                                                  opacity: 0,
-                                                  transition: 'opacity 0.2s ease-in',
-                                                }}
-                                                onLoad={(e) => {
-                                                  const target = e.target as HTMLImageElement;
-                                                  if (target && target.complete && target.naturalWidth > 0) {
-                                                    requestAnimationFrame(() => {
-                                                      target.style.opacity = '1';
-                                                    });
-                                                  }
                                                 }}
                                                 onError={(e) => {
                                                   const target = e.target as HTMLImageElement;
