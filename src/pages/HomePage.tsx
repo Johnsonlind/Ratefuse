@@ -986,7 +986,7 @@ function HeroCarousel({
 
   return (
     <section
-      className="relative z-[1] flex w-full min-h-0 flex-1 flex-col overflow-x-hidden max-lg:min-h-0 max-lg:overflow-y-visible lg:max-h-full lg:overflow-hidden"
+      className="relative z-[1] flex w-full min-h-0 flex-1 flex-col overflow-x-hidden max-lg:min-h-0 max-lg:[--home-nav-poster:clamp(0.375rem,1.6vw,0.5rem)] max-lg:[--home-poster-list-band:clamp(2.75rem,12vh,5.25rem)] max-lg:overflow-y-visible lg:max-h-full lg:overflow-hidden"
       onTouchStart={handleTouchStart}
       onTouchMove={handleTouchMove}
       onTouchEnd={handleTouchEnd}
@@ -1038,7 +1038,7 @@ function HeroCarousel({
         <div className="absolute inset-0 bg-black/50" />
       </div>
 
-      <div className="relative z-10 flex min-h-0 flex-1 flex-col max-lg:pt-[max(6.5rem,calc(env(safe-area-inset-top,0px)+5.25rem))] max-lg:pb-2 lg:pt-16 lg:h-full lg:max-h-full">
+      <div className="relative z-10 flex min-h-0 flex-1 flex-col max-lg:pt-[max(4.75rem,calc(env(safe-area-inset-top,0px)+3.5rem))] max-lg:pb-2 lg:pt-16 lg:h-full lg:max-h-full">
         <div className="flex min-h-0 flex-1 flex-col gap-3 px-4 pb-3 max-lg:gap-0 lg:flex-row lg:gap-6 lg:px-6 xl:gap-8 xl:px-8 lg:pb-4">
           {/* 左侧桌面端榜单 */}
           <div className="hidden min-h-0 min-w-0 flex-[1.15] flex-col gap-2 self-stretch lg:flex lg:overflow-visible">
@@ -1046,10 +1046,10 @@ function HeroCarousel({
           </div>
 
           {/* 右侧轮播区域（三张卡片） */}
-          <div className="flex min-h-0 min-w-0 flex-1 flex-col items-center justify-start max-lg:mt-20 lg:justify-center lg:flex-[0.85] lg:max-w-[min(44vw,440px)]">
-            <div className="relative flex w-full items-center justify-center py-3 sm:py-6 max-lg:py-0 max-lg:pb-5">
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col items-center justify-start max-lg:mt-[var(--home-nav-poster)] lg:justify-center lg:flex-[0.85] lg:max-w-[min(44vw,440px)]">
+            <div className="relative flex w-full items-center justify-center py-3 sm:py-6 max-lg:py-0">
               <div
-                className="relative flex w-full max-w-full items-center justify-center max-lg:min-h-[clamp(240px,38vh,380px)] lg:min-h-[clamp(280px,45vh,460px)]"
+                className="relative flex w-full max-w-full items-center justify-center max-lg:min-h-[calc(min(68vw,280px)*1.5)] sm:max-lg:min-h-[calc(min(48vw,320px)*1.5)] lg:min-h-[clamp(280px,45vh,460px)]"
                 style={{ perspective: '2000px', perspectiveOrigin: '50% 50%' }}
               >
                 {/* 三张卡片：左、中、右 */}
@@ -1141,8 +1141,7 @@ function HeroCarousel({
               </div>
             </div>
 
-            {/* 指示器 */}
-            <div className="relative z-20 mt-32 flex shrink-0 justify-center gap-2 pb-1 pt-1 max-lg:mt-19 lg:mt-0 lg:pb-0 lg:pt-2">
+            <div className="relative z-20 flex w-full shrink-0 justify-center gap-2 max-lg:min-h-[var(--home-poster-list-band)] max-lg:items-center max-lg:py-0 lg:mt-0 lg:min-h-0 lg:w-auto lg:items-center lg:pb-0 lg:pt-2">
               {Array.from({ length: currentSegmentLength }, (_, idx) => (
                 <button
                   key={idx}
@@ -1175,7 +1174,7 @@ function HeroCarousel({
         </div>
 
         {/* 底部移动端榜单 */}
-        <div className="shrink-0 border-t border-white/5 px-4 pb-8 pt-8 max-lg:border-t-0 max-lg:pt-5 lg:hidden">
+        <div className="shrink-0 border-t border-white/5 px-4 pb-8 pt-8 max-lg:border-t-0 max-lg:pt-0 lg:hidden">
           <TopSectionsPanel chartData={chartData} isLoading={chartsLoading} variant="mobile" />
         </div>
       </div>
