@@ -72,7 +72,7 @@ export default function ChartDetailPage() {
     placeholderData: (previousData) => previousData,
   });
 
-  useAggressiveImagePreload(contentRef, !isLoading && !!data);
+  useAggressiveImagePreload(contentRef, false);
 
   if (isLoading) {
     return (
@@ -170,8 +170,8 @@ export default function ChartDetailPage() {
                               src={posterPathToSiteUrl(entry.poster, 'w500')}
                               alt={entry.title}
                               className="w-full h-full object-cover transition-opacity duration-200 group-hover:scale-105"
-                              loading={idx < 10 ? 'eager' : 'lazy'}
-                              fetchPriority={idx < 10 ? 'high' : idx < 40 ? 'auto' : 'low'}
+                              loading={idx < 36 ? 'eager' : 'lazy'}
+                              fetchPriority={idx < 12 ? 'high' : idx < 48 ? 'auto' : 'low'}
                               style={{
                                 willChange: 'transform',
                                 minHeight: '100%',
