@@ -3,16 +3,17 @@
 // ==========================================
 import { useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { BarChart3, PenLine, Edit3, Eye, MoreHorizontal, ArrowRight, MessageCircle, Lock, Users } from 'lucide-react';
+import { BarChart3, PenLine, Edit3, Eye, MoreHorizontal, ArrowRight, MessageCircle, Lock, Users, Link2 } from 'lucide-react';
 
 const LINKS = [
+  { path: '/admin/users', label: '用户管理', desc: '按昵称搜索用户并进行封锁、删除等操作', icon: Users },
   { path: '/admin/charts', label: '榜单管理', desc: '管理各平台榜单、录入与更新', icon: BarChart3 },
   { path: '/admin/ratings/input', label: '评分手动录入', desc: '为影视添加各平台评分数据', icon: PenLine },
   { path: '/admin/ratings/edit', label: '评分数据修改', desc: '修改已有影视的各平台评分', icon: Edit3 },
-  { path: '/admin/users', label: '用户管理', desc: '按昵称搜索用户并进行封锁、删除等操作', icon: Users },
   { path: '/admin/platform-status', label: '平台锁定', desc: '查看并管理各平台抓取锁定状态', icon: Lock,},
-  { path: '/admin/detail-views', label: '访问记录', desc: '查看用户访问了哪些影视详情页', icon: Eye },
+  { path: '/admin/media-link-mapping', label: '链接映射库', desc: '管理各平台链接映射库', icon: Link2,},
   { path: '/admin/feedbacks', label: '用户反馈', desc: '查看并回复用户反馈', icon: MessageCircle },
+  { path: '/admin/detail-views', label: '访问记录', desc: '查看用户访问了哪些影视详情页', icon: Eye },
   { path: '/admin/other', label: '其他功能', desc: '更多管理功能敬请期待', icon: MoreHorizontal },
 ];
 
