@@ -164,11 +164,23 @@ function PlatformLinksCell({
   item: MediaLinkMappingItem;
   platform: 'douban' | 'letterboxd' | 'rottentomatoes' | 'metacritic';
 }) {
+  const isLocked = String(item.platform_lock_statuses?.[platform] || '').toLowerCase() === 'locked';
+  const lockTag = (
+    <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-200">
+      锁定
+    </span>
+  );
+
   if (
     item.media_type !== 'tv' ||
     (platform !== 'douban' && platform !== 'rottentomatoes' && platform !== 'metacritic')
   ) {
-    return <LinkCell href={buildPlatformLink(item, platform)} label="打开" />;
+    return (
+      <div className="flex items-center gap-1">
+        <LinkCell href={buildPlatformLink(item, platform)} label="打开" />
+        {isLocked ? lockTag : null}
+      </div>
+    );
   }
 
   const seriesHref = buildPlatformLink(item, platform);
@@ -184,6 +196,7 @@ function PlatformLinksCell({
 
   return (
     <div className="space-y-1">
+      {isLocked ? <div>{lockTag}</div> : null}
       {seriesHref && (
         <div className="flex items-center gap-1">
           <span className="text-xs text-gray-500 dark:text-gray-400">剧集</span>
@@ -610,7 +623,7 @@ export default function AdminMediaLinkMappingPage() {
                     <PlatformLinksCell item={item} platform="douban" />
                   </td>
                   <td className="px-4 py-3">
-                    <LinkCell href={buildPlatformLink(item, 'letterboxd')} label="打开" />
+                    <PlatformLinksCell item={item} platform="letterboxd" />
                   </td>
                   <td className="px-4 py-3">
                     <PlatformLinksCell item={item} platform="rottentomatoes" />
@@ -774,12 +787,6 @@ export default function AdminMediaLinkMappingPage() {
                     + 添加一季
                   </Button>
                 </div>
-                <div className="hidden sm:grid sm:grid-cols-[72px_minmax(0,1fr)_140px_92px] gap-2 text-xs text-gray-500 dark:text-gray-400">
-                  <div>季</div>
-                  <div>豆瓣分季评分链接</div>
-                  <div>豆瓣分季ID</div>
-                  <div className="text-right">操作</div>
-                </div>
                 {editDoubanSeasons.map((row, idx) => (
                   <div key={`edit-db-s-${idx}`} className="grid grid-cols-1 sm:grid-cols-[72px_minmax(0,1fr)_140px_92px] gap-2 items-end">
                     <Input label={idx === 0 ? '季' : undefined} value={String(row.season_number)} readOnly className="text-center" />
@@ -849,11 +856,6 @@ export default function AdminMediaLinkMappingPage() {
                     + 添加一季
                   </Button>
                 </div>
-                <div className="hidden sm:grid sm:grid-cols-[72px_minmax(0,1fr)_92px] gap-2 text-xs text-gray-500 dark:text-gray-400">
-                  <div>季</div>
-                  <div>分季评分链接</div>
-                  <div className="text-right">操作</div>
-                </div>
                 {editRtSeasons.map((row, idx) => (
                   <div key={`edit-rt-s-${idx}`} className="grid grid-cols-1 sm:grid-cols-[72px_minmax(0,1fr)_92px] gap-2 items-end">
                     <Input label={idx === 0 ? '季' : undefined} value={String(row.season_number)} readOnly className="text-center" />
@@ -909,11 +911,6 @@ export default function AdminMediaLinkMappingPage() {
                   >
                     + 添加一季
                   </Button>
-                </div>
-                <div className="hidden sm:grid sm:grid-cols-[72px_minmax(0,1fr)_92px] gap-2 text-xs text-gray-500 dark:text-gray-400">
-                  <div>季</div>
-                  <div>分季评分链接</div>
-                  <div className="text-right">操作</div>
                 </div>
                 {editMtcSeasons.map((row, idx) => (
                   <div key={`edit-mtc-s-${idx}`} className="grid grid-cols-1 sm:grid-cols-[72px_minmax(0,1fr)_92px] gap-2 items-end">
