@@ -22,6 +22,21 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+class _UvicornAccessPathFilter(logging.Filter):
+    def __init__(self, deny_substrings: list[str]):
+        super().__init__()
+        self._deny = [s for s in (deny_substrings or []) if s]
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            msg = record.getMessage()
+        except Exception:
+            msg = str(getattr(record, "msg", "") or "")
+        for s in self._deny:
+            if s in msg:
+                return False
+        return True
+
 def _request_trace_id(request: Optional["Request"]) -> str:
     if not request:
         return "-"
@@ -66,6 +81,19 @@ def _effective_redis_url() -> str:
     enc = quote(pw, safe="")
     new_netloc = f":{enc}@{p.netloc}"
     return urlunparse((p.scheme, new_netloc, p.path, p.params, p.query, p.fragment))
+
+def _strip_redis_password(url: str) -> str:
+    try:
+        p = urlparse(url)
+        if not p.netloc:
+            return url
+        if "@" not in p.netloc:
+            return url
+        _, hostpart = p.netloc.rsplit("@", 1)
+        return urlunparse((p.scheme, hostpart, p.path, p.params, p.query, p.fragment))
+    except Exception:
+        return url
+        
 from models import (
     engine,
     User,
@@ -86,6 +114,7 @@ from models import (
     MediaPlatformStatus,
     MediaPlatformStatusLog,
     TelegramFeedbackMapping,
+    MediaLinkMapping,
 )
 from sqlalchemy.orm import Session, selectinload
 from ratings import (
@@ -98,6 +127,10 @@ from ratings import (
     get_tmdb_http_client,
     is_platform_locked,
     update_platform_status_after_fetch,
+    build_direct_mapping_search_results,
+    douban_extract_rating_from_season_urls,
+    rt_extract_rating_from_season_urls,
+    metacritic_extract_rating_from_season_urls,
 )
 from redis import asyncio as aioredis
 import json
@@ -2373,6 +2406,235 @@ async def delete_notifications(
 # 7. 评分获取与图片代理
 # ==========================================
 
+def _mapping_row_to_dict(row: MediaLinkMapping) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "tmdb_id": row.tmdb_id,
+        "media_type": row.media_type,
+        "title": row.title,
+        "year": row.year,
+        "imdb_id": row.imdb_id,
+        "douban_id": row.douban_id,
+        "douban_url": row.douban_url,
+        "douban_seasons_json": row.douban_seasons_json,
+        "douban_seasons_ids_json": row.douban_seasons_ids_json,
+        "letterboxd_url": row.letterboxd_url,
+        "letterboxd_slug": row.letterboxd_slug,
+        "rotten_tomatoes_url": row.rotten_tomatoes_url,
+        "rotten_tomatoes_slug": row.rotten_tomatoes_slug,
+        "rotten_tomatoes_seasons_json": row.rotten_tomatoes_seasons_json,
+        "metacritic_url": row.metacritic_url,
+        "metacritic_slug": row.metacritic_slug,
+        "metacritic_seasons_json": row.metacritic_seasons_json,
+        "match_status": row.match_status,
+        "confidence": row.confidence,
+        "last_verified_at": _to_shanghai_iso(row.last_verified_at),
+        "created_at": _to_shanghai_iso(row.created_at),
+        "updated_at": _to_shanghai_iso(row.updated_at),
+    }
+
+_DOUBAN_ID_RE = re.compile(r"/subject/(\d+)")
+
+def _extract_douban_id_from_url(url: str) -> Optional[str]:
+    if not url:
+        return None
+    m = _DOUBAN_ID_RE.search(url)
+    return m.group(1) if m else None
+
+def _extract_letterboxd_slug_from_url(url: str) -> Optional[str]:
+    # https://letterboxd.com/film/<slug>/
+    try:
+        p = urlparse(url)
+        parts = [x for x in (p.path or "").split("/") if x]
+        if len(parts) >= 2 and parts[0] == "film":
+            return parts[1]
+    except Exception:
+        return None
+    return None
+
+def _extract_rt_slug_from_url(url: str) -> Optional[str]:
+    # https://www.rottentomatoes.com/<slug>
+    try:
+        p = urlparse(url)
+        path = (p.path or "").lstrip("/")
+        return path or None
+    except Exception:
+        return None
+
+def _extract_metacritic_slug_from_url(url: str) -> Optional[str]:
+    # https://www.metacritic.com/<slug>
+    try:
+        p = urlparse(url)
+        path = (p.path or "").lstrip("/")
+        return path or None
+    except Exception:
+        return None
+
+def _mapping_patch_from_platform_result(platform: str, media_type: str, rating_data: dict) -> dict[str, Any]:
+    url = str(rating_data.get("url") or "").strip()
+    patch: dict[str, Any] = {}
+
+    if platform == "imdb":
+        return {}
+
+    def _dump_seasons_json() -> Optional[str]:
+        if (media_type or "").lower() != "tv":
+            return None
+        seasons = rating_data.get("seasons")
+        if not isinstance(seasons, list) or not seasons:
+            return None
+        out: dict[str, str] = {}
+        for s in seasons:
+            if not isinstance(s, dict):
+                continue
+            sn = s.get("season_number")
+            su = str(s.get("url") or "").strip()
+            if not su:
+                continue
+            try:
+                sn_int = int(sn)
+            except Exception:
+                continue
+            if sn_int <= 0:
+                continue
+            out[str(sn_int)] = su
+        if not out:
+            return None
+        try:
+            return json.dumps(out, ensure_ascii=False)
+        except Exception:
+            return None
+    if platform == "douban":
+        if url:
+            patch["douban_url"] = url
+            patch["douban_id"] = _extract_douban_id_from_url(url) or patch.get("douban_id")
+        sj = _dump_seasons_json()
+        if sj:
+            patch["douban_seasons_json"] = sj
+            try:
+                season_map = json.loads(sj)
+                if isinstance(season_map, dict):
+                    ids_out: dict[str, str] = {}
+                    for sn_str, su in season_map.items():
+                        sid = _extract_douban_id_from_url(str(su or "")) if su else None
+                        if sid:
+                            ids_out[str(sn_str)] = sid
+                    if ids_out:
+                        patch["douban_seasons_ids_json"] = json.dumps(ids_out, ensure_ascii=False)
+            except Exception:
+                pass
+    elif platform == "letterboxd":
+        if url:
+            patch["letterboxd_url"] = url
+        slug = _extract_letterboxd_slug_from_url(url) if url else None
+        if slug:
+            patch["letterboxd_slug"] = slug
+    elif platform == "rottentomatoes":
+        if url:
+            patch["rotten_tomatoes_url"] = url
+        slug = _extract_rt_slug_from_url(url) if url else None
+        if slug:
+            patch["rotten_tomatoes_slug"] = slug
+        sj = _dump_seasons_json()
+        if sj:
+            patch["rotten_tomatoes_seasons_json"] = sj
+    elif platform == "metacritic":
+        if not url and (media_type or "").lower() == "tv":
+            seasons = rating_data.get("seasons")
+            if isinstance(seasons, list) and seasons:
+                for s in seasons:
+                    if isinstance(s, dict):
+                        su = str(s.get("url") or "").strip()
+                        if su:
+                            url = su
+                            break
+        if url:
+            patch["metacritic_url"] = url
+        slug = _extract_metacritic_slug_from_url(url) if url else None
+        if slug:
+            patch["metacritic_slug"] = slug
+        sj = _dump_seasons_json()
+        if sj:
+            patch["metacritic_seasons_json"] = sj
+    return patch
+
+def _upsert_media_link_mapping(
+    db: Session,
+    tmdb_info: dict,
+    patch: dict[str, Any],
+    *,
+    match_status: str,
+    confidence: Optional[float],
+    verified: bool,
+):
+    try:
+        tmdb_id = int(tmdb_info.get("id") or tmdb_info.get("tmdb_id"))
+    except Exception:
+        return
+    media_type = (tmdb_info.get("type") or tmdb_info.get("media_type") or "").lower()
+    if media_type not in ("movie", "tv"):
+        return
+
+    row = (
+        db.query(MediaLinkMapping)
+        .filter(MediaLinkMapping.tmdb_id == tmdb_id, MediaLinkMapping.media_type == media_type)
+        .one_or_none()
+    )
+    now = _now_utc_naive()
+    title = tmdb_info.get("zh_title") or tmdb_info.get("title") or tmdb_info.get("name")
+    year = tmdb_info.get("year")
+    try:
+        year_int = int(year) if year is not None and str(year).strip() else None
+    except Exception:
+        year_int = None
+
+    imdb_id = (tmdb_info.get("imdb_id") or "").strip() or None
+
+    if row is None:
+        row = MediaLinkMapping(
+            tmdb_id=tmdb_id,
+            media_type=media_type,
+            title=title,
+            year=year_int,
+            imdb_id=imdb_id,
+            match_status=match_status,
+            confidence=confidence,
+            last_verified_at=now if verified else None,
+            created_at=now,
+            updated_at=now,
+        )
+        for k, v in patch.items():
+            if hasattr(row, k):
+                setattr(row, k, v)
+        db.add(row)
+        try:
+            db.flush()
+            return
+        except Exception:
+            db.rollback()
+            row = (
+                db.query(MediaLinkMapping)
+                .filter(MediaLinkMapping.tmdb_id == tmdb_id, MediaLinkMapping.media_type == media_type)
+                .one_or_none()
+            )
+            if row is None:
+                raise
+
+    row.media_type = media_type
+    row.title = title or row.title
+    row.year = year_int if year_int is not None else row.year
+    row.imdb_id = imdb_id or row.imdb_id
+    row.match_status = match_status
+    row.confidence = confidence
+    row.updated_at = now
+    if verified:
+        row.last_verified_at = now
+    for k, v in patch.items():
+        if v is None:
+            continue
+        if hasattr(row, k):
+            setattr(row, k, v)
+
 @app.get("/")
 async def root():
     return {"status": "ok", "message": "RateFuse API is running"}
@@ -2576,15 +2838,51 @@ async def get_all_platform_ratings(
             return None
         
         from ratings import parallel_extract_ratings
+
+        mapping_row = None
+        try:
+            mapping_row = db.query(MediaLinkMapping).filter(MediaLinkMapping.tmdb_id == int(tmdb_info.get("id") or id)).one_or_none()
+        except Exception:
+            mapping_row = None
+        mapping_dict = _mapping_row_to_dict(mapping_row) if mapping_row else None
         
         try:
             all_ratings = await asyncio.wait_for(
-                parallel_extract_ratings(tmdb_info, tmdb_info["type"], request, douban_cookie),
+                parallel_extract_ratings(tmdb_info, tmdb_info["type"], request, douban_cookie, mapping=mapping_dict),
                 timeout=20.0
             )
         except asyncio.TimeoutError:
             logger.error("获取评分超时（>20秒）")
             raise HTTPException(status_code=504, detail="获取评分超时")
+
+        try:
+            ratings_dict = all_ratings if isinstance(all_ratings, dict) else None
+            if isinstance(ratings_dict, dict):
+                base_status = mapping_row.match_status if mapping_row else "auto"
+                for platform, data in ratings_dict.items():
+                    if not isinstance(data, dict):
+                        continue
+                    if data.get("status") != RATING_STATUS["SUCCESSFUL"]:
+                        continue
+                    patch = _mapping_patch_from_platform_result(platform, tmdb_info.get("type") or type, data)
+                    if not patch:
+                        continue
+                    ms = base_status
+                    try:
+                        conf = float(data.get("_match_score") or 0) / 100.0
+                    except Exception:
+                        conf = None
+                    _upsert_media_link_mapping(
+                        db,
+                        tmdb_info,
+                        patch,
+                        match_status=ms,
+                        confidence=conf,
+                        verified=True,
+                    )
+                db.commit()
+        except Exception:
+            db.rollback()
         
         if await request.is_disconnected():
             return None
@@ -2735,6 +3033,7 @@ async def get_platform_rating(
 
         if tmdb_id is not None and is_platform_locked(db, media_type, tmdb_id, platform):
             rating_info = create_rating_data(RATING_STATUS["LOCKED"], "平台已锁定，停止抓取")
+            logger.info(f"跳过抓取（平台已锁定）: platform={platform} media_type={media_type} tmdb_id={tmdb_id}")
             rating_info["_performance"] = {
                 "total_time": round(time.time() - start_time, 2),
                 "search_time": 0,
@@ -2746,7 +3045,13 @@ async def get_platform_rating(
         cache_key = f"rating:{platform}:{type}:{id}"
         cached_data = await get_cache(cache_key)
         if cached_data:
-            print(f"从缓存获取 {platform} 评分数据，耗时: {time.time() - start_time:.2f}秒")
+            try:
+                status = cached_data.get("status") if isinstance(cached_data, dict) else None
+                status_reason = cached_data.get("status_reason") if isinstance(cached_data, dict) else None
+            except Exception:
+                status = None
+                status_reason = None
+            logger.info(f"从缓存获取 {platform} 评分: key={cache_key}，耗时: {time.time() - start_time:.2f}秒")
             return cached_data
 
         tmdb_info = await get_tmdb_info_cached(id, type, request)
@@ -2764,13 +3069,163 @@ async def get_platform_rating(
         if tmdb_id is None:
             tmdb_id = tmdb_info.get("id")
 
+        mapping_row = None
+        mapping_dict = None
+        try:
+            if tmdb_id is not None:
+                mapping_row = (
+                    db.query(MediaLinkMapping)
+                    .filter(MediaLinkMapping.tmdb_id == int(tmdb_id))
+                    .one_or_none()
+                )
+                mapping_dict = _mapping_row_to_dict(mapping_row) if mapping_row else None
+        except Exception:
+            mapping_row = None
+            mapping_dict = None
+
         search_start_time = time.time()
         extract_start_time = search_start_time
 
+        used_mapping = False
+        mapping_failed = False
+
+        if mapping_dict:
+            try:
+                direct_url = ""
+                if platform == "douban" and media_type == "movie":
+                    direct_url = str(mapping_dict.get("douban_url") or "").strip()
+                elif platform == "douban" and media_type == "tv":
+                    seasons_json = str(mapping_dict.get("douban_seasons_json") or "").strip()
+                    if seasons_json:
+                        used_mapping = True
+                        extract_start_time = time.time()
+                        rating_info = await douban_extract_rating_from_season_urls(
+                            tmdb_info,
+                            seasons_json=seasons_json,
+                            request=request,
+                            douban_cookie=douban_cookie,
+                        )
+                        if isinstance(rating_info, dict) and rating_info.get("status") == RATING_STATUS["SUCCESSFUL"]:
+                            await set_cache(cache_key, rating_info, expire=CACHE_EXPIRE_TIME)
+                            patch = _mapping_patch_from_platform_result(platform, media_type, rating_info)
+                            if patch:
+                                _upsert_media_link_mapping(
+                                    db,
+                                    tmdb_info,
+                                    patch,
+                                    match_status=mapping_row.match_status if mapping_row else "auto",
+                                    confidence=(float(rating_info.get("_match_score") or 100.0) / 100.0),
+                                    verified=True,
+                                )
+                                db.commit()
+                            return rating_info
+                        else:
+                            mapping_failed = True
+                elif platform == "letterboxd":
+                    direct_url = str(mapping_dict.get("letterboxd_url") or "").strip()
+                    if not direct_url:
+                        slug = str(mapping_dict.get("letterboxd_slug") or "").strip().strip("/")
+                        if slug:
+                            direct_url = f"https://letterboxd.com/film/{slug}/"
+                elif platform == "rottentomatoes":
+                    if media_type == "tv":
+                        seasons_json = str(mapping_dict.get("rotten_tomatoes_seasons_json") or "").strip()
+                        if seasons_json:
+                            used_mapping = True
+                            extract_start_time = time.time()
+                            rating_info = await rt_extract_rating_from_season_urls(
+                                tmdb_info,
+                                seasons_json=seasons_json,
+                                request=request,
+                                douban_cookie=douban_cookie,
+                            )
+                            if isinstance(rating_info, dict) and rating_info.get("status") == RATING_STATUS["SUCCESSFUL"]:
+                                await set_cache(cache_key, rating_info, expire=CACHE_EXPIRE_TIME)
+                                patch = _mapping_patch_from_platform_result(platform, media_type, rating_info)
+                                if patch:
+                                    _upsert_media_link_mapping(
+                                        db,
+                                        tmdb_info,
+                                        patch,
+                                        match_status=mapping_row.match_status if mapping_row else "auto",
+                                        confidence=(float(rating_info.get("_match_score") or 100.0) / 100.0),
+                                        verified=True,
+                                    )
+                                    db.commit()
+                                return rating_info
+                            else:
+                                mapping_failed = True
+                    direct_url = str(mapping_dict.get("rotten_tomatoes_url") or "").strip()
+                    if not direct_url:
+                        slug = str(mapping_dict.get("rotten_tomatoes_slug") or "").strip().lstrip("/")
+                        if slug:
+                            direct_url = f"https://www.rottentomatoes.com/{slug}"
+                elif platform == "metacritic":
+                    if media_type == "tv":
+                        seasons_json = str(mapping_dict.get("metacritic_seasons_json") or "").strip()
+                        if seasons_json:
+                            used_mapping = True
+                            extract_start_time = time.time()
+                            rating_info = await metacritic_extract_rating_from_season_urls(
+                                tmdb_info,
+                                seasons_json=seasons_json,
+                                request=request,
+                                douban_cookie=douban_cookie,
+                            )
+                            if isinstance(rating_info, dict) and rating_info.get("status") == RATING_STATUS["SUCCESSFUL"]:
+                                await set_cache(cache_key, rating_info, expire=CACHE_EXPIRE_TIME)
+                                patch = _mapping_patch_from_platform_result(platform, media_type, rating_info)
+                                if patch:
+                                    _upsert_media_link_mapping(
+                                        db,
+                                        tmdb_info,
+                                        patch,
+                                        match_status=mapping_row.match_status if mapping_row else "auto",
+                                        confidence=(float(rating_info.get("_match_score") or 100.0) / 100.0),
+                                        verified=True,
+                                    )
+                                    db.commit()
+                                return rating_info
+                            else:
+                                mapping_failed = True
+                    direct_url = str(mapping_dict.get("metacritic_url") or "").strip()
+                    if not direct_url:
+                        slug = str(mapping_dict.get("metacritic_slug") or "").strip().lstrip("/")
+                        if slug:
+                            direct_url = f"https://www.metacritic.com/{slug}"
+
+                if direct_url:
+                    used_mapping = True
+                    extract_start_time = time.time()
+                    rating_info = await extract_rating_info(
+                        media_type,
+                        platform,
+                        tmdb_info,
+                        build_direct_mapping_search_results(platform, tmdb_info, direct_url),
+                        request,
+                        douban_cookie,
+                    )
+                    if isinstance(rating_info, dict) and rating_info.get("status") == RATING_STATUS["SUCCESSFUL"]:
+                        await set_cache(cache_key, rating_info, expire=CACHE_EXPIRE_TIME)
+                        patch = _mapping_patch_from_platform_result(platform, media_type, rating_info)
+                        if patch:
+                            _upsert_media_link_mapping(
+                                db,
+                                tmdb_info,
+                                patch,
+                                match_status=mapping_row.match_status if mapping_row else "auto",
+                                confidence=(float(rating_info.get("_match_score") or 100.0) / 100.0),
+                                verified=True,
+                            )
+                            db.commit()
+                        return rating_info
+                    else:
+                        mapping_failed = True
+            except Exception:
+                mapping_failed = True
+
         if platform == "douban":
-            rating_info = await douban_search_and_extract_rating(
-                media_type, tmdb_info, request, douban_cookie
-            )
+            rating_info = await douban_search_and_extract_rating(media_type, tmdb_info, request, douban_cookie)
             search_results = None
         else:
             search_results = await search_platform(platform, tmdb_info, request, douban_cookie)
@@ -2839,6 +3294,26 @@ async def get_platform_rating(
                     db.commit()
                 return rating_info
 
+        try:
+            if (
+                mapping_failed
+                and isinstance(rating_info, dict)
+                and rating_info.get("status") == RATING_STATUS["SUCCESSFUL"]
+            ):
+                patch = _mapping_patch_from_platform_result(platform, media_type, rating_info)
+                if patch:
+                    _upsert_media_link_mapping(
+                        db,
+                        tmdb_info,
+                        patch,
+                        match_status="conflict",
+                        confidence=(float(rating_info.get("_match_score") or 0) / 100.0),
+                        verified=True,
+                    )
+                    db.commit()
+        except Exception:
+            db.rollback()
+
             if await request.is_disconnected():
                 print(f"{platform} 请求在搜索平台后被取消")
                 return None
@@ -2862,6 +3337,29 @@ async def get_platform_rating(
             return None
 
         if isinstance(rating_info, dict) and rating_info.get("status") == RATING_STATUS["SUCCESSFUL"]:
+            try:
+                patch = _mapping_patch_from_platform_result(platform, media_type, rating_info)
+                if patch:
+                    ms = mapping_row.match_status if mapping_row else "auto"
+                    try:
+                        conf = float(rating_info.get("_match_score") or 0) / 100.0
+                    except Exception:
+                        conf = None
+                    _upsert_media_link_mapping(
+                        db,
+                        tmdb_info,
+                        patch,
+                        match_status=ms,
+                        confidence=conf,
+                        verified=True,
+                    )
+                    db.commit()
+                    logger.info(f"已写入链接映射: platform={platform} tmdb_id={tmdb_id} patch_keys={list(patch.keys())}")
+                else:
+                    logger.info(f"跳过写入链接映射（patch 为空）: platform={platform} tmdb_id={tmdb_id}")
+            except Exception:
+                db.rollback()
+                logger.exception(f"写入链接映射失败: platform={platform} tmdb_id={tmdb_id}")
             await set_cache(cache_key, rating_info)
             print(f"已缓存 {platform} 评分数据")
         else:
@@ -4234,7 +4732,230 @@ async def list_platform_status_logs(
     ]
 
 # ==========================================
-# 10. 访问记录
+# 10. 影视链接映射库
+# ==========================================
+
+_ALLOWED_MAPPING_PAGE_SIZES = {20, 50, 100, 200}
+
+class MediaLinkMappingCreateRequest(BaseModel):
+    tmdb_id: int
+    media_type: str
+    douban_id: Optional[str] = None
+    douban_url: Optional[str] = None
+    douban_seasons_json: Optional[str] = None
+    douban_seasons_ids_json: Optional[str] = None
+    letterboxd_url: Optional[str] = None
+    letterboxd_slug: Optional[str] = None
+    rotten_tomatoes_url: Optional[str] = None
+    rotten_tomatoes_slug: Optional[str] = None
+    rotten_tomatoes_seasons_json: Optional[str] = None
+    metacritic_url: Optional[str] = None
+    metacritic_slug: Optional[str] = None
+    metacritic_seasons_json: Optional[str] = None
+
+class MediaLinkMappingUpdateRequest(BaseModel):
+    title: Optional[str] = None
+    year: Optional[int] = None
+    imdb_id: Optional[str] = None
+    douban_id: Optional[str] = None
+    douban_url: Optional[str] = None
+    douban_seasons_json: Optional[str] = None
+    douban_seasons_ids_json: Optional[str] = None
+    letterboxd_url: Optional[str] = None
+    letterboxd_slug: Optional[str] = None
+    rotten_tomatoes_url: Optional[str] = None
+    rotten_tomatoes_slug: Optional[str] = None
+    rotten_tomatoes_seasons_json: Optional[str] = None
+    metacritic_url: Optional[str] = None
+    metacritic_slug: Optional[str] = None
+    metacritic_seasons_json: Optional[str] = None
+    confidence: Optional[float] = None
+    last_verified_at: Optional[str] = None
+
+@app.get("/api/admin/media-link-mappings")
+async def admin_list_media_link_mappings(
+    q: Optional[str] = None,
+    tmdb_id: Optional[int] = None,
+    page: int = 1,
+    page_size: int = 20,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_admin(current_user)
+
+    if page < 1:
+        page = 1
+    if page_size not in _ALLOWED_MAPPING_PAGE_SIZES:
+        page_size = 20
+
+    query = db.query(MediaLinkMapping)
+    if tmdb_id is not None:
+        query = query.filter(MediaLinkMapping.tmdb_id == tmdb_id)
+    if q:
+        query = query.filter(MediaLinkMapping.title.contains(q))
+
+    query = query.order_by(MediaLinkMapping.updated_at.desc())
+    total = query.count()
+    rows = query.offset((page - 1) * page_size).limit(page_size).all()
+
+    return {
+        "items": [_mapping_row_to_dict(r) for r in rows],
+        "total": int(total),
+        "page": int(page),
+        "page_size": int(page_size),
+    }
+
+@app.get("/api/admin/media-link-mappings/{mapping_id}")
+async def admin_get_media_link_mapping(
+    mapping_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_admin(current_user)
+    row = db.query(MediaLinkMapping).filter(MediaLinkMapping.id == mapping_id).one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    return {"item": _mapping_row_to_dict(row)}
+
+@app.post("/api/admin/media-link-mappings")
+async def admin_create_media_link_mapping(
+    body: MediaLinkMappingCreateRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_admin(current_user)
+    media_type = (body.media_type or "").strip().lower()
+    if media_type not in ("movie", "tv"):
+        raise HTTPException(status_code=400, detail="media_type 必须是 movie 或 tv")
+
+    existing = db.query(MediaLinkMapping).filter(MediaLinkMapping.tmdb_id == body.tmdb_id).one_or_none()
+    if existing:
+        raise HTTPException(status_code=409, detail="该 TMDB ID 已存在映射记录")
+
+    tmdb_info = await get_tmdb_info_cached(str(body.tmdb_id), media_type, request)
+    title = (tmdb_info or {}).get("zh_title") or (tmdb_info or {}).get("title") or (tmdb_info or {}).get("name") or ""
+    year = (tmdb_info or {}).get("year")
+    try:
+        year_int = int(year) if year is not None and str(year).strip() else None
+    except Exception:
+        year_int = None
+    imdb_id = (tmdb_info or {}).get("imdb_id") or None
+
+    now = _now_utc_naive()
+    row = MediaLinkMapping(
+        tmdb_id=int(body.tmdb_id),
+        media_type=media_type,
+        title=title or None,
+        year=year_int,
+        imdb_id=imdb_id,
+        douban_id=(body.douban_id or None),
+        douban_url=(body.douban_url or None),
+        douban_seasons_json=(body.douban_seasons_json or None),
+        douban_seasons_ids_json=(body.douban_seasons_ids_json or None),
+        letterboxd_url=(body.letterboxd_url or None),
+        letterboxd_slug=(body.letterboxd_slug or None),
+        rotten_tomatoes_url=(body.rotten_tomatoes_url or None),
+        rotten_tomatoes_slug=(body.rotten_tomatoes_slug or None),
+        rotten_tomatoes_seasons_json=(body.rotten_tomatoes_seasons_json or None),
+        metacritic_url=(body.metacritic_url or None),
+        metacritic_slug=(body.metacritic_slug or None),
+        metacritic_seasons_json=(body.metacritic_seasons_json or None),
+        match_status="manual",
+        confidence=None,
+        last_verified_at=None,
+        created_at=now,
+        updated_at=now,
+    )
+    try:
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"创建失败: {str(e)}")
+
+    return {"item": _mapping_row_to_dict(row)}
+
+@app.put("/api/admin/media-link-mappings/{mapping_id}")
+async def admin_update_media_link_mapping(
+    mapping_id: int,
+    body: MediaLinkMappingUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_admin(current_user)
+    row = db.query(MediaLinkMapping).filter(MediaLinkMapping.id == mapping_id).one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="记录不存在")
+
+    if body.title is not None:
+        row.title = body.title
+    if body.year is not None:
+        row.year = body.year
+    if body.imdb_id is not None:
+        row.imdb_id = body.imdb_id
+    if body.douban_id is not None:
+        row.douban_id = body.douban_id
+    if body.douban_url is not None:
+        row.douban_url = body.douban_url
+    if body.douban_seasons_json is not None:
+        row.douban_seasons_json = body.douban_seasons_json
+    if body.douban_seasons_ids_json is not None:
+        row.douban_seasons_ids_json = body.douban_seasons_ids_json
+    if body.letterboxd_url is not None:
+        row.letterboxd_url = body.letterboxd_url
+    if body.letterboxd_slug is not None:
+        row.letterboxd_slug = body.letterboxd_slug
+    if body.rotten_tomatoes_url is not None:
+        row.rotten_tomatoes_url = body.rotten_tomatoes_url
+    if body.rotten_tomatoes_slug is not None:
+        row.rotten_tomatoes_slug = body.rotten_tomatoes_slug
+    if body.rotten_tomatoes_seasons_json is not None:
+        row.rotten_tomatoes_seasons_json = body.rotten_tomatoes_seasons_json
+    if body.metacritic_url is not None:
+        row.metacritic_url = body.metacritic_url
+    if body.metacritic_slug is not None:
+        row.metacritic_slug = body.metacritic_slug
+    if body.metacritic_seasons_json is not None:
+        row.metacritic_seasons_json = body.metacritic_seasons_json
+    if body.confidence is not None:
+        row.confidence = body.confidence
+    if body.last_verified_at is not None:
+        row.last_verified_at = _parse_iso_to_utc_naive(body.last_verified_at)
+
+    row.match_status = "manual"
+    row.updated_at = _now_utc_naive()
+
+    try:
+        db.commit()
+        db.refresh(row)
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"更新失败: {str(e)}")
+
+    return {"item": _mapping_row_to_dict(row)}
+
+@app.delete("/api/admin/media-link-mappings/{mapping_id}")
+async def admin_delete_media_link_mapping(
+    mapping_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_admin(current_user)
+    row = db.query(MediaLinkMapping).filter(MediaLinkMapping.id == mapping_id).one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    try:
+        db.delete(row)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"删除失败: {str(e)}")
+    return {"ok": True}
+
+# ==========================================
+# 11. 访问记录
 # ==========================================
 
 def _parse_yyyy_mm_dd(value: str) -> datetime:
@@ -4539,7 +5260,7 @@ async def admin_export_media_detail_views(
     )
 
 # ==========================================
-# 11. 手动评分与榜单
+# 12. 手动评分与榜单
 # ==========================================
 
 def _build_seasons_list(body: dict, platform: str, media_type: str) -> list:
@@ -4688,6 +5409,7 @@ async def save_manual_rating(
     media_type: str,
     tmdb_id: str,
     request: Request,
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     require_admin(current_user)
@@ -4722,11 +5444,30 @@ async def save_manual_rating(
                     await redis.setex(all_key, CACHE_EXPIRE_TIME, json.dumps(all_data))
     except Exception as e:
         logger.warning(f"更新 all 缓存时出错: {e}")
+
+    try:
+        tmdb_info = await get_tmdb_info_cached(str(tid), media_type, request)
+        if tmdb_info:
+            patch = _mapping_patch_from_platform_result(platform, media_type, payload)
+            if patch:
+                _upsert_media_link_mapping(
+                    db,
+                    tmdb_info,
+                    patch,
+                    match_status="manual",
+                    confidence=None,
+                    verified=True,
+                )
+                db.commit()
+    except Exception as e:
+        db.rollback()
+        logger.warning(f"手动评分同步映射失败: {e}")
     return {"ok": True, "platform": platform, "message": "已保存"}
 
 @app.post("/api/admin/ratings/manual")
 async def create_manual_rating(
     request: Request,
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     require_admin(current_user)
@@ -4765,6 +5506,24 @@ async def create_manual_rating(
                     await redis.setex(all_key, CACHE_EXPIRE_TIME, json.dumps(all_data))
     except Exception as e:
         logger.warning(f"更新 all 缓存时出错: {e}")
+
+    try:
+        tmdb_info = await get_tmdb_info_cached(str(tid), media_type, request)
+        if tmdb_info:
+            patch = _mapping_patch_from_platform_result(platform, media_type, payload)
+            if patch:
+                _upsert_media_link_mapping(
+                    db,
+                    tmdb_info,
+                    patch,
+                    match_status="manual",
+                    confidence=None,
+                    verified=True,
+                )
+                db.commit()
+    except Exception as e:
+        db.rollback()
+        logger.warning(f"手动评分同步映射失败: {e}")
     return {"ok": True, "platform": platform, "message": "已保存"}
 
 async def tmdb_enrich(tmdb_id: int, media_type: str):
@@ -5835,12 +6594,22 @@ async def health_check():
     }
 
 # ==========================================
-# 11. 应用启动和关闭事件
+# 131. 应用启动和关闭事件
 # ==========================================
 
 @app.on_event("startup")
 async def startup_event():
     global redis
+    try:
+        logging.getLogger("uvicorn.access").addFilter(
+            _UvicornAccessPathFilter(
+                deny_substrings=[
+                    'GET /api/notifications/unread-count ',
+                ]
+            )
+        )
+    except Exception:
+        pass
     try:
         MediaDetailAccessLog.__table__.create(bind=engine, checkfirst=True)
     except Exception as e:
@@ -5851,6 +6620,22 @@ async def startup_event():
             encoding='utf-8',
             decode_responses=True
         )
+        try:
+            await redis.ping()
+        except Exception as e:
+            msg = str(e)
+            if "AUTH" in msg and "without any password configured" in msg:
+                logger.warning("Redis 认证失败（本地未配置密码），将移除密码并重试连接")
+                try:
+                    await redis.close()
+                except Exception:
+                    pass
+                redis = await aioredis.from_url(
+                    _strip_redis_password(REDIS_URL),
+                    encoding="utf-8",
+                    decode_responses=True,
+                )
+                await redis.ping()
         logger.info("Redis连接成功")
     except Exception as e:
         logger.error(f"Redis 连接初始化失败: {e}")
