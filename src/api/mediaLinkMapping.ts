@@ -32,6 +32,7 @@ export interface MediaLinkMappingItem {
   last_verified_at: string | null;
   created_at: string | null;
   updated_at: string | null;
+  platform_lock_statuses?: Record<string, string>;
 }
 
 export interface MediaLinkMappingListResponse {
