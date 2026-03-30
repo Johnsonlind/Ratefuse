@@ -44,6 +44,7 @@ const AdminOtherPage = lazy(() => import('../pages/admin/AdminOtherPage'));
 const AdminFeedbackPage = lazy(() => import('../pages/admin/AdminFeedbackPage'));
 const AdminPlatformStatusPage = lazy(() => import('../pages/admin/AdminPlatformStatusPage'));
 const AdminUsersPage = lazy(() => import('../pages/admin/AdminUsersPage'));
+const AdminMediaLinkMappingPage = lazy(() => import('../pages/admin/AdminMediaLinkMappingPage'));
 const ChartsPage = lazy(() => import('../pages/ChartsPage'));
 const ChartDetailPage = lazy(() => import('../pages/ChartDetailPage'));
 
@@ -79,6 +80,7 @@ function App() {
                   <Route path="feedbacks" element={<AdminFeedbackPage />} />
                   <Route path="detail-views" element={<AdminDetailViewsPage />} />
                   <Route path="platform-status" element={<AdminPlatformStatusPage />} />
+                  <Route path="media-link-mapping" element={<AdminMediaLinkMappingPage />} />
                   <Route path="other" element={<AdminOtherPage />} />
                 </Route>
               </Routes>
