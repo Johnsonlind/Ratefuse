@@ -2406,8 +2406,11 @@ async def delete_notifications(
 # 7. 评分获取与图片代理
 # ==========================================
 
-def _mapping_row_to_dict(row: MediaLinkMapping) -> dict[str, Any]:
-    return {
+def _mapping_row_to_dict(
+    row: MediaLinkMapping,
+    platform_lock_statuses: Optional[dict[str, str]] = None,
+) -> dict[str, Any]:
+    data = {
         "id": row.id,
         "tmdb_id": row.tmdb_id,
         "media_type": row.media_type,
@@ -2432,6 +2435,31 @@ def _mapping_row_to_dict(row: MediaLinkMapping) -> dict[str, Any]:
         "created_at": _to_shanghai_iso(row.created_at),
         "updated_at": _to_shanghai_iso(row.updated_at),
     }
+    if platform_lock_statuses:
+        data["platform_lock_statuses"] = platform_lock_statuses
+    return data
+
+def _can_upsert_platform_mapping(
+    db: Session,
+    platform: str,
+    media_type: str,
+    tmdb_id: Optional[int],
+) -> bool:
+    if tmdb_id is None:
+        return True
+    try:
+        return not is_platform_locked(db, media_type, int(tmdb_id), platform)
+    except Exception:
+        return True
+        
+def _should_upsert_mapping(
+    db: Session,
+    platform: str,
+    media_type: str,
+    tmdb_id: Optional[int],
+    patch: Optional[dict[str, Any]],
+) -> bool:
+    return bool(patch) and _can_upsert_platform_mapping(db, platform, media_type, tmdb_id)
 
 _DOUBAN_ID_RE = re.compile(r"/subject/(\d+)")
 
@@ -2859,26 +2887,33 @@ async def get_all_platform_ratings(
             ratings_dict = all_ratings if isinstance(all_ratings, dict) else None
             if isinstance(ratings_dict, dict):
                 base_status = mapping_row.match_status if mapping_row else "auto"
+                tmdb_id_int = None
+                try:
+                    tmdb_id_int = int(tmdb_info.get("id") or id)
+                except Exception:
+                    tmdb_id_int = None
+                media_type_value = (tmdb_info.get("type") or type or "").lower()
                 for platform, data in ratings_dict.items():
                     if not isinstance(data, dict):
                         continue
-                    if data.get("status") != RATING_STATUS["SUCCESSFUL"]:
-                        continue
-                    patch = _mapping_patch_from_platform_result(platform, tmdb_info.get("type") or type, data)
+                    patch = _mapping_patch_from_platform_result(platform, media_type_value, data)
                     if not patch:
+                        continue
+                    if not _should_upsert_mapping(db, platform, media_type_value, tmdb_id_int, patch):
                         continue
                     ms = base_status
                     try:
                         conf = float(data.get("_match_score") or 0) / 100.0
                     except Exception:
                         conf = None
+                    is_success = data.get("status") == RATING_STATUS["SUCCESSFUL"]
                     _upsert_media_link_mapping(
                         db,
                         tmdb_info,
                         patch,
                         match_status=ms,
                         confidence=conf,
-                        verified=True,
+                        verified=is_success,
                     )
                 db.commit()
         except Exception:
@@ -3119,20 +3154,25 @@ async def get_platform_rating(
                         logger.info(
                             f"该剧集通过豆瓣映射获取评分 {status} tmdb_id={tmdb_id} reason={status_reason}"
                         )
-                        if isinstance(rating_info, dict) and rating_info.get("status") == RATING_STATUS["SUCCESSFUL"]:
-                            await set_cache(cache_key, rating_info, expire=CACHE_EXPIRE_TIME)
+                        if isinstance(rating_info, dict):
                             patch = _mapping_patch_from_platform_result(platform, media_type, rating_info)
-                            if patch:
+                            if _should_upsert_mapping(db, platform, media_type, tmdb_id, patch):
                                 _upsert_media_link_mapping(
                                     db,
                                     tmdb_info,
                                     patch,
                                     match_status=mapping_row.match_status if mapping_row else "auto",
                                     confidence=(float(rating_info.get("_match_score") or 100.0) / 100.0),
-                                    verified=True,
+                                    verified=rating_info.get("status") == RATING_STATUS["SUCCESSFUL"],
                                 )
                                 db.commit()
-                            return rating_info
+                            if rating_info.get("status") == RATING_STATUS["SUCCESSFUL"]:
+                                await set_cache(cache_key, rating_info, expire=CACHE_EXPIRE_TIME)
+                                return rating_info
+                            mapping_failed = True
+                            logger.info(
+                                f"该剧集在豆瓣存在映射但未通过映射抓取: tmdb_id={tmdb_id} status={status} reason={status_reason}"
+                            )
                         else:
                             mapping_failed = True
                             logger.info(
@@ -3170,25 +3210,25 @@ async def get_platform_rating(
                             logger.info(
                                 f"该剧集通过rottentomatoes映射获取评分 {status} tmdb_id={tmdb_id} reason={status_reason}"
                             )
-                            if isinstance(rating_info, dict) and rating_info.get("status") == RATING_STATUS["SUCCESSFUL"]:
-                                await set_cache(cache_key, rating_info, expire=CACHE_EXPIRE_TIME)
+                            if isinstance(rating_info, dict):
                                 patch = _mapping_patch_from_platform_result(platform, media_type, rating_info)
-                                if patch:
+                                if _should_upsert_mapping(db, platform, media_type, tmdb_id, patch):
                                     _upsert_media_link_mapping(
                                         db,
                                         tmdb_info,
                                         patch,
                                         match_status=mapping_row.match_status if mapping_row else "auto",
                                         confidence=(float(rating_info.get("_match_score") or 100.0) / 100.0),
-                                        verified=True,
+                                        verified=rating_info.get("status") == RATING_STATUS["SUCCESSFUL"],
                                     )
                                     db.commit()
-                                return rating_info
-                            else:
-                                mapping_failed = True
-                                logger.info(
-                                    f"该剧集在rottentomatoes存在映射但未通过映射抓取: tmdb_id={tmdb_id} status={status} reason={status_reason}"
-                                )
+                                if rating_info.get("status") == RATING_STATUS["SUCCESSFUL"]:
+                                    await set_cache(cache_key, rating_info, expire=CACHE_EXPIRE_TIME)
+                                    return rating_info
+                            mapping_failed = True
+                            logger.info(
+                                f"该剧集在rottentomatoes存在映射但未通过映射抓取: tmdb_id={tmdb_id} status={status} reason={status_reason}"
+                            )
                         else:
                             logger.info(
                                 f"该剧集在rottentomatoes存在映射但未通过映射抓取: tmdb_id={tmdb_id} reason=douban_seasons_json 为空"
@@ -3220,25 +3260,25 @@ async def get_platform_rating(
                             logger.info(
                                 f"该剧集通过metacritic映射获取评分 {status} tmdb_id={tmdb_id} reason={status_reason}"
                             )
-                            if isinstance(rating_info, dict) and rating_info.get("status") == RATING_STATUS["SUCCESSFUL"]:
-                                await set_cache(cache_key, rating_info, expire=CACHE_EXPIRE_TIME)
+                            if isinstance(rating_info, dict):
                                 patch = _mapping_patch_from_platform_result(platform, media_type, rating_info)
-                                if patch:
+                                if _should_upsert_mapping(db, platform, media_type, tmdb_id, patch):
                                     _upsert_media_link_mapping(
                                         db,
                                         tmdb_info,
                                         patch,
                                         match_status=mapping_row.match_status if mapping_row else "auto",
                                         confidence=(float(rating_info.get("_match_score") or 100.0) / 100.0),
-                                        verified=True,
+                                        verified=rating_info.get("status") == RATING_STATUS["SUCCESSFUL"],
                                     )
                                     db.commit()
-                                return rating_info
-                            else:
-                                mapping_failed = True
-                                logger.info(
-                                    f"该剧集通过metacritic映射获取评分 {status} tmdb_id={tmdb_id} reason={status_reason}"
-                                )
+                                if rating_info.get("status") == RATING_STATUS["SUCCESSFUL"]:
+                                    await set_cache(cache_key, rating_info, expire=CACHE_EXPIRE_TIME)
+                                    return rating_info
+                            mapping_failed = True
+                            logger.info(
+                                f"该剧集通过metacritic映射获取评分 {status} tmdb_id={tmdb_id} reason={status_reason}"
+                            )
                         else:
                             logger.info(
                                 f"该剧集通过metacritic映射获取评分 {status} tmdb_id={tmdb_id} reason={status_reason}"
@@ -3270,25 +3310,25 @@ async def get_platform_rating(
                     logger.info(
                         f"{platform} 通过映射获取 {media_type} 评分{status} tmdb_id={tmdb_id} status={status} reason={status_reason}"
                     )
-                    if isinstance(rating_info, dict) and rating_info.get("status") == RATING_STATUS["SUCCESSFUL"]:
-                        await set_cache(cache_key, rating_info, expire=CACHE_EXPIRE_TIME)
+                    if isinstance(rating_info, dict):
                         patch = _mapping_patch_from_platform_result(platform, media_type, rating_info)
-                        if patch:
+                        if _should_upsert_mapping(db, platform, media_type, tmdb_id, patch):
                             _upsert_media_link_mapping(
                                 db,
                                 tmdb_info,
                                 patch,
                                 match_status=mapping_row.match_status if mapping_row else "auto",
                                 confidence=(float(rating_info.get("_match_score") or 100.0) / 100.0),
-                                verified=True,
+                                verified=rating_info.get("status") == RATING_STATUS["SUCCESSFUL"],
                             )
                             db.commit()
-                        return rating_info
-                    else:
-                        mapping_failed = True
-                        logger.info(
-                            f"该{media_type} 在 {platform} 存在映射但未通过映射抓取 tmdb_id={tmdb_id} status={status} reason={status_reason}"
-                        )
+                        if rating_info.get("status") == RATING_STATUS["SUCCESSFUL"]:
+                            await set_cache(cache_key, rating_info, expire=CACHE_EXPIRE_TIME)
+                            return rating_info
+                    mapping_failed = True
+                    logger.info(
+                        f"该{media_type} 在 {platform} 存在映射但未通过映射抓取 tmdb_id={tmdb_id} status={status} reason={status_reason}"
+                    )
             except Exception:
                 mapping_failed = True
 
@@ -3372,20 +3412,16 @@ async def get_platform_rating(
                 return rating_info
 
         try:
-            if (
-                mapping_failed
-                and isinstance(rating_info, dict)
-                and rating_info.get("status") == RATING_STATUS["SUCCESSFUL"]
-            ):
+            if mapping_failed and isinstance(rating_info, dict):
                 patch = _mapping_patch_from_platform_result(platform, media_type, rating_info)
-                if patch:
+                if _should_upsert_mapping(db, platform, media_type, tmdb_id, patch):
                     _upsert_media_link_mapping(
                         db,
                         tmdb_info,
                         patch,
                         match_status="conflict",
                         confidence=(float(rating_info.get("_match_score") or 0) / 100.0),
-                        verified=True,
+                        verified=rating_info.get("status") == RATING_STATUS["SUCCESSFUL"],
                     )
                     db.commit()
         except Exception:
@@ -3413,10 +3449,10 @@ async def get_platform_rating(
             print(f"{platform} 评分提取被取消")
             return None
 
-        if isinstance(rating_info, dict) and rating_info.get("status") == RATING_STATUS["SUCCESSFUL"]:
+        if isinstance(rating_info, dict):
             try:
                 patch = _mapping_patch_from_platform_result(platform, media_type, rating_info)
-                if patch:
+                if _should_upsert_mapping(db, platform, media_type, tmdb_id, patch):
                     ms = mapping_row.match_status if mapping_row else "auto"
                     try:
                         conf = float(rating_info.get("_match_score") or 0) / 100.0
@@ -3428,19 +3464,20 @@ async def get_platform_rating(
                         patch,
                         match_status=ms,
                         confidence=conf,
-                        verified=True,
+                        verified=rating_info.get("status") == RATING_STATUS["SUCCESSFUL"],
                     )
                     db.commit()
                     logger.info(f"已写入链接映射: platform={platform} tmdb_id={tmdb_id} patch_keys={list(patch.keys())}")
                 else:
-                    logger.info(f"跳过写入链接映射（patch 为空）: platform={platform} tmdb_id={tmdb_id}")
+                    logger.info(f"跳过写入链接映射（patch为空或平台已锁定）: platform={platform} tmdb_id={tmdb_id}")
             except Exception:
                 db.rollback()
                 logger.exception(f"写入链接映射失败: platform={platform} tmdb_id={tmdb_id}")
-            await set_cache(cache_key, rating_info)
-            print(f"已缓存 {platform} 评分数据")
-        else:
-            print(f"不缓存 {platform} 评分数据，状态: {rating_info.get('status')}")
+            if rating_info.get("status") == RATING_STATUS["SUCCESSFUL"]:
+                await set_cache(cache_key, rating_info)
+                print(f"已缓存 {platform} 评分数据")
+            else:
+                print(f"不缓存 {platform} 评分数据，状态: {rating_info.get('status')}")
 
         total_time = time.time() - start_time
         
@@ -4875,8 +4912,32 @@ async def admin_list_media_link_mappings(
     total = query.count()
     rows = query.offset((page - 1) * page_size).limit(page_size).all()
 
+    lock_status_map: dict[tuple[int, str], dict[str, str]] = {}
+    if rows:
+        tmdb_ids = [int(r.tmdb_id) for r in rows]
+        media_types = [str(r.media_type) for r in rows]
+        status_rows = (
+            db.query(MediaPlatformStatus)
+            .filter(
+                MediaPlatformStatus.tmdb_id.in_(tmdb_ids),
+                MediaPlatformStatus.media_type.in_(media_types),
+            )
+            .all()
+        )
+        for s in status_rows:
+            key = (int(s.tmdb_id), str(s.media_type))
+            if key not in lock_status_map:
+                lock_status_map[key] = {}
+            lock_status_map[key][str(s.platform).lower()] = str(s.status or "").lower()
+
     return {
-        "items": [_mapping_row_to_dict(r) for r in rows],
+        "items": [
+            _mapping_row_to_dict(
+                r,
+                lock_status_map.get((int(r.tmdb_id), str(r.media_type)), {}),
+            )
+            for r in rows
+        ],
         "total": int(total),
         "page": int(page),
         "page_size": int(page_size),
@@ -4892,7 +4953,18 @@ async def admin_get_media_link_mapping(
     row = db.query(MediaLinkMapping).filter(MediaLinkMapping.id == mapping_id).one_or_none()
     if not row:
         raise HTTPException(status_code=404, detail="记录不存在")
-    return {"item": _mapping_row_to_dict(row)}
+    platform_lock_statuses: dict[str, str] = {}
+    status_rows = (
+        db.query(MediaPlatformStatus)
+        .filter(
+            MediaPlatformStatus.tmdb_id == int(row.tmdb_id),
+            MediaPlatformStatus.media_type == str(row.media_type),
+        )
+        .all()
+    )
+    for s in status_rows:
+        platform_lock_statuses[str(s.platform).lower()] = str(s.status or "").lower()
+    return {"item": _mapping_row_to_dict(row, platform_lock_statuses)}
 
 @app.post("/api/admin/media-link-mappings")
 async def admin_create_media_link_mapping(
@@ -5526,7 +5598,7 @@ async def save_manual_rating(
         tmdb_info = await get_tmdb_info_cached(str(tid), media_type, request)
         if tmdb_info:
             patch = _mapping_patch_from_platform_result(platform, media_type, payload)
-            if patch:
+            if _should_upsert_mapping(db, platform, media_type, tid, patch):
                 _upsert_media_link_mapping(
                     db,
                     tmdb_info,
@@ -5588,7 +5660,7 @@ async def create_manual_rating(
         tmdb_info = await get_tmdb_info_cached(str(tid), media_type, request)
         if tmdb_info:
             patch = _mapping_patch_from_platform_result(platform, media_type, payload)
-            if patch:
+            if _should_upsert_mapping(db, platform, media_type, tid, patch):
                 _upsert_media_link_mapping(
                     db,
                     tmdb_info,
