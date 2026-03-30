@@ -3105,6 +3105,15 @@ async def get_platform_rating(
                             request=request,
                             douban_cookie=douban_cookie,
                         )
+                        try:
+                            status = rating_info.get("status") if isinstance(rating_info, dict) else None
+                            status_reason = rating_info.get("status_reason") if isinstance(rating_info, dict) else None
+                        except Exception:
+                            status = None
+                            status_reason = None
+                        logger.info(
+                            f"平台通过映射链接获取评分: platform=douban media_type=tv tmdb_id={tmdb_id} status={status} reason={status_reason}"
+                        )
                         if isinstance(rating_info, dict) and rating_info.get("status") == RATING_STATUS["SUCCESSFUL"]:
                             await set_cache(cache_key, rating_info, expire=CACHE_EXPIRE_TIME)
                             patch = _mapping_patch_from_platform_result(platform, media_type, rating_info)
@@ -3121,6 +3130,10 @@ async def get_platform_rating(
                             return rating_info
                         else:
                             mapping_failed = True
+                    else:
+                        logger.info(
+                            f"平台存在映射但未通过映射抓取（douban_seasons_json 为空）: platform=douban media_type=tv tmdb_id={tmdb_id}"
+                        )
                 elif platform == "letterboxd":
                     direct_url = str(mapping_dict.get("letterboxd_url") or "").strip()
                     if not direct_url:
@@ -3138,6 +3151,15 @@ async def get_platform_rating(
                                 seasons_json=seasons_json,
                                 request=request,
                                 douban_cookie=douban_cookie,
+                            )
+                            try:
+                                status = rating_info.get("status") if isinstance(rating_info, dict) else None
+                                status_reason = rating_info.get("status_reason") if isinstance(rating_info, dict) else None
+                            except Exception:
+                                status = None
+                                status_reason = None
+                            logger.info(
+                                f"平台通过映射链接获取评分: platform=rottentomatoes media_type=tv tmdb_id={tmdb_id} status={status} reason={status_reason}"
                             )
                             if isinstance(rating_info, dict) and rating_info.get("status") == RATING_STATUS["SUCCESSFUL"]:
                                 await set_cache(cache_key, rating_info, expire=CACHE_EXPIRE_TIME)
@@ -3172,6 +3194,15 @@ async def get_platform_rating(
                                 request=request,
                                 douban_cookie=douban_cookie,
                             )
+                            try:
+                                status = rating_info.get("status") if isinstance(rating_info, dict) else None
+                                status_reason = rating_info.get("status_reason") if isinstance(rating_info, dict) else None
+                            except Exception:
+                                status = None
+                                status_reason = None
+                            logger.info(
+                                f"平台通过映射链接获取评分: platform=metacritic media_type=tv tmdb_id={tmdb_id} status={status} reason={status_reason}"
+                            )
                             if isinstance(rating_info, dict) and rating_info.get("status") == RATING_STATUS["SUCCESSFUL"]:
                                 await set_cache(cache_key, rating_info, expire=CACHE_EXPIRE_TIME)
                                 patch = _mapping_patch_from_platform_result(platform, media_type, rating_info)
@@ -3204,6 +3235,15 @@ async def get_platform_rating(
                         build_direct_mapping_search_results(platform, tmdb_info, direct_url),
                         request,
                         douban_cookie,
+                    )
+                    try:
+                        status = rating_info.get("status") if isinstance(rating_info, dict) else None
+                        status_reason = rating_info.get("status_reason") if isinstance(rating_info, dict) else None
+                    except Exception:
+                        status = None
+                        status_reason = None
+                    logger.info(
+                        f"平台通过映射链接获取评分: platform={platform} media_type={media_type} tmdb_id={tmdb_id} status={status} reason={status_reason}"
                     )
                     if isinstance(rating_info, dict) and rating_info.get("status") == RATING_STATUS["SUCCESSFUL"]:
                         await set_cache(cache_key, rating_info, expire=CACHE_EXPIRE_TIME)
