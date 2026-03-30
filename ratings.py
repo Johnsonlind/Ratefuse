@@ -179,7 +179,13 @@ def update_platform_status_after_fetch(
             title_snapshot=title,
         )
         db.add(record)
-        db.flush()
+        try:
+            db.flush()
+        except Exception:
+            db.rollback()
+            record = get_media_platform_status(db, media_type, tmdb_id, platform)
+            if record is None:
+                raise
 
     if status == RATING_STATUS["SUCCESSFUL"]:
         if record.failure_count or record.status == "locked":
@@ -2080,6 +2086,10 @@ async def douban_search_and_extract_rating(
                     status = check_tv_status(rating_data, "douban")
                 rating_data["status"] = status
                 rating_data["url"] = detail_url
+                try:
+                    rating_data["_match_score"] = float(best_match.get("match_score") or 0)
+                except Exception:
+                    rating_data["_match_score"] = None
             else:
                 rating_data = create_empty_rating_data(
                     "douban", media_type, RATING_STATUS["NO_RATING"]
@@ -3137,6 +3147,10 @@ async def extract_rating_info(media_type, platform, tmdb_info, search_results, r
 
                             rating_data["status"] = status
                             rating_data["url"] = detail_url
+                            try:
+                                rating_data["_match_score"] = float(best_match.get("match_score") or 0)
+                            except Exception:
+                                rating_data["_match_score"] = None
 
                             if platform in ["rottentomatoes", "metacritic"]:
                                 if "series" in rating_data:
@@ -3174,6 +3188,397 @@ async def extract_rating_info(media_type, platform, tmdb_info, search_results, r
             return create_empty_rating_data(platform, media_type, RATING_STATUS["FETCH_FAILED"])
 
     return await _extract_rating_with_retry()
+
+def build_direct_mapping_search_results(
+    platform: str,
+    tmdb_info: dict,
+    url: str,
+    extra: Optional[dict] = None,
+) -> list[dict]:
+    """把 mapping 的详情页 URL 转成 extract_rating_info 可用的搜索结果结构。"""
+    item = {
+        "title": tmdb_info.get("title") or tmdb_info.get("name") or "",
+        "year": tmdb_info.get("year", ""),
+        "url": url,
+        "match_score": 100,
+        "direct_match": True,
+        "mapping_source": platform,
+    }
+    if extra:
+        item.update(extra)
+    return [item]
+
+async def douban_extract_rating_from_season_urls(
+    tmdb_info: dict,
+    *,
+    seasons_json: str,
+    request=None,
+    douban_cookie: Optional[str] = None,
+) -> dict:
+    """使用 mapping 中保存的豆瓣分季链接直接抓取（绕开搜索）。"""
+    if (tmdb_info.get("type") or "").lower() != "tv":
+        return create_empty_rating_data("douban", tmdb_info.get("type") or "tv", RATING_STATUS["FETCH_FAILED"])
+
+    try:
+        raw = json.loads(seasons_json or "{}")
+    except Exception:
+        raw = {}
+    if not isinstance(raw, dict) or not raw:
+        return create_empty_rating_data("douban", "tv", RATING_STATUS["NO_FOUND"])
+
+    season_items: list[dict] = []
+    for k, v in raw.items():
+        try:
+            sn = int(k)
+        except Exception:
+            continue
+        url = str(v or "").strip()
+        if not url:
+            continue
+        season_items.append({"title": f"第{sn}季", "url": url, "match_score": 100, "season_number": sn})
+    season_items.sort(key=lambda x: int(x.get("season_number") or 0))
+    if not season_items:
+        return create_empty_rating_data("douban", "tv", RATING_STATUS["NO_FOUND"])
+
+    async def pipeline(browser):
+        context = None
+        try:
+            selected_user_agent = random.choice(USER_AGENTS)
+            context_options = {
+                "viewport": {"width": 1280, "height": 720},
+                "user_agent": selected_user_agent,
+                "bypass_csp": True,
+                "ignore_https_errors": True,
+                "java_script_enabled": True,
+                "has_touch": False,
+                "is_mobile": False,
+                "locale": "zh-CN",
+                "timezone_id": "Asia/Shanghai",
+            }
+            context = await browser.new_context(**context_options)
+            await _apply_douban_light_blocking_routes(context)
+            page = await context.new_page()
+            page.set_default_timeout(30000)
+            await _playwright_stealth_optional(page)
+
+            first_url = str(season_items[0].get("url") or "").strip()
+            if request is not None or douban_cookie:
+                headers = {}
+                if request:
+                    try:
+                        client_ip = get_client_ip(request)
+                        headers.update({"X-Forwarded-For": client_ip, "X-Real-IP": client_ip})
+                    except Exception:
+                        pass
+                if douban_cookie:
+                    headers["Cookie"] = douban_cookie
+                if headers:
+                    await page.set_extra_http_headers(headers)
+
+            await page.goto(first_url, wait_until="domcontentloaded", timeout=15000)
+            await douban_human_wait("after_detail_dom")
+            await douban_simulate_light_browsing(page)
+
+            rating_data = await extract_douban_rating(
+                page,
+                "tv",
+                season_items,
+                request=request,
+                douban_cookie=douban_cookie,
+            )
+
+            if rating_data:
+                status = check_tv_status(rating_data, "douban")
+                rating_data["status"] = status
+                rating_data["url"] = first_url
+                rating_data["_match_score"] = 100.0
+                return rating_data
+            return create_empty_rating_data("douban", "tv", RATING_STATUS["FETCH_FAILED"])
+        finally:
+            if context:
+                try:
+                    await context.close()
+                except Exception:
+                    pass
+
+    try:
+        return await browser_pool.execute_in_browser(pipeline)
+    except Exception:
+        return create_empty_rating_data("douban", "tv", RATING_STATUS["FETCH_FAILED"])
+
+def _rt_scores_from_score_data(score_data: dict) -> dict:
+    overlay_data = (score_data or {}).get("overlay", {}) if isinstance(score_data, dict) else {}
+    has_audience = bool(overlay_data.get("hasAudienceAll", False))
+    has_critics = bool(overlay_data.get("hasCriticsAll", False))
+    audience_data = overlay_data.get("audienceAll", {}) if isinstance(overlay_data.get("audienceAll"), dict) else {}
+    critics_data = overlay_data.get("criticsAll", {}) if isinstance(overlay_data.get("criticsAll"), dict) else {}
+
+    audience_score = "暂无"
+    audience_avg = "暂无"
+    audience_count = "暂无"
+    if has_audience:
+        v = audience_data.get("scorePercent")
+        audience_score = v.rstrip("%") if isinstance(v, str) and v else (str(v).rstrip("%") if v is not None else "暂无")
+        avg_rating = audience_data.get("averageRating")
+        audience_avg = avg_rating if avg_rating and avg_rating not in ["暂无", ""] else "暂无"
+        audience_count = audience_data.get("bandedRatingCount", "暂无")
+
+    tomatometer = "暂无"
+    critics_avg = "暂无"
+    critics_count = "暂无"
+    if has_critics:
+        v = critics_data.get("scorePercent")
+        tomatometer = v.rstrip("%") if isinstance(v, str) and v else (str(v).rstrip("%") if v is not None else "暂无")
+        critics_avg = critics_data.get("averageRating", "暂无")
+        slt = critics_data.get("scoreLinkText")
+        critics_count = str(slt).split()[0] if slt else "暂无"
+
+    return {
+        "tomatometer": tomatometer,
+        "audience_score": audience_score,
+        "critics_avg": critics_avg,
+        "critics_count": critics_count,
+        "audience_count": audience_count,
+        "audience_avg": audience_avg,
+    }
+
+async def rt_extract_rating_from_season_urls(
+    tmdb_info: dict,
+    *,
+    seasons_json: str,
+    request=None,
+    douban_cookie: Optional[str] = None,
+) -> dict:
+    """使用 mapping 中保存的 RottenTomatoes 分季链接直接抓取（绕开搜索）。"""
+    if (tmdb_info.get("type") or "").lower() != "tv":
+        return create_empty_rating_data("rottentomatoes", tmdb_info.get("type") or "tv", RATING_STATUS["FETCH_FAILED"])
+
+    try:
+        raw = json.loads(seasons_json or "{}")
+    except Exception:
+        raw = {}
+    if not isinstance(raw, dict) or not raw:
+        return create_empty_rating_data("rottentomatoes", "tv", RATING_STATUS["NO_FOUND"])
+
+    season_urls: list[tuple[int, str]] = []
+    for k, v in raw.items():
+        try:
+            sn = int(k)
+        except Exception:
+            continue
+        url = str(v or "").strip()
+        if not url:
+            continue
+        season_urls.append((sn, url))
+    season_urls.sort(key=lambda x: x[0])
+    if not season_urls:
+        return create_empty_rating_data("rottentomatoes", "tv", RATING_STATUS["NO_FOUND"])
+
+    async def pipeline(browser):
+        context = None
+        try:
+            selected_user_agent = random.choice(USER_AGENTS)
+            context = await browser.new_context(
+                viewport={"width": 1280, "height": 720},
+                user_agent=selected_user_agent,
+                bypass_csp=True,
+                ignore_https_errors=True,
+                java_script_enabled=True,
+                locale="en-US",
+                timezone_id="America/New_York",
+            )
+            page = await context.new_page()
+            page.set_default_timeout(30000)
+
+            seasons_out: list[dict] = []
+            series_scores: Optional[dict] = None
+
+            for sn, url in season_urls:
+                if request and await request.is_disconnected():
+                    return {"status": "cancelled"}
+                await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+                await asyncio.sleep(0.2)
+                score_data = await get_rt_rating_fast(page)
+                if not score_data:
+                    continue
+                scores = _rt_scores_from_score_data(score_data)
+                if series_scores is None:
+                    series_scores = scores
+                seasons_out.append(
+                    {
+                        "season_number": sn,
+                        "url": url,
+                        **scores,
+                    }
+                )
+
+            if not series_scores and seasons_out:
+                series_scores = {k: seasons_out[0].get(k) for k in ("tomatometer","audience_score","critics_avg","critics_count","audience_count","audience_avg")}
+
+            if not series_scores:
+                return create_empty_rating_data("rottentomatoes", "tv", RATING_STATUS["FETCH_FAILED"])
+
+            return {
+                "series": series_scores,
+                "seasons": seasons_out,
+                "status": RATING_STATUS["SUCCESSFUL"],
+                "url": str(season_urls[0][1]),
+                "_match_score": 100.0,
+            }
+        finally:
+            if context:
+                try:
+                    await context.close()
+                except Exception:
+                    pass
+
+    try:
+        return await browser_pool.execute_in_browser(pipeline)
+    except Exception:
+        return create_empty_rating_data("rottentomatoes", "tv", RATING_STATUS["FETCH_FAILED"])
+
+def _metacritic_overall_from_content(content: str) -> dict:
+    overall = {
+        "metascore": "暂无",
+        "critics_count": "暂无",
+        "userscore": "暂无",
+        "users_count": "暂无",
+    }
+    try:
+        ms = re.search(r'title="Metascore (\d+) out of 100"', content or "")
+        if ms:
+            overall["metascore"] = ms.group(1)
+    except Exception:
+        pass
+    try:
+        cc = re.search(r'Based on (\d+) Critic Reviews?', content or "")
+        if cc:
+            overall["critics_count"] = cc.group(1)
+    except Exception:
+        pass
+    try:
+        us = re.search(r'title="User score ([\\d.]+) out of 10"', content or "")
+        if us:
+            overall["userscore"] = us.group(1)
+    except Exception:
+        pass
+    try:
+        uc = re.search(r'Based on ([\\d,]+) User Ratings?', content or "")
+        if uc:
+            overall["users_count"] = uc.group(1).replace(",", "")
+    except Exception:
+        pass
+    return overall
+
+async def metacritic_extract_rating_from_season_urls(
+    tmdb_info: dict,
+    *,
+    seasons_json: str,
+    request=None,
+    douban_cookie: Optional[str] = None,
+) -> dict:
+    """使用 mapping 中保存的 Metacritic 分季链接直接抓取（绕开搜索）。"""
+    if (tmdb_info.get("type") or "").lower() != "tv":
+        return create_empty_rating_data("metacritic", tmdb_info.get("type") or "tv", RATING_STATUS["FETCH_FAILED"])
+
+    try:
+        raw = json.loads(seasons_json or "{}")
+    except Exception:
+        raw = {}
+    if not isinstance(raw, dict) or not raw:
+        return create_empty_rating_data("metacritic", "tv", RATING_STATUS["NO_FOUND"])
+
+    season_urls: list[tuple[int, str]] = []
+    for k, v in raw.items():
+        try:
+            sn = int(k)
+        except Exception:
+            continue
+        url = str(v or "").strip()
+        if not url:
+            continue
+        season_urls.append((sn, url))
+    season_urls.sort(key=lambda x: x[0])
+    if not season_urls:
+        return create_empty_rating_data("metacritic", "tv", RATING_STATUS["NO_FOUND"])
+
+    async def pipeline(browser):
+        context = None
+        try:
+            selected_user_agent = random.choice(USER_AGENTS)
+            context = await browser.new_context(
+                viewport={"width": 1280, "height": 720},
+                user_agent=selected_user_agent,
+                bypass_csp=True,
+                ignore_https_errors=True,
+                java_script_enabled=True,
+                locale="en-US",
+                timezone_id="America/New_York",
+            )
+            page = await context.new_page()
+            page.set_default_timeout(30000)
+
+            seasons_out: list[dict] = []
+            overall_first: Optional[dict] = None
+
+            for sn, url in season_urls:
+                if request and await request.is_disconnected():
+                    return {"status": "cancelled"}
+                await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+                await asyncio.sleep(0.3)
+                content = await page.content()
+
+                json_rating = await get_metacritic_rating_via_json(page, content=content)
+                overall = _metacritic_overall_from_content(content)
+                if json_rating:
+                    if json_rating.get("metascore"):
+                        overall["metascore"] = str(json_rating.get("metascore"))
+                    if json_rating.get("critics_count"):
+                        overall["critics_count"] = str(json_rating.get("critics_count"))
+
+                if overall_first is None:
+                    overall_first = overall
+
+                seasons_out.append(
+                    {
+                        "season_number": sn,
+                        "url": url,
+                        "metascore": overall.get("metascore", "暂无"),
+                        "critics_count": overall.get("critics_count", "暂无"),
+                        "userscore": overall.get("userscore", "暂无"),
+                        "users_count": overall.get("users_count", "暂无"),
+                    }
+                )
+
+            if overall_first is None and seasons_out:
+                overall_first = {
+                    "metascore": seasons_out[0].get("metascore", "暂无"),
+                    "critics_count": seasons_out[0].get("critics_count", "暂无"),
+                    "userscore": seasons_out[0].get("userscore", "暂无"),
+                    "users_count": seasons_out[0].get("users_count", "暂无"),
+                }
+
+            if overall_first is None:
+                return create_empty_rating_data("metacritic", "tv", RATING_STATUS["FETCH_FAILED"])
+
+            return {
+                "overall": overall_first,
+                "seasons": seasons_out,
+                "status": RATING_STATUS["SUCCESSFUL"],
+                "url": str(season_urls[0][1]),
+                "_match_score": 100.0,
+            }
+        finally:
+            if context:
+                try:
+                    await context.close()
+                except Exception:
+                    pass
+
+    try:
+        return await browser_pool.execute_in_browser(pipeline)
+    except Exception:
+        return create_empty_rating_data("metacritic", "tv", RATING_STATUS["FETCH_FAILED"])
 
 async def extract_douban_rating(page, media_type, matched_results, request=None, douban_cookie=None):
     """从豆瓣详情页提取评分数据"""
@@ -3252,7 +3657,8 @@ async def extract_douban_rating(page, media_type, matched_results, request=None,
             return {
                 "status": RATING_STATUS["SUCCESSFUL"],
                 "rating": rating,
-                "rating_people": rating_people
+                "rating_people": rating_people,
+                "url": initial_page_url,
             }
             
         season_results = []
@@ -3287,17 +3693,19 @@ async def extract_douban_rating(page, media_type, matched_results, request=None,
             return {
                 "status": RATING_STATUS["SUCCESSFUL"],
                 "rating": rating,
-                "rating_people": rating_people
+                "rating_people": rating_people,
+                "url": initial_page_url,
             }
         
+        first_season_url = season_results[0].get("url") if season_results else None
         ratings = {
             "status": RATING_STATUS["SUCCESSFUL"],
-            "seasons": []
+            "seasons": [],
+            "url": first_season_url or initial_page_url,
         }
         
         all_seasons_no_rating = True
         processed_seasons = set()
-        first_season_url = season_results[0].get("url") if season_results else None
         
         for season_info in season_results:
             try:
@@ -4691,7 +5099,7 @@ def format_rating_output(all_ratings, media_type):
     
     return formatted_data
 
-async def parallel_extract_ratings(tmdb_info, media_type, request=None, douban_cookie=None):
+async def parallel_extract_ratings(tmdb_info, media_type, request=None, douban_cookie=None, mapping: Optional[dict] = None):
     """并行处理所有平台的评分获取"""
     import time
     start_time = time.time()
@@ -4718,20 +5126,91 @@ async def parallel_extract_ratings(tmdb_info, media_type, request=None, douban_c
                 return platform, {"status": "cancelled"}
                 
             cookie = douban_cookie if platform == "douban" else None
-            if platform == "douban":
-                rating_data = await douban_search_and_extract_rating(
-                    media_type, tmdb_info, request, cookie
-                )
+            used_mapping = False
+
+            if mapping and isinstance(mapping, dict):
+                try:
+                    if platform == "douban" and media_type == "movie":
+                        url = (mapping.get("douban_url") or "").strip()
+                        if url:
+                            used_mapping = True
+                            rating_data = await extract_rating_info(
+                                media_type,
+                                platform,
+                                tmdb_info,
+                                build_direct_mapping_search_results(platform, tmdb_info, url),
+                                request,
+                                cookie,
+                            )
+                        else:
+                            rating_data = None
+                    elif platform == "letterboxd":
+                        slug = (mapping.get("letterboxd_slug") or "").strip().strip("/")
+                        url = f"https://letterboxd.com/film/{slug}/" if slug else ""
+                        if url:
+                            used_mapping = True
+                            rating_data = await extract_rating_info(
+                                media_type,
+                                platform,
+                                tmdb_info,
+                                build_direct_mapping_search_results(platform, tmdb_info, url),
+                                request,
+                                cookie,
+                            )
+                        else:
+                            rating_data = None
+                    elif platform == "rottentomatoes":
+                        slug = (mapping.get("rotten_tomatoes_slug") or "").strip().lstrip("/")
+                        url = f"https://www.rottentomatoes.com/{slug}" if slug else ""
+                        if url:
+                            used_mapping = True
+                            rating_data = await extract_rating_info(
+                                media_type,
+                                platform,
+                                tmdb_info,
+                                build_direct_mapping_search_results(platform, tmdb_info, url),
+                                request,
+                                cookie,
+                            )
+                        else:
+                            rating_data = None
+                    elif platform == "metacritic":
+                        slug = (mapping.get("metacritic_slug") or "").strip().lstrip("/")
+                        url = f"https://www.metacritic.com/{slug}" if slug else ""
+                        if url:
+                            used_mapping = True
+                            rating_data = await extract_rating_info(
+                                media_type,
+                                platform,
+                                tmdb_info,
+                                build_direct_mapping_search_results(platform, tmdb_info, url),
+                                request,
+                                cookie,
+                            )
+                        else:
+                            rating_data = None
+                    else:
+                        rating_data = None
+                except Exception:
+                    rating_data = None
             else:
+                rating_data = None
+
+            if platform == "douban" and not used_mapping:
+                rating_data = await douban_search_and_extract_rating(media_type, tmdb_info, request, cookie)
+
+            if platform != "douban" and not used_mapping:
                 search_results = await search_platform(platform, tmdb_info, request, cookie)
                 if isinstance(search_results, dict) and "status" in search_results:
                     elapsed = time.time() - platform_start
-                    print(log.error(f"{platform}: {search_results.get('status_reason', search_results.get('status'))} ({elapsed:.1f}s)"))
+                    print(
+                        log.error(
+                            f"{platform}: {search_results.get('status_reason', search_results.get('status'))} ({elapsed:.1f}s)"
+                        )
+                    )
                     return platform, search_results
 
-                rating_data = await extract_rating_info(
-                    media_type, platform, tmdb_info, search_results, request, cookie
-                )
+                rating_data = await extract_rating_info(media_type, platform, tmdb_info, search_results, request, cookie)
             
             elapsed = time.time() - platform_start
             status = rating_data.get('status', 'Unknown')
