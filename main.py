@@ -3075,7 +3075,10 @@ async def get_platform_rating(
             if tmdb_id is not None:
                 mapping_row = (
                     db.query(MediaLinkMapping)
-                    .filter(MediaLinkMapping.tmdb_id == int(tmdb_id))
+                    .filter(
+                        MediaLinkMapping.tmdb_id == int(tmdb_id),
+                        MediaLinkMapping.media_type == (media_type or "").lower(),
+                    )
                     .one_or_none()
                 )
                 mapping_dict = _mapping_row_to_dict(mapping_row) if mapping_row else None
@@ -3092,12 +3095,14 @@ async def get_platform_rating(
         if mapping_dict:
             try:
                 direct_url = ""
+                mapping_attempted = False
                 if platform == "douban" and media_type == "movie":
                     direct_url = str(mapping_dict.get("douban_url") or "").strip()
                 elif platform == "douban" and media_type == "tv":
                     seasons_json = str(mapping_dict.get("douban_seasons_json") or "").strip()
                     if seasons_json:
                         used_mapping = True
+                        mapping_attempted = True
                         extract_start_time = time.time()
                         rating_info = await douban_extract_rating_from_season_urls(
                             tmdb_info,
@@ -3112,7 +3117,7 @@ async def get_platform_rating(
                             status = None
                             status_reason = None
                         logger.info(
-                            f"平台通过映射链接获取评分: platform=douban media_type=tv tmdb_id={tmdb_id} status={status} reason={status_reason}"
+                            f"该剧集通过豆瓣映射获取评分 {status} tmdb_id={tmdb_id} reason={status_reason}"
                         )
                         if isinstance(rating_info, dict) and rating_info.get("status") == RATING_STATUS["SUCCESSFUL"]:
                             await set_cache(cache_key, rating_info, expire=CACHE_EXPIRE_TIME)
@@ -3130,9 +3135,12 @@ async def get_platform_rating(
                             return rating_info
                         else:
                             mapping_failed = True
+                            logger.info(
+                                f"该剧集在豆瓣存在映射但未通过映射抓取: tmdb_id={tmdb_id} status={status} reason={status_reason}"
+                            )
                     else:
                         logger.info(
-                            f"平台存在映射但未通过映射抓取（douban_seasons_json 为空）: platform=douban media_type=tv tmdb_id={tmdb_id}"
+                            f"该剧集在豆瓣存在映射但未通过映射抓取: tmdb_id={tmdb_id} reason=douban_seasons_json 为空"
                         )
                 elif platform == "letterboxd":
                     direct_url = str(mapping_dict.get("letterboxd_url") or "").strip()
@@ -3145,6 +3153,7 @@ async def get_platform_rating(
                         seasons_json = str(mapping_dict.get("rotten_tomatoes_seasons_json") or "").strip()
                         if seasons_json:
                             used_mapping = True
+                            mapping_attempted = True
                             extract_start_time = time.time()
                             rating_info = await rt_extract_rating_from_season_urls(
                                 tmdb_info,
@@ -3159,7 +3168,7 @@ async def get_platform_rating(
                                 status = None
                                 status_reason = None
                             logger.info(
-                                f"平台通过映射链接获取评分: platform=rottentomatoes media_type=tv tmdb_id={tmdb_id} status={status} reason={status_reason}"
+                                f"该剧集通过rottentomatoes映射获取评分 {status} tmdb_id={tmdb_id} reason={status_reason}"
                             )
                             if isinstance(rating_info, dict) and rating_info.get("status") == RATING_STATUS["SUCCESSFUL"]:
                                 await set_cache(cache_key, rating_info, expire=CACHE_EXPIRE_TIME)
@@ -3177,6 +3186,13 @@ async def get_platform_rating(
                                 return rating_info
                             else:
                                 mapping_failed = True
+                                logger.info(
+                                    f"该剧集在rottentomatoes存在映射但未通过映射抓取: tmdb_id={tmdb_id} status={status} reason={status_reason}"
+                                )
+                        else:
+                            logger.info(
+                                f"该剧集在rottentomatoes存在映射但未通过映射抓取: tmdb_id={tmdb_id} reason=douban_seasons_json 为空"
+                            )
                     direct_url = str(mapping_dict.get("rotten_tomatoes_url") or "").strip()
                     if not direct_url:
                         slug = str(mapping_dict.get("rotten_tomatoes_slug") or "").strip().lstrip("/")
@@ -3187,6 +3203,7 @@ async def get_platform_rating(
                         seasons_json = str(mapping_dict.get("metacritic_seasons_json") or "").strip()
                         if seasons_json:
                             used_mapping = True
+                            mapping_attempted = True
                             extract_start_time = time.time()
                             rating_info = await metacritic_extract_rating_from_season_urls(
                                 tmdb_info,
@@ -3201,7 +3218,7 @@ async def get_platform_rating(
                                 status = None
                                 status_reason = None
                             logger.info(
-                                f"平台通过映射链接获取评分: platform=metacritic media_type=tv tmdb_id={tmdb_id} status={status} reason={status_reason}"
+                                f"该剧集通过metacritic映射获取评分 {status} tmdb_id={tmdb_id} reason={status_reason}"
                             )
                             if isinstance(rating_info, dict) and rating_info.get("status") == RATING_STATUS["SUCCESSFUL"]:
                                 await set_cache(cache_key, rating_info, expire=CACHE_EXPIRE_TIME)
@@ -3219,6 +3236,13 @@ async def get_platform_rating(
                                 return rating_info
                             else:
                                 mapping_failed = True
+                                logger.info(
+                                    f"该剧集通过metacritic映射获取评分 {status} tmdb_id={tmdb_id} reason={status_reason}"
+                                )
+                        else:
+                            logger.info(
+                                f"该剧集通过metacritic映射获取评分 {status} tmdb_id={tmdb_id} reason={status_reason}"
+                            )
                     direct_url = str(mapping_dict.get("metacritic_url") or "").strip()
                     if not direct_url:
                         slug = str(mapping_dict.get("metacritic_slug") or "").strip().lstrip("/")
@@ -3226,6 +3250,7 @@ async def get_platform_rating(
                             direct_url = f"https://www.metacritic.com/{slug}"
 
                 if direct_url:
+                    mapping_attempted = True
                     used_mapping = True
                     extract_start_time = time.time()
                     rating_info = await extract_rating_info(
@@ -3243,7 +3268,7 @@ async def get_platform_rating(
                         status = None
                         status_reason = None
                     logger.info(
-                        f"平台通过映射链接获取评分: platform={platform} media_type={media_type} tmdb_id={tmdb_id} status={status} reason={status_reason}"
+                        f"{platform} 通过映射获取 {media_type} 评分{status} tmdb_id={tmdb_id} status={status} reason={status_reason}"
                     )
                     if isinstance(rating_info, dict) and rating_info.get("status") == RATING_STATUS["SUCCESSFUL"]:
                         await set_cache(cache_key, rating_info, expire=CACHE_EXPIRE_TIME)
@@ -3261,8 +3286,20 @@ async def get_platform_rating(
                         return rating_info
                     else:
                         mapping_failed = True
+                        logger.info(
+                            f"该{media_type} 在 {platform} 存在映射但未通过映射抓取 tmdb_id={tmdb_id} status={status} reason={status_reason}"
+                        )
             except Exception:
                 mapping_failed = True
+
+                logger.info(
+                    f"该{media_type} 在 {platform} 存在映射但未通过映射抓取 tmdb_id={tmdb_id} status={status} reason=exception"
+                )
+
+        if not mapping_dict:
+            logger.info(
+                f"{platform} 未存在该 {media_type} 映射将通过原方式抓取 tmdb_id={tmdb_id}"
+            )
 
         if platform == "douban":
             rating_info = await douban_search_and_extract_rating(media_type, tmdb_info, request, douban_cookie)
