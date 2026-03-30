@@ -3235,7 +3235,7 @@ async def douban_extract_rating_from_season_urls(
         url = str(v or "").strip()
         if not url:
             continue
-        season_items.append({"title": f"第{sn}季", "url": url, "match_score": 100, "season_number": sn})
+        season_items.append({"title": f"Season {sn}", "url": url, "match_score": 100, "season_number": sn})
     season_items.sort(key=lambda x: int(x.get("season_number") or 0))
     if not season_items:
         return create_empty_rating_data("douban", "tv", RATING_STATUS["NO_FOUND"])
