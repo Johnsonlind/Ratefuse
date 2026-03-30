@@ -18,6 +18,7 @@ import {
   ChevronRight,
   Lock,
   Users,
+  Link2,
 } from 'lucide-react';
 import { cn } from '../../shared/utils/utils';
 
@@ -28,6 +29,7 @@ const SIDEBAR_ITEMS = [
   { id: 'rating-input', path: '/admin/ratings/input', label: '评分手动录入', icon: PenLine },
   { id: 'rating-edit', path: '/admin/ratings/edit', label: '评分数据修改', icon: Edit3 },
   { id: 'platform-status', path: '/admin/platform-status', label: '平台锁定', icon: Lock },
+  { id: 'media-link-mapping', path: '/admin/media-link-mapping', label: '链接映射库', icon: Link2 },
   { id: 'feedbacks', path: '/admin/feedbacks', label: '用户反馈', icon: MessageCircle },
   { id: 'detail-views', path: '/admin/detail-views', label: '访问记录', icon: Eye },
   { id: 'other', path: '/admin/other', label: '其他功能', icon: MoreHorizontal },
