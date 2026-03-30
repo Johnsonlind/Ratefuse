@@ -5,7 +5,7 @@ import os
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, ForeignKey, Boolean, Text, UniqueConstraint, text, BigInteger
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, ForeignKey, Boolean, Text, UniqueConstraint, text, BigInteger, Enum, Float
 from sqlalchemy.orm import sessionmaker, relationship, declarative_base
 from sqlalchemy.pool import QueuePool
 from sqlalchemy.dialects.mysql import LONGTEXT
@@ -311,6 +311,42 @@ class MediaPlatformStatusLog(Base):
     operator = relationship("User")
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+class MediaLinkMapping(Base):
+    __tablename__ = "media_link_mapping"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    tmdb_id = Column(Integer, nullable=False, unique=True, index=True)
+    media_type = Column(Enum("movie", "tv", name="media_link_mapping_media_type"), nullable=False, index=True)
+    title = Column(String(255), nullable=True, index=True)
+    year = Column(Integer, nullable=True, index=True)
+    imdb_id = Column(String(50), nullable=True, index=True)
+
+    douban_id = Column(String(50), nullable=True, index=True)
+    douban_url = Column(Text, nullable=True)
+    douban_seasons_json = Column(LONGTEXT, nullable=True)
+    douban_seasons_ids_json = Column(LONGTEXT, nullable=True)
+    letterboxd_url = Column(Text, nullable=True)
+    letterboxd_slug = Column(String(255), nullable=True, index=True)
+    rotten_tomatoes_url = Column(Text, nullable=True)
+    rotten_tomatoes_slug = Column(String(255), nullable=True, index=True)
+    rotten_tomatoes_seasons_json = Column(LONGTEXT, nullable=True)
+    metacritic_url = Column(Text, nullable=True)
+    metacritic_slug = Column(String(255), nullable=True, index=True)
+    metacritic_seasons_json = Column(LONGTEXT, nullable=True)
+
+    match_status = Column(
+        Enum("auto", "manual", "conflict", name="media_link_mapping_match_status"),
+        nullable=False,
+        default="auto",
+        index=True,
+    )
+    confidence = Column(Float, nullable=True)
+    last_verified_at = Column(DateTime, nullable=True, index=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False, index=True)
 
 def init_db():
     Base.metadata.create_all(bind=engine)
