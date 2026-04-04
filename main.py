@@ -19,6 +19,9 @@ from html import escape as html_escape, unescape as html_unescape
 
 load_dotenv()
 
+# 会员商业化：与前端 VITE_MEMBERSHIP_ENABLED 对应；默认关闭，登录用户即可通过原会员接口校验
+MEMBERSHIP_ENABLED = os.getenv("MEMBERSHIP_ENABLED", "false").strip().lower() in ("1", "true", "yes")
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -96,6 +99,7 @@ def _strip_redis_password(url: str) -> str:
         
 from models import (
     engine,
+    init_db,
     User,
     Favorite,
     FavoriteList,
@@ -115,6 +119,9 @@ from models import (
     MediaPlatformStatusLog,
     TelegramFeedbackMapping,
     MediaLinkMapping,
+    ResourceEntry,
+    ResourceFavorite,
+    PaymentOrder,
 )
 from sqlalchemy.orm import Session, selectinload
 from ratings import (
@@ -233,6 +240,12 @@ TELEGRAM_ADMIN_CHAT_IDS = [
 ]
 
 app = FastAPI()
+
+@app.on_event("startup")
+def _startup_init_db() -> None:
+    # Ensure tables exist and patch missing columns (e.g. users.is_member).
+    init_db()
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -407,6 +420,25 @@ async def get_current_user_optional(
     except JWTError:
         return None
 
+
+def is_active_member(user: Optional[User]) -> bool:
+    if not user:
+        return False
+    if not MEMBERSHIP_ENABLED:
+        return False
+    if not getattr(user, "is_member", False):
+        return False
+    expired_at = getattr(user, "member_expired_at", None)
+    if not expired_at:
+        return True
+    return expired_at > datetime.utcnow()
+
+
+def require_member(current_user: User = Depends(get_current_user)) -> User:
+    if not is_active_member(current_user):
+        raise HTTPException(status_code=403, detail="仅会员可访问")
+    return current_user
+
 async def get_cache(key: str):
     if redis:
         try:
@@ -535,6 +567,53 @@ def _notify_admins(
         created += 1
     return created
 
+
+def _notify_favorited_media_new_resource(db: Session, entry: "ResourceEntry", actor_user_id: int) -> int:
+    """
+    When a new resource is shared for a media that some users have favorited,
+    notify them and auto-favorite the resource entry for them.
+    """
+    try:
+        media_type = str(entry.media_type or "").strip()
+        tmdb_id = int(entry.tmdb_id or 0)
+    except Exception:
+        return 0
+    if not media_type or tmdb_id <= 0:
+        return 0
+
+    fav_media_rows = (
+        db.query(Favorite.user_id)
+        .filter(Favorite.media_type == media_type, Favorite.media_id == str(tmdb_id))
+        .distinct()
+        .all()
+    )
+    user_ids = [int(uid) for (uid,) in fav_media_rows if uid and int(uid) != int(actor_user_id)]
+    if not user_ids:
+        return 0
+
+    existing_fav_rows = (
+        db.query(ResourceFavorite.user_id)
+        .filter(ResourceFavorite.resource_id == entry.id, ResourceFavorite.user_id.in_(user_ids))
+        .all()
+    )
+    already = {int(uid) for (uid,) in existing_fav_rows if uid}
+    to_add = [uid for uid in user_ids if uid not in already]
+
+    now = _now_utc_naive()
+    created = 0
+    for uid in to_add:
+        db.add(ResourceFavorite(user_id=uid, resource_id=entry.id, created_at=now))
+        created += 1
+
+    title = getattr(entry, "media_title", None) or f"TMDB:{tmdb_id}"
+    platform = getattr(entry, "resource_type", None) or "resource"
+    link = "/profile?tab=resources"
+    content = f"你收藏的《{title}》新增 {platform} 资源，已为你自动收藏。"
+    for uid in user_ids:
+        _create_notification(db, user_id=uid, type_="resource_added", content=content, link=link)
+
+    return created
+
 def _avatar_url_or_none(user: Optional[User]) -> Optional[str]:
     if not user:
         return None
@@ -612,7 +691,9 @@ async def register(
         "user": {
             "id": user.id,
             "email": user.email,
-            "username": user.username
+            "username": user.username,
+            "is_member": is_active_member(user),
+            "member_expired_at": user.member_expired_at.isoformat() if user.member_expired_at else None,
         }
     }
 
@@ -658,6 +739,8 @@ async def login(request: Request):
             "username": user.username,
             "avatar": _avatar_url_or_none(user),
             "is_admin": getattr(user, "is_admin", False),
+            "is_member": is_active_member(user),
+            "member_expired_at": user.member_expired_at.isoformat() if user.member_expired_at else None,
         }
         
         if remember_me:
@@ -837,7 +920,9 @@ async def get_current_user_info(
         "email": current_user.email,
         "username": current_user.username,
         "avatar": _avatar_url_or_none(current_user),
-        "is_admin": current_user.is_admin
+        "is_admin": current_user.is_admin,
+        "is_member": is_active_member(current_user),
+        "member_expired_at": current_user.member_expired_at.isoformat() if current_user.member_expired_at else None,
     }
 
 @app.put("/api/user/douban-cookie")
@@ -920,7 +1005,10 @@ async def update_profile(
                 "id": current_user.id,
                 "email": current_user.email,
                 "username": current_user.username,
-                "avatar": _avatar_url_or_none(current_user)
+                "avatar": _avatar_url_or_none(current_user),
+                "is_admin": current_user.is_admin,
+                "is_member": is_active_member(current_user),
+                "member_expired_at": current_user.member_expired_at.isoformat() if current_user.member_expired_at else None,
             }
         }
     except Exception as e:
@@ -1827,6 +1915,7 @@ async def search_users(
 async def admin_list_users(
     q: str = "",
     banned: Optional[str] = None,
+    member: Optional[str] = None,
     limit: int = 20,
     offset: int = 0,
     current_user: User = Depends(get_current_user),
@@ -1850,6 +1939,13 @@ async def admin_list_users(
         elif banned == "normal":
             base = base.filter((getattr(User, "is_banned") == False) | (getattr(User, "is_banned") == None))
 
+    if member:
+        member = member.strip().lower()
+        if member == "member":
+            base = base.filter(getattr(User, "is_member") == True)
+        elif member == "normal":
+            base = base.filter((getattr(User, "is_member") == False) | (getattr(User, "is_member") == None))
+
     total = base.with_entities(func.count(User.id)).scalar() or 0
 
     rows = (
@@ -1868,6 +1964,8 @@ async def admin_list_users(
                 "avatar": _avatar_url_or_none(u),
                 "is_admin": getattr(u, "is_admin", False),
                 "is_banned": getattr(u, "is_banned", False),
+                "is_member": getattr(u, "is_member", False),
+                "member_expired_at": _to_shanghai_iso(getattr(u, "member_expired_at", None)),
                 "created_at": u.created_at.isoformat() if getattr(u, "created_at", None) else None,
             }
             for u in rows
@@ -1934,6 +2032,79 @@ async def admin_unban_user(
         db.add(user)
         db.commit()
     return {"ok": True}
+
+
+@app.post("/api/admin/users/{user_id}/member")
+async def admin_set_user_member(
+    user_id: int,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_admin(current_user)
+    if not MEMBERSHIP_ENABLED:
+        raise HTTPException(status_code=503, detail="会员功能暂未开放")
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    body = await request.json()
+    is_member = bool(body.get("is_member"))
+    days_raw = body.get("days")
+    days = int(days_raw) if days_raw not in (None, "", False) else 30
+    days = max(1, min(days, 3650))
+
+    user.is_member = is_member
+    if is_member:
+        now = datetime.utcnow()
+        base = user.member_expired_at if getattr(user, "member_expired_at", None) and user.member_expired_at > now else now
+        user.member_expired_at = base + timedelta(days=days)
+    else:
+        user.member_expired_at = None
+
+    db.add(user)
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/admin/users/member/batch")
+async def admin_set_user_member_batch(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_admin(current_user)
+    if not MEMBERSHIP_ENABLED:
+        raise HTTPException(status_code=503, detail="会员功能暂未开放")
+    body = await request.json()
+    ids = body.get("ids") or []
+    if not isinstance(ids, list) or not ids:
+        raise HTTPException(status_code=400, detail="ids 不能为空")
+    is_member = bool(body.get("is_member"))
+    days_raw = body.get("days")
+    days = int(days_raw) if days_raw not in (None, "", False) else 30
+    days = max(1, min(days, 3650))
+
+    user_ids: list[int] = []
+    for x in ids:
+        try:
+            user_ids.append(int(x))
+        except Exception:
+            continue
+    if not user_ids:
+        raise HTTPException(status_code=400, detail="ids 无效")
+
+    users = db.query(User).filter(User.id.in_(user_ids)).all()
+    now = datetime.utcnow()
+    for u in users:
+        u.is_member = is_member
+        if is_member:
+            base = u.member_expired_at if getattr(u, "member_expired_at", None) and u.member_expired_at > now else now
+            u.member_expired_at = base + timedelta(days=days)
+        else:
+            u.member_expired_at = None
+        db.add(u)
+    db.commit()
+    return {"ok": True, "updated": len(users)}
 
 @app.get("/api/users/{user_id}")
 async def get_user_info(
@@ -2435,9 +2606,24 @@ def _mapping_row_to_dict(
         "created_at": _to_shanghai_iso(row.created_at),
         "updated_at": _to_shanghai_iso(row.updated_at),
     }
-    if platform_lock_statuses:
+    # Always include the key so the admin UI can rely on it; empty {} means no per-platform rows.
+    if platform_lock_statuses is not None:
         data["platform_lock_statuses"] = platform_lock_statuses
     return data
+
+def _platform_lock_statuses_for_mapping(db: Session, row: MediaLinkMapping) -> dict[str, str]:
+    out: dict[str, str] = {}
+    status_rows = (
+        db.query(MediaPlatformStatus)
+        .filter(
+            MediaPlatformStatus.tmdb_id == int(row.tmdb_id),
+            func.lower(MediaPlatformStatus.media_type) == str(row.media_type or "").lower(),
+        )
+        .all()
+    )
+    for s in status_rows:
+        out[str(s.platform).lower()] = str(s.status or "").lower()
+    return out
 
 def _can_upsert_platform_mapping(
     db: Session,
@@ -2648,20 +2834,56 @@ def _upsert_media_link_mapping(
             if row is None:
                 raise
 
-    row.media_type = media_type
-    row.title = title or row.title
-    row.year = year_int if year_int is not None else row.year
-    row.imdb_id = imdb_id or row.imdb_id
-    row.match_status = match_status
-    row.confidence = confidence
-    row.updated_at = now
+    # Only bump `updated_at` when the mapping content actually changes.
+    # If nothing changes, we still allow updating `last_verified_at` for auto verification.
+    desired_media_type = media_type
+    desired_title = title or row.title
+    desired_year = year_int if year_int is not None else row.year
+    desired_imdb_id = imdb_id or row.imdb_id
+    desired_match_status = match_status
+    desired_confidence = confidence
+
+    mapping_changed = (
+        row.media_type != desired_media_type
+        or row.title != desired_title
+        or row.year != desired_year
+        or row.imdb_id != desired_imdb_id
+        or row.match_status != desired_match_status
+        or row.confidence != desired_confidence
+    )
+
     if verified:
+        # Verification time can change frequently, but should not imply `updated_at` moved.
+        # We still set it here; `updated_at` is handled below.
         row.last_verified_at = now
+
+    # Apply patch fields only (and detect whether they caused any change).
     for k, v in patch.items():
         if v is None:
             continue
-        if hasattr(row, k):
+        if not hasattr(row, k):
+            continue
+        current = getattr(row, k)
+        if current != v:
+            mapping_changed = True
             setattr(row, k, v)
+
+    # Apply base fields only when different.
+    if row.media_type != desired_media_type:
+        row.media_type = desired_media_type
+    if row.title != desired_title:
+        row.title = desired_title
+    if row.year != desired_year:
+        row.year = desired_year
+    if row.imdb_id != desired_imdb_id:
+        row.imdb_id = desired_imdb_id
+    if row.match_status != desired_match_status:
+        row.match_status = desired_match_status
+    if row.confidence != desired_confidence:
+        row.confidence = desired_confidence
+
+    if mapping_changed:
+        row.updated_at = now
 
 @app.get("/")
 async def root():
@@ -3126,6 +3348,7 @@ async def get_platform_rating(
 
         used_mapping = False
         mapping_failed = False
+        rating_info: Any = None
 
         if mapping_dict:
             try:
@@ -3341,49 +3564,61 @@ async def get_platform_rating(
                 f"{platform} 未存在该 {media_type} 映射将通过原方式抓取 tmdb_id={tmdb_id}"
             )
 
-        if platform == "douban":
-            rating_info = await douban_search_and_extract_rating(media_type, tmdb_info, request, douban_cookie)
-            search_results = None
-        else:
-            search_results = await search_platform(platform, tmdb_info, request, douban_cookie)
+        skip_search_no_rating = (
+            used_mapping
+            and isinstance(rating_info, dict)
+            and rating_info.get("status") == RATING_STATUS["NO_RATING"]
+        )
+        if skip_search_no_rating:
+            logger.info(
+                f"{platform} 映射已为同一条目且结果为 No Rating，跳过搜索: "
+                f"media_type={media_type} tmdb_id={tmdb_id}"
+            )
 
-            if isinstance(search_results, dict) and search_results.get("status") in (
-                RATING_STATUS["NO_FOUND"],
-                RATING_STATUS["RATE_LIMIT"],
-                RATING_STATUS["TIMEOUT"],
-                RATING_STATUS["FETCH_FAILED"],
-            ):
-                reason = search_results.get("status_reason") or search_results.get("status")
-                rating_info = create_rating_data(search_results["status"], reason)
-                rating_info["_performance"] = {
-                    "total_time": round(time.time() - start_time, 2),
-                    "search_time": round(time.time() - search_start_time, 2),
-                    "extract_time": 0,
-                    "cached": False,
-                }
-                if tmdb_id is not None:
-                    update_platform_status_after_fetch(
-                        db,
-                        media_type=media_type,
-                        tmdb_id=tmdb_id,
-                        platform=platform,
-                        title=tmdb_info.get("title") or tmdb_info.get("name"),
-                        status=rating_info["status"],
-                        status_reason=rating_info.get("status_reason"),
-                    )
-                    db.commit()
-                return rating_info
+        if not skip_search_no_rating:
+            if platform == "douban":
+                rating_info = await douban_search_and_extract_rating(media_type, tmdb_info, request, douban_cookie)
+                search_results = None
+            else:
+                search_results = await search_platform(platform, tmdb_info, request, douban_cookie)
 
-            if await request.is_disconnected():
-                print(f"{platform} 请求在搜索平台后被取消")
-                return None
+                if isinstance(search_results, dict) and search_results.get("status") in (
+                    RATING_STATUS["NO_FOUND"],
+                    RATING_STATUS["RATE_LIMIT"],
+                    RATING_STATUS["TIMEOUT"],
+                    RATING_STATUS["FETCH_FAILED"],
+                ):
+                    reason = search_results.get("status_reason") or search_results.get("status")
+                    rating_info = create_rating_data(search_results["status"], reason)
+                    rating_info["_performance"] = {
+                        "total_time": round(time.time() - start_time, 2),
+                        "search_time": round(time.time() - search_start_time, 2),
+                        "extract_time": 0,
+                        "cached": False,
+                    }
+                    if tmdb_id is not None:
+                        update_platform_status_after_fetch(
+                            db,
+                            media_type=media_type,
+                            tmdb_id=tmdb_id,
+                            platform=platform,
+                            title=tmdb_info.get("title") or tmdb_info.get("name"),
+                            status=rating_info["status"],
+                            status_reason=rating_info.get("status_reason"),
+                        )
+                        db.commit()
+                    return rating_info
 
-            if isinstance(search_results, dict) and search_results.get("status") == "cancelled":
-                print(f"{platform} 搜索被取消")
-                return None
+                if await request.is_disconnected():
+                    print(f"{platform} 请求在搜索平台后被取消")
+                    return None
 
-            extract_start_time = time.time()
-            rating_info = await extract_rating_info(type, platform, tmdb_info, search_results, request, douban_cookie)
+                if isinstance(search_results, dict) and search_results.get("status") == "cancelled":
+                    print(f"{platform} 搜索被取消")
+                    return None
+
+                extract_start_time = time.time()
+                rating_info = await extract_rating_info(type, platform, tmdb_info, search_results, request, douban_cookie)
 
         if platform == "douban":
             if isinstance(rating_info, dict) and rating_info.get("status") in (
@@ -3412,7 +3647,7 @@ async def get_platform_rating(
                 return rating_info
 
         try:
-            if mapping_failed and isinstance(rating_info, dict):
+            if mapping_failed and isinstance(rating_info, dict) and not skip_search_no_rating:
                 patch = _mapping_patch_from_platform_result(platform, media_type, rating_info)
                 if _should_upsert_mapping(db, platform, media_type, tmdb_id, patch):
                     _upsert_media_link_mapping(
@@ -3742,6 +3977,19 @@ async def telegram_webhook(update: TelegramUpdate, db: Session = Depends(get_db)
         cq = update.callback_query
         data = cq.get("data") or ""
         parts = str(data).split(":")
+        if len(parts) == 3 and parts[0] == "res":
+            try:
+                resource_id = int(parts[1])
+            except Exception:
+                return {"ok": True}
+            action = parts[2]
+            if action in ("approve", "reject"):
+                resource = db.query(ResourceEntry).filter(ResourceEntry.id == resource_id).first()
+                if resource:
+                    resource.status = "approved" if action == "approve" else "rejected"
+                    resource.reviewed_at = datetime.utcnow()
+                    db.commit()
+            return {"ok": True}
         if len(parts) == 4 and parts[0] == "fb" and parts[2] == "status":
             try:
                 feedback_id = int(parts[1])
@@ -4925,7 +5173,7 @@ async def admin_list_media_link_mappings(
             .all()
         )
         for s in status_rows:
-            key = (int(s.tmdb_id), str(s.media_type))
+            key = (int(s.tmdb_id), str(s.media_type or "").lower())
             if key not in lock_status_map:
                 lock_status_map[key] = {}
             lock_status_map[key][str(s.platform).lower()] = str(s.status or "").lower()
@@ -4934,7 +5182,7 @@ async def admin_list_media_link_mappings(
         "items": [
             _mapping_row_to_dict(
                 r,
-                lock_status_map.get((int(r.tmdb_id), str(r.media_type)), {}),
+                lock_status_map.get((int(r.tmdb_id), str(r.media_type or "").lower()), {}),
             )
             for r in rows
         ],
@@ -4953,18 +5201,7 @@ async def admin_get_media_link_mapping(
     row = db.query(MediaLinkMapping).filter(MediaLinkMapping.id == mapping_id).one_or_none()
     if not row:
         raise HTTPException(status_code=404, detail="记录不存在")
-    platform_lock_statuses: dict[str, str] = {}
-    status_rows = (
-        db.query(MediaPlatformStatus)
-        .filter(
-            MediaPlatformStatus.tmdb_id == int(row.tmdb_id),
-            MediaPlatformStatus.media_type == str(row.media_type),
-        )
-        .all()
-    )
-    for s in status_rows:
-        platform_lock_statuses[str(s.platform).lower()] = str(s.status or "").lower()
-    return {"item": _mapping_row_to_dict(row, platform_lock_statuses)}
+    return {"item": _mapping_row_to_dict(row, _platform_lock_statuses_for_mapping(db, row))}
 
 @app.post("/api/admin/media-link-mappings")
 async def admin_create_media_link_mapping(
@@ -5024,7 +5261,7 @@ async def admin_create_media_link_mapping(
         db.rollback()
         raise HTTPException(status_code=500, detail=f"创建失败: {str(e)}")
 
-    return {"item": _mapping_row_to_dict(row)}
+    return {"item": _mapping_row_to_dict(row, _platform_lock_statuses_for_mapping(db, row))}
 
 @app.put("/api/admin/media-link-mappings/{mapping_id}")
 async def admin_update_media_link_mapping(
@@ -5083,7 +5320,7 @@ async def admin_update_media_link_mapping(
         db.rollback()
         raise HTTPException(status_code=500, detail=f"更新失败: {str(e)}")
 
-    return {"item": _mapping_row_to_dict(row)}
+    return {"item": _mapping_row_to_dict(row, _platform_lock_statuses_for_mapping(db, row))}
 
 @app.delete("/api/admin/media-link-mappings/{mapping_id}")
 async def admin_delete_media_link_mapping(
@@ -6742,6 +6979,320 @@ async def health_check():
         "browser_pool_stats": browser_pool_stats
     }
 
+
+# ==========================================
+# 131. 会员 / 资源系统（开发版）
+# ==========================================
+RESOURCE_TYPES = ["baidu", "quark", "xunlei", "115", "uc", "ali", "magnet"]
+MEMBER_PLAN_MAP = {
+    "month": {"amount": 3, "days": 30, "label": "3元/月"},
+    "half_year": {"amount": 15, "days": 180, "label": "15元/半年"},
+    "year": {"amount": 33, "days": 365, "label": "33元/一年"},
+}
+
+
+def _resource_to_dict(entry: ResourceEntry, current_user: Optional[User] = None):
+    is_owner = bool(current_user and entry.submitted_by == current_user.id)
+    is_admin = bool(current_user and current_user.is_admin)
+    return {
+        "id": entry.id,
+        "media_type": entry.media_type,
+        "tmdb_id": entry.tmdb_id,
+        "media_title": entry.media_title,
+        "media_year": entry.media_year,
+        "resource_type": entry.resource_type,
+        "link": entry.link,
+        "extraction_code": entry.extraction_code,
+        "status": entry.status,
+        "submitted_by": entry.submitted_by,
+        "created_at": _to_shanghai_iso(entry.created_at),
+        "updated_at": _to_shanghai_iso(entry.updated_at),
+        "can_edit": is_owner or is_admin,
+        "can_delete": is_owner or is_admin,
+    }
+
+
+@app.get("/api/member/plans")
+async def list_member_plans():
+    if not MEMBERSHIP_ENABLED:
+        return {"plans": [], "disabled": True}
+    return {
+        "plans": [
+            {"key": key, **value}
+            for key, value in MEMBER_PLAN_MAP.items()
+        ]
+    }
+
+
+@app.post("/api/member/orders")
+async def create_member_order(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not MEMBERSHIP_ENABLED:
+        raise HTTPException(status_code=503, detail="会员功能暂未开放")
+    data = await request.json()
+    plan_key = str(data.get("plan") or "").strip()
+    if plan_key not in MEMBER_PLAN_MAP:
+        raise HTTPException(status_code=400, detail="不支持的会员套餐")
+    plan = MEMBER_PLAN_MAP[plan_key]
+    order = PaymentOrder(
+        order_id=f"dev_{secrets.token_hex(8)}",
+        user_id=current_user.id,
+        amount=plan["amount"],
+        status="pending",
+    )
+    db.add(order)
+    db.commit()
+    db.refresh(order)
+    # 开发阶段：立即模拟支付回调成功
+    order.status = "paid"
+    now = datetime.utcnow()
+    base = current_user.member_expired_at if current_user.member_expired_at and current_user.member_expired_at > now else now
+    current_user.is_member = True
+    current_user.member_expired_at = base + timedelta(days=int(plan["days"]))
+    db.commit()
+    return {
+        "order_id": order.order_id,
+        "status": order.status,
+        "simulated_paid": True,
+        "is_member": is_active_member(current_user),
+        "member_expired_at": current_user.member_expired_at.isoformat() if current_user.member_expired_at else None,
+    }
+
+
+@app.get("/api/export/check")
+async def export_member_check(current_user: User = Depends(require_member)):
+    return {"ok": True, "user_id": current_user.id}
+
+
+@app.get("/api/resources/{media_type}/{tmdb_id}")
+async def list_resources(
+    media_type: str,
+    tmdb_id: int,
+    current_user: User = Depends(require_member),
+    db: Session = Depends(get_db),
+):
+    approved = db.query(ResourceEntry).filter(
+        ResourceEntry.media_type == media_type,
+        ResourceEntry.tmdb_id == tmdb_id,
+        ResourceEntry.status == "approved",
+    ).all()
+    own_pending = db.query(ResourceEntry).filter(
+        ResourceEntry.media_type == media_type,
+        ResourceEntry.tmdb_id == tmdb_id,
+        ResourceEntry.submitted_by == current_user.id,
+        ResourceEntry.status != "approved",
+    ).all()
+    ids = [r.id for r in approved + own_pending]
+    favored_ids = set()
+    if ids:
+        rows = db.query(ResourceFavorite.resource_id).filter(
+            ResourceFavorite.user_id == current_user.id,
+            ResourceFavorite.resource_id.in_(ids),
+        ).all()
+        favored_ids = {rid for (rid,) in rows}
+    items = []
+    for item in approved + own_pending:
+        row = _resource_to_dict(item, current_user)
+        row["is_favorited"] = item.id in favored_ids
+        items.append(row)
+    return {
+        "disclaimer": "本站仅提供链接跳转，不存储任何资源。如有侵权请联系删除。",
+        "resources": items,
+        "approved_types": [r.resource_type for r in approved],
+    }
+
+
+@app.post("/api/resources")
+async def create_resource(
+    request: Request,
+    current_user: User = Depends(require_member),
+    db: Session = Depends(get_db),
+):
+    data = await request.json()
+    resource_type = str(data.get("resource_type") or "").strip()
+    if resource_type not in RESOURCE_TYPES:
+        raise HTTPException(status_code=400, detail="资源类型不支持")
+    if not data.get("agreement_confirmed"):
+        raise HTTPException(status_code=400, detail="请先勾选协议")
+    media_type = str(data.get("media_type") or "").strip()
+    tmdb_id = int(data.get("tmdb_id") or 0)
+    if tmdb_id <= 0:
+        raise HTTPException(status_code=400, detail="tmdb_id 无效")
+    approved_exists = db.query(ResourceEntry).filter(
+        ResourceEntry.media_type == media_type,
+        ResourceEntry.tmdb_id == tmdb_id,
+        ResourceEntry.resource_type == resource_type,
+        ResourceEntry.status == "approved",
+    ).first()
+    if approved_exists:
+        raise HTTPException(status_code=409, detail="该类型资源已有已审核记录")
+    entry = ResourceEntry(
+        media_type=media_type,
+        tmdb_id=tmdb_id,
+        media_title=str(data.get("media_title") or "").strip() or f"TMDB:{tmdb_id}",
+        media_year=int(data["media_year"]) if data.get("media_year") else None,
+        resource_type=resource_type,
+        link=str(data.get("link") or "").strip(),
+        extraction_code=(str(data.get("extraction_code") or "").strip() or None),
+        agreement_confirmed=True,
+        status="approved",  # 开发阶段自动通过
+        submitted_by=current_user.id,
+        reviewed_by=current_user.id if current_user.is_admin else None,
+        reviewed_at=datetime.utcnow(),
+    )
+    if not entry.link:
+        raise HTTPException(status_code=400, detail="链接不能为空")
+    db.add(entry)
+    db.commit()
+    db.refresh(entry)
+    try:
+        # Notify users who favorited this media and auto-favorite this resource for them.
+        _notify_favorited_media_new_resource(db, entry=entry, actor_user_id=current_user.id)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        logger.error(f"创建资源后通知/自动收藏失败: {e}")
+    return _resource_to_dict(entry, current_user)
+
+
+@app.put("/api/resources/{resource_id}")
+async def update_resource(
+    resource_id: int,
+    request: Request,
+    current_user: User = Depends(require_member),
+    db: Session = Depends(get_db),
+):
+    entry = db.query(ResourceEntry).filter(ResourceEntry.id == resource_id).first()
+    if not entry:
+        raise HTTPException(status_code=404, detail="资源不存在")
+    if entry.submitted_by != current_user.id and not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="无权限修改该资源")
+    data = await request.json()
+    if data.get("link"):
+        entry.link = str(data.get("link")).strip()
+    if "extraction_code" in data:
+        entry.extraction_code = (str(data.get("extraction_code") or "").strip() or None)
+    entry.status = "pending"
+    db.commit()
+    db.refresh(entry)
+    return _resource_to_dict(entry, current_user)
+
+
+@app.delete("/api/resources/{resource_id}")
+async def delete_resource(
+    resource_id: int,
+    current_user: User = Depends(require_member),
+    db: Session = Depends(get_db),
+):
+    entry = db.query(ResourceEntry).filter(ResourceEntry.id == resource_id).first()
+    if not entry:
+        raise HTTPException(status_code=404, detail="资源不存在")
+    if entry.submitted_by != current_user.id and not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="无权限删除该资源")
+    db.query(ResourceFavorite).filter(ResourceFavorite.resource_id == entry.id).delete()
+    db.delete(entry)
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/resources/{resource_id}/favorite")
+async def favorite_resource(
+    resource_id: int,
+    current_user: User = Depends(require_member),
+    db: Session = Depends(get_db),
+):
+    exists = db.query(ResourceFavorite).filter(
+        ResourceFavorite.user_id == current_user.id,
+        ResourceFavorite.resource_id == resource_id,
+    ).first()
+    if exists:
+        return {"ok": True, "duplicated": True}
+    fav = ResourceFavorite(user_id=current_user.id, resource_id=resource_id)
+    db.add(fav)
+    db.commit()
+    return {"ok": True}
+
+
+@app.delete("/api/resources/{resource_id}/favorite")
+async def unfavorite_resource(
+    resource_id: int,
+    current_user: User = Depends(require_member),
+    db: Session = Depends(get_db),
+):
+    db.query(ResourceFavorite).filter(
+        ResourceFavorite.user_id == current_user.id,
+        ResourceFavorite.resource_id == resource_id,
+    ).delete()
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/user/resources/shared")
+async def my_shared_resources(
+    current_user: User = Depends(require_member),
+    db: Session = Depends(get_db),
+):
+    rows = db.query(ResourceEntry).filter(
+        ResourceEntry.submitted_by == current_user.id
+    ).order_by(ResourceEntry.created_at.desc()).all()
+    return [_resource_to_dict(r, current_user) for r in rows]
+
+
+@app.get("/api/user/resources/favorites")
+async def my_resource_favorites(
+    current_user: User = Depends(require_member),
+    db: Session = Depends(get_db),
+):
+    rows = db.query(ResourceEntry).join(
+        ResourceFavorite, ResourceFavorite.resource_id == ResourceEntry.id
+    ).filter(
+        ResourceFavorite.user_id == current_user.id
+    ).order_by(ResourceFavorite.created_at.desc()).all()
+    # 列表项均为当前用户已收藏的资源，前端用心形展示「已收藏」
+    return [{**_resource_to_dict(r, current_user), "is_favorited": True} for r in rows]
+
+
+@app.get("/api/admin/resources")
+async def admin_list_resources(
+    status: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_admin(current_user)
+    q = db.query(ResourceEntry)
+    if status:
+        q = q.filter(ResourceEntry.status == status)
+    rows = q.order_by(ResourceEntry.created_at.desc()).all()
+    return [_resource_to_dict(r, current_user) for r in rows]
+
+
+@app.post("/api/admin/resources/{resource_id}/review")
+async def admin_review_resource(
+    resource_id: int,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_admin(current_user)
+    entry = db.query(ResourceEntry).filter(ResourceEntry.id == resource_id).first()
+    if not entry:
+        raise HTTPException(status_code=404, detail="资源不存在")
+    data = await request.json()
+    action = str(data.get("action") or "").strip()
+    if action not in ("approve", "reject"):
+        raise HTTPException(status_code=400, detail="审核动作错误")
+    entry.status = "approved" if action == "approve" else "rejected"
+    entry.reviewed_by = current_user.id
+    entry.reviewed_at = datetime.utcnow()
+    if action == "reject":
+        entry.reject_reason = str(data.get("reason") or "").strip() or None
+    db.commit()
+    db.refresh(entry)
+    return _resource_to_dict(entry, current_user)
+
 # ==========================================
 # 131. 应用启动和关闭事件
 # ==========================================
@@ -6761,8 +7312,11 @@ async def startup_event():
         pass
     try:
         MediaDetailAccessLog.__table__.create(bind=engine, checkfirst=True)
+        ResourceEntry.__table__.create(bind=engine, checkfirst=True)
+        ResourceFavorite.__table__.create(bind=engine, checkfirst=True)
+        PaymentOrder.__table__.create(bind=engine, checkfirst=True)
     except Exception as e:
-        logger.error(f"创建 media_detail_access_logs 表失败（可能无权限/连接异常）: {e}")
+        logger.error(f"创建扩展表失败（可能无权限/连接异常）: {e}")
     try:
         redis = await aioredis.from_url(
             REDIS_URL,
