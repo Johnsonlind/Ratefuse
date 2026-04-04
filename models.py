@@ -9,6 +9,7 @@ from sqlalchemy import create_engine, Column, Integer, String, DateTime, Foreign
 from sqlalchemy.orm import sessionmaker, relationship, declarative_base
 from sqlalchemy.pool import QueuePool
 from sqlalchemy.dialects.mysql import LONGTEXT
+from sqlalchemy.engine import Engine
 from datetime import datetime
 
 load_dotenv()
@@ -52,6 +53,8 @@ class User(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     is_admin = Column(Boolean, default=False)
     is_banned = Column(Boolean, default=False, index=True)
+    is_member = Column(Boolean, default=False, nullable=False, index=True)
+    member_expired_at = Column(DateTime, nullable=True, index=True)
     douban_cookie = Column(Text, nullable=True)
 
     favorites = relationship("Favorite", back_populates="user")
@@ -346,10 +349,139 @@ class MediaLinkMapping(Base):
     last_verified_at = Column(DateTime, nullable=True, index=True)
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    # `updated_at` should only move when we explicitly decide it:
+    #  - manual edits in admin
+    #  - auto sync only when mapping content actually changes
+    # So we intentionally do NOT use SQLAlchemy `onupdate` here.
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+
+class ResourceEntry(Base):
+    __tablename__ = "resource_entries"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    media_type = Column(String(10), nullable=False, index=True)
+    tmdb_id = Column(Integer, nullable=False, index=True)
+    media_title = Column(String(255), nullable=False)
+    media_year = Column(Integer, nullable=True)
+    resource_type = Column(
+        Enum("baidu", "quark", "xunlei", "115", "uc", "ali", "magnet", name="resource_type_enum"),
+        nullable=False,
+        index=True,
+    )
+    link = Column(Text, nullable=False)
+    extraction_code = Column(String(255), nullable=True)
+    agreement_confirmed = Column(Boolean, nullable=False, default=False)
+    status = Column(
+        Enum("pending", "approved", "rejected", name="resource_status_enum"),
+        nullable=False,
+        default="pending",
+        index=True,
+    )
+    submitted_by = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    reviewed_by = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    reviewed_at = Column(DateTime, nullable=True, index=True)
+    reject_reason = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False, index=True)
+
+    submitter = relationship("User", foreign_keys=[submitted_by])
+    reviewer = relationship("User", foreign_keys=[reviewed_by])
+
+    __table_args__ = (
+        UniqueConstraint("media_type", "tmdb_id", "resource_type", "status", name="uq_resource_media_type_status"),
+    )
+
+
+class ResourceFavorite(Base):
+    __tablename__ = "resource_favorites"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    resource_id = Column(Integer, ForeignKey("resource_entries.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    user = relationship("User")
+    resource = relationship("ResourceEntry")
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "resource_id", name="uq_resource_favorite"),
+    )
+
+
+class PaymentOrder(Base):
+    __tablename__ = "payment_orders"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    order_id = Column(String(64), unique=True, nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    amount = Column(Integer, nullable=False)
+    status = Column(
+        Enum("pending", "paid", "failed", name="payment_order_status_enum"),
+        nullable=False,
+        default="pending",
+        index=True,
+    )
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False, index=True)
+
+    user = relationship("User")
+
+def _ensure_users_table_columns(engine: Engine) -> None:
+    """
+    Lightweight schema patcher.
+
+    This project uses SQLAlchemy `create_all()` (no migrations). `create_all()`
+    won't add columns to existing tables, so we defensively patch missing columns
+    that newer code expects.
+    """
+    if engine.dialect.name != "mysql":
+        return
+
+    db_name = engine.url.database
+    if not db_name:
+        return
+
+    def _has_column(conn, table: str, column: str) -> bool:
+        exists = conn.execute(
+            text(
+                """
+                SELECT 1
+                FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = :schema
+                  AND TABLE_NAME = :table
+                  AND COLUMN_NAME = :column
+                LIMIT 1
+                """
+            ),
+            {"schema": db_name, "table": table, "column": column},
+        ).first()
+        return bool(exists)
+
+    with engine.begin() as conn:
+        # `is_member` introduced after initial deployments; default false.
+        if not _has_column(conn, "users", "is_member"):
+            conn.execute(
+                text(
+                    "ALTER TABLE users "
+                    "ADD COLUMN is_member BOOLEAN NOT NULL DEFAULT 0, "
+                    "ADD INDEX idx_users_is_member (is_member)"
+                )
+            )
+
+        # Some DBs may also be missing `member_expired_at` depending on version.
+        if not _has_column(conn, "users", "member_expired_at"):
+            conn.execute(
+                text(
+                    "ALTER TABLE users "
+                    "ADD COLUMN member_expired_at DATETIME NULL, "
+                    "ADD INDEX idx_users_member_expired_at (member_expired_at)"
+                )
+            )
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+    _ensure_users_table_columns(engine)
 
 if __name__ == "__main__":
     init_db()
