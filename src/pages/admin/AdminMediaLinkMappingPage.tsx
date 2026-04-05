@@ -1377,4 +1377,3 @@ export default function AdminMediaLinkMappingPage() {
     </div>
   );
 }
-
