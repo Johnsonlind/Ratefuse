@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { CalendarDays, Download, Film, RefreshCw, Trash2 } from 'lucide-react';
 import { authFetch, authFetchJson } from '../../api/authFetch';
 import { ConfirmDialog } from '../../shared/ui/ConfirmDialog';
-import { formatChinaDateTime } from '../../shared/utils/time';
+import { formatChinaDateTime, formatChinaYyyyMmDd } from '../../shared/utils/time';
 import type { FetchStatus } from '../../shared/types/status';
 
 type MediaType = 'movie' | 'tv';
@@ -35,16 +35,9 @@ type DetailViewsResp = {
   };
 };
 
-function yyyyMmDd(d: Date) {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
-}
-
 export default function AdminDetailViewsPage() {
-  const [startDate, setStartDate] = useState<string>(() => yyyyMmDd(new Date()));
-  const [endDate, setEndDate] = useState<string>(() => yyyyMmDd(new Date()));
+  const [startDate, setStartDate] = useState<string>(() => formatChinaYyyyMmDd());
+  const [endDate, setEndDate] = useState<string>(() => formatChinaYyyyMmDd());
   const [mediaType, setMediaType] = useState<MediaType | ''>('');
   const [username, setUsername] = useState('');
   const [page, setPage] = useState(1);
