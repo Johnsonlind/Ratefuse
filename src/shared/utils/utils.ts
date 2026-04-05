@@ -4,6 +4,7 @@
 import { type ClassValue, clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { toSiteTmdbImageUrl } from '../../api/image';
+import { TZ_CHINA } from './time';
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -29,7 +30,7 @@ export function formatDate(dateString: string): string {
   try {
     const date = new Date(dateString);
     return new Intl.DateTimeFormat('zh-CN', {
-      timeZone: 'Asia/Shanghai',
+      timeZone: TZ_CHINA,
       year: 'numeric',
       month: 'long',
       day: 'numeric'
