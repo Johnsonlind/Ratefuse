@@ -1047,7 +1047,22 @@ async def add_favorite(
                 status_code=404,
                 detail="收藏列表不存在或无权限访问"
             )
-        
+
+        existing_fav = (
+            db.query(Favorite)
+            .filter(
+                Favorite.list_id == data["list_id"],
+                Favorite.media_id == data["media_id"],
+                Favorite.media_type == data["media_type"],
+            )
+            .first()
+        )
+        if existing_fav:
+            raise HTTPException(
+                status_code=409,
+                detail="该影视已在当前收藏列表中",
+            )
+
         max_sort_order = db.query(func.max(Favorite.sort_order)).filter(
             Favorite.list_id == data["list_id"]
         ).scalar()
@@ -2602,9 +2617,9 @@ def _mapping_row_to_dict(
         "metacritic_seasons_json": row.metacritic_seasons_json,
         "match_status": row.match_status,
         "confidence": row.confidence,
-        "last_verified_at": _to_shanghai_iso(row.last_verified_at),
-        "created_at": _to_shanghai_iso(row.created_at),
-        "updated_at": _to_shanghai_iso(row.updated_at),
+        "last_verified_at": _mapping_library_ts_to_display(row.last_verified_at),
+        "created_at": _mapping_library_ts_to_display(row.created_at),
+        "updated_at": _mapping_library_ts_to_display(row.updated_at),
     }
     # Always include the key so the admin UI can rely on it; empty {} means no per-platform rows.
     if platform_lock_statuses is not None:
@@ -2646,6 +2661,98 @@ def _should_upsert_mapping(
     patch: Optional[dict[str, Any]],
 ) -> bool:
     return bool(patch) and _can_upsert_platform_mapping(db, platform, media_type, tmdb_id)
+
+
+_MAPPING_LINK_COLUMNS = frozenset(
+    {
+        "douban_id",
+        "douban_url",
+        "douban_seasons_json",
+        "douban_seasons_ids_json",
+        "letterboxd_url",
+        "letterboxd_slug",
+        "rotten_tomatoes_url",
+        "rotten_tomatoes_slug",
+        "rotten_tomatoes_seasons_json",
+        "metacritic_url",
+        "metacritic_slug",
+        "metacritic_seasons_json",
+    }
+)
+
+
+def _is_effectively_empty_mapping_value(v: Any) -> bool:
+    if v is None:
+        return True
+    if isinstance(v, str):
+        s = v.strip()
+        if not s or s in ("{}", "[]", "null"):
+            return True
+    return False
+
+
+def _filter_patch_by_verified(patch: dict[str, Any], verified: bool) -> dict[str, Any]:
+    """抓取失败时不写入任何平台链接字段，避免把已有映射清空或覆盖。"""
+    if verified:
+        return patch
+    return {k: v for k, v in patch.items() if k not in _MAPPING_LINK_COLUMNS}
+
+
+def _sanitize_link_patch_no_overwrite_clear(row: Any, patch: dict[str, Any]) -> dict[str, Any]:
+    """成功抓取但某字段为空时，不覆盖数据库里已有非空链接。"""
+    out = dict(patch)
+    for k in list(out.keys()):
+        if k not in _MAPPING_LINK_COLUMNS:
+            continue
+        v = out[k]
+        cur = getattr(row, k, None)
+        if _is_effectively_empty_mapping_value(v) and not _is_effectively_empty_mapping_value(cur):
+            del out[k]
+    return out
+
+
+def _apply_tv_douban_series_link_consistency(row: Any) -> bool:
+    """
+    剧集：仅一季时分季链接与「剧集」主链接一致；多季时不保留剧集级豆瓣链接（聚合分由多季推算）。
+    """
+    if (getattr(row, "media_type", None) or "").lower() != "tv":
+        return False
+    changed = False
+    try:
+        raw = row.douban_seasons_json or ""
+        m = json.loads(raw) if str(raw).strip() else {}
+    except Exception:
+        m = {}
+    if not isinstance(m, dict):
+        m = {}
+    entries: list[tuple[int, str]] = []
+    for k, v in m.items():
+        su = str(v or "").strip()
+        if not su:
+            continue
+        try:
+            sn = int(k)
+        except Exception:
+            continue
+        if sn > 0:
+            entries.append((sn, su))
+    entries.sort(key=lambda x: x[0])
+    if len(entries) > 1:
+        if row.douban_url is not None or row.douban_id is not None:
+            row.douban_url = None
+            row.douban_id = None
+            changed = True
+    elif len(entries) == 1:
+        u = entries[0][1]
+        did = _extract_douban_id_from_url(u)
+        if row.douban_url != u:
+            row.douban_url = u
+            changed = True
+        if did and row.douban_id != did:
+            row.douban_id = did
+            changed = True
+    return changed
+
 
 _DOUBAN_ID_RE = re.compile(r"/subject/(\d+)")
 
@@ -2789,6 +2896,9 @@ def _upsert_media_link_mapping(
     if media_type not in ("movie", "tv"):
         return
 
+    patch = _filter_patch_by_verified(patch, verified)
+    patch = dict(patch or {})
+
     row = (
         db.query(MediaLinkMapping)
         .filter(MediaLinkMapping.tmdb_id == tmdb_id, MediaLinkMapping.media_type == media_type)
@@ -2804,6 +2914,9 @@ def _upsert_media_link_mapping(
 
     imdb_id = (tmdb_info.get("imdb_id") or "").strip() or None
 
+    if row is not None:
+        patch = _sanitize_link_patch_no_overwrite_clear(row, patch)
+
     if row is None:
         row = MediaLinkMapping(
             tmdb_id=tmdb_id,
@@ -2818,8 +2931,11 @@ def _upsert_media_link_mapping(
             updated_at=now,
         )
         for k, v in patch.items():
+            if v is None:
+                continue
             if hasattr(row, k):
                 setattr(row, k, v)
+        _apply_tv_douban_series_link_consistency(row)
         db.add(row)
         try:
             db.flush()
@@ -2833,9 +2949,10 @@ def _upsert_media_link_mapping(
             )
             if row is None:
                 raise
+            patch = _sanitize_link_patch_no_overwrite_clear(row, patch)
 
-    # Only bump `updated_at` when the mapping content actually changes.
-    # If nothing changes, we still allow updating `last_verified_at` for auto verification.
+    snap_links = {k: getattr(row, k) for k in _MAPPING_LINK_COLUMNS}
+
     desired_media_type = media_type
     desired_title = title or row.title
     desired_year = year_int if year_int is not None else row.year
@@ -2843,21 +2960,9 @@ def _upsert_media_link_mapping(
     desired_match_status = match_status
     desired_confidence = confidence
 
-    mapping_changed = (
-        row.media_type != desired_media_type
-        or row.title != desired_title
-        or row.year != desired_year
-        or row.imdb_id != desired_imdb_id
-        or row.match_status != desired_match_status
-        or row.confidence != desired_confidence
-    )
-
     if verified:
-        # Verification time can change frequently, but should not imply `updated_at` moved.
-        # We still set it here; `updated_at` is handled below.
         row.last_verified_at = now
 
-    # Apply patch fields only (and detect whether they caused any change).
     for k, v in patch.items():
         if v is None:
             continue
@@ -2865,10 +2970,8 @@ def _upsert_media_link_mapping(
             continue
         current = getattr(row, k)
         if current != v:
-            mapping_changed = True
             setattr(row, k, v)
 
-    # Apply base fields only when different.
     if row.media_type != desired_media_type:
         row.media_type = desired_media_type
     if row.title != desired_title:
@@ -2882,7 +2985,10 @@ def _upsert_media_link_mapping(
     if row.confidence != desired_confidence:
         row.confidence = desired_confidence
 
-    if mapping_changed:
+    _apply_tv_douban_series_link_consistency(row)
+
+    link_changed = any(getattr(row, k) != snap_links.get(k) for k in _MAPPING_LINK_COLUMNS)
+    if link_changed:
         row.updated_at = now
 
 @app.get("/")
@@ -4116,8 +4222,34 @@ def _iso_now_shanghai() -> str:
 def _to_shanghai_iso(dt: Optional[datetime]) -> Optional[str]:
     if not dt:
         return None
-    aware_utc = dt.replace(tzinfo=timezone.utc)
-    return aware_utc.astimezone(_TZ_SHANGHAI).isoformat()
+    if dt.tzinfo is None:
+        aware_utc = dt.replace(tzinfo=timezone.utc)
+    else:
+        aware_utc = dt.astimezone(timezone.utc)
+    # 固定为北京时间墙钟字符串，避免 ISO 字符串在前端被误解析
+    return aware_utc.astimezone(_TZ_SHANGHAI).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _mapping_library_ts_to_display(dt: Optional[datetime]) -> Optional[str]:
+    """
+    映射库 API 返回给前端的「北京时间」显示串。
+
+    约定应用写入使用 _now_utc_naive()（UTC 墙钟存 DATETIME）。若历史数据或其它客户端
+    把「东八区墙钟」误写入同一列，按 UTC 再转北京会整体快约 8 小时（例如现实 4/5 18:40
+    却显示 4/6 02:40）。此时设置环境变量 RATEFUSE_MAPPING_NAIVE_IS_SHANGHAI_WALL=1，
+    则 naive 按数字直接当作北京时间输出（不做 UTC→北京转换）。
+    """
+    if not dt:
+        return None
+    if os.getenv("RATEFUSE_MAPPING_NAIVE_IS_SHANGHAI_WALL", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    ):
+        if dt.tzinfo is None:
+            return dt.strftime("%Y-%m-%d %H:%M:%S")
+        return dt.astimezone(_TZ_SHANGHAI).strftime("%Y-%m-%d %H:%M:%S")
+    return _to_shanghai_iso(dt)
 
 def _parse_iso_to_utc_naive(value: Optional[str]) -> Optional[datetime]:
     if not value:
@@ -5253,6 +5385,7 @@ async def admin_create_media_link_mapping(
         created_at=now,
         updated_at=now,
     )
+    _apply_tv_douban_series_link_consistency(row)
     try:
         db.add(row)
         db.commit()
@@ -5310,6 +5443,7 @@ async def admin_update_media_link_mapping(
     if body.last_verified_at is not None:
         row.last_verified_at = _parse_iso_to_utc_naive(body.last_verified_at)
 
+    _apply_tv_douban_series_link_consistency(row)
     row.match_status = "manual"
     row.updated_at = _now_utc_naive()
 
