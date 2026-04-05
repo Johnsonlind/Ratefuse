@@ -2721,6 +2721,8 @@ def _normalize_mapping_url(u: Optional[str]) -> str:
         if not path:
             path = "/"
         netloc = (p.netloc or "").lower()
+        if netloc.startswith("www."):
+            netloc = netloc[4:]
         scheme = (p.scheme or "https").lower()
         return urlunparse((scheme, netloc, path, p.params, p.query, p.fragment))
     except Exception:
@@ -2983,6 +2985,9 @@ def _upsert_media_link_mapping(
     if row is not None:
         patch = _sanitize_link_patch_no_overwrite_clear(row, patch)
         patch = _prune_noop_mapping_link_patch(row, patch)
+        # 已有映射且本次抓取未带来任何链接字段变化：整段跳过，避免改 last_verified / 元数据 / updated_at
+        if not patch:
+            return
 
     if row is None:
         row = MediaLinkMapping(
@@ -3018,6 +3023,8 @@ def _upsert_media_link_mapping(
                 raise
             patch = _sanitize_link_patch_no_overwrite_clear(row, patch)
             patch = _prune_noop_mapping_link_patch(row, patch)
+            if not patch:
+                return
 
     snap_links = {k: getattr(row, k) for k in _MAPPING_LINK_COLUMNS}
 
