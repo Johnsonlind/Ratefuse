@@ -11,6 +11,7 @@ from sqlalchemy.pool import QueuePool
 from sqlalchemy.dialects.mysql import LONGTEXT
 from sqlalchemy.engine import Engine
 from datetime import datetime, timezone as dt_timezone
+from zoneinfo import ZoneInfo
 
 load_dotenv()
 
@@ -39,16 +40,20 @@ _engine_kwargs = dict(
     pool_recycle=1800,
 )
 if SQLALCHEMY_DATABASE_URL.startswith("mysql+"):
-    _engine_kwargs["connect_args"] = {"init_command": "SET time_zone='+00:00'"}
+    # DATETIME 列约定存北京时间墙钟（naive），与 Python 写入一致
+    _engine_kwargs["connect_args"] = {"init_command": "SET time_zone='+08:00'"}
 
 engine = create_engine(SQLALCHEMY_DATABASE_URL, **_engine_kwargs)
 SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
 
 
-def _utc_naive_now() -> datetime:
-    """与 main._now_utc_naive 一致：UTC 墙钟、naive，写入 MySQL DATETIME。"""
-    return datetime.now(dt_timezone.utc).replace(tzinfo=None)
+_TZ_SHANGHAI = ZoneInfo("Asia/Shanghai")
+
+
+def _shanghai_naive_now() -> datetime:
+    """北京时间墙钟、naive，写入 MySQL DATETIME（全项目统一）。"""
+    return datetime.now(_TZ_SHANGHAI).replace(tzinfo=None)
 
 
 class User(Base):
@@ -59,7 +64,7 @@ class User(Base):
     username = Column(String(255), unique=True, index=True)
     hashed_password = Column(String(255))
     avatar = Column(LONGTEXT, nullable=True) 
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_shanghai_naive_now)
     is_admin = Column(Boolean, default=False)
     is_banned = Column(Boolean, default=False, index=True)
     is_member = Column(Boolean, default=False, nullable=False, index=True)
@@ -79,8 +84,8 @@ class FavoriteList(Base):
     name = Column(String(255))
     description = Column(Text, nullable=True)
     is_public = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_shanghai_naive_now)
+    updated_at = Column(DateTime, default=_shanghai_naive_now, onupdate=_shanghai_naive_now)
     original_list_id = Column(Integer, ForeignKey("favorite_lists.id"), nullable=True)
     
     user = relationship("User", back_populates="favorite_lists")
@@ -100,7 +105,7 @@ class Favorite(Base):
     overview = Column(Text)
     note = Column(Text, nullable=True)
     sort_order = Column(Integer, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_shanghai_naive_now)
     
     user = relationship("User", back_populates="favorites")
     favorite_list = relationship("FavoriteList", back_populates="favorites")
@@ -118,7 +123,7 @@ class ChartEntry(Base):
     rank = Column(Integer, index=True)
     original_language = Column(String(10), nullable=True)
     created_by = Column(Integer, ForeignKey("users.id"))
-    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    created_at = Column(DateTime, default=_shanghai_naive_now, index=True)
     locked = Column(Boolean, default=False, index=True)
     
     user = relationship("User")
@@ -137,7 +142,7 @@ class PublicChartEntry(Base):
     title = Column(String(255))
     poster = Column(Text)
     rank = Column(Integer, index=True)
-    synced_at = Column(DateTime, default=datetime.utcnow, index=True)
+    synced_at = Column(DateTime, default=_shanghai_naive_now, index=True)
     
     __table_args__ = (
         UniqueConstraint('platform', 'chart_name', 'media_type', 'rank', name='uq_public_chart_item'),
@@ -150,7 +155,7 @@ class PasswordReset(Base):
     email = Column(String(255), index=True)
     token = Column(String(255), unique=True)
     expires_at = Column(DateTime)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_shanghai_naive_now)
     used = Column(Boolean, default=False)
 
 class Follow(Base):
@@ -160,7 +165,7 @@ class Follow(Base):
     follower_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     following_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     note = Column(Text, nullable=True)
-    created_at = Column(DateTime, server_default=text('UTC_TIMESTAMP()'))
+    created_at = Column(DateTime, default=_shanghai_naive_now, nullable=False)
     
     __table_args__ = (
         UniqueConstraint('follower_id', 'following_id', name='follower_id'),
@@ -176,14 +181,14 @@ class SchedulerStatus(Base):
     running = Column(Boolean, default=False, nullable=False)
     last_update = Column(DateTime, nullable=True)
     next_update = Column(DateTime, nullable=True)
-    updated_at = Column(DateTime, server_default=text('UTC_TIMESTAMP()'), onupdate=text('UTC_TIMESTAMP()'))
+    updated_at = Column(DateTime, default=_shanghai_naive_now, onupdate=_shanghai_naive_now, nullable=False)
 
 class MediaDetailAccessLog(Base):
     __tablename__ = "media_detail_access_logs"
     
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
-    visited_at = Column(DateTime, default=datetime.utcnow, index=True)
+    visited_at = Column(DateTime, default=_shanghai_naive_now, index=True)
     media_type = Column(String(10), nullable=False, index=True)
     tmdb_id = Column(Integer, nullable=True, index=True)
     title = Column(String(255), nullable=False)
@@ -203,9 +208,9 @@ class Feedback(Base):
     resolved_at = Column(DateTime, nullable=True, index=True)
     closed_by = Column(String(20), nullable=True)
     closed_at = Column(DateTime, nullable=True, index=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
-    last_message_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    created_at = Column(DateTime, default=_shanghai_naive_now, nullable=False)
+    updated_at = Column(DateTime, default=_shanghai_naive_now, onupdate=_shanghai_naive_now, nullable=False)
+    last_message_at = Column(DateTime, default=_shanghai_naive_now, nullable=False, index=True)
 
     user = relationship("User")
     messages = relationship("FeedbackMessage", back_populates="feedback", cascade="all, delete-orphan")
@@ -220,8 +225,8 @@ class TelegramFeedbackMapping(Base):
     feedback_id = Column(Integer, ForeignKey("feedback.id"), nullable=False, index=True)
     telegram_chat_id = Column(BigInteger, nullable=False)
     telegram_message_id = Column(Integer, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=_shanghai_naive_now, nullable=False)
+    updated_at = Column(DateTime, default=_shanghai_naive_now, onupdate=_shanghai_naive_now, nullable=False)
 
     feedback = relationship("Feedback")
 
@@ -237,7 +242,7 @@ class FeedbackMessage(Base):
     sender_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     sender_type = Column(String(20), nullable=False)
     content = Column(Text, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    created_at = Column(DateTime, default=_shanghai_naive_now, nullable=False, index=True)
 
     feedback = relationship("Feedback", back_populates="messages")
     sender = relationship("User")
@@ -248,7 +253,7 @@ class FeedbackImage(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     feedback_id = Column(Integer, ForeignKey("feedback.id"), nullable=False, index=True)
     image_path = Column(Text, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=_shanghai_naive_now, nullable=False)
 
     feedback = relationship("Feedback", back_populates="images")
 
@@ -262,7 +267,7 @@ class FeedbackStatusEvent(Base):
     changed_by_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     changed_by_type = Column(String(20), nullable=False)
     reason = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    created_at = Column(DateTime, default=_shanghai_naive_now, nullable=False, index=True)
 
     feedback = relationship("Feedback", back_populates="status_events")
     changed_by = relationship("User")
@@ -277,7 +282,7 @@ class Notification(Base):
     link = Column(Text, nullable=True)
     is_read = Column(Boolean, nullable=False, default=False, index=True)
     read_at = Column(DateTime, nullable=True, index=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    created_at = Column(DateTime, default=_shanghai_naive_now, nullable=False, index=True)
 
     user = relationship("User")
 
@@ -298,8 +303,8 @@ class MediaPlatformStatus(Base):
     last_failure_status = Column(String(30), nullable=True)
 
     title_snapshot = Column(String(255), nullable=True)
-    last_status_changed_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    last_status_changed_at = Column(DateTime, default=_shanghai_naive_now, nullable=False, index=True)
+    created_at = Column(DateTime, default=_shanghai_naive_now, nullable=False)
 
     __table_args__ = (
         UniqueConstraint("media_type", "tmdb_id", "platform", name="uq_media_platform_status"),
@@ -322,7 +327,7 @@ class MediaPlatformStatusLog(Base):
     operator_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     operator = relationship("User")
 
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    created_at = Column(DateTime, default=_shanghai_naive_now, nullable=False, index=True)
 
 class MediaLinkMapping(Base):
     __tablename__ = "media_link_mapping"
@@ -357,8 +362,8 @@ class MediaLinkMapping(Base):
     confidence = Column(Float, nullable=True)
     last_verified_at = Column(DateTime, nullable=True, index=True)
 
-    created_at = Column(DateTime, default=_utc_naive_now, nullable=False, index=True)
-    updated_at = Column(DateTime, default=_utc_naive_now, nullable=False, index=True)
+    created_at = Column(DateTime, default=_shanghai_naive_now, nullable=False, index=True)
+    updated_at = Column(DateTime, default=_shanghai_naive_now, nullable=False, index=True)
 
 
 class ResourceEntry(Base):
@@ -387,8 +392,8 @@ class ResourceEntry(Base):
     reviewed_by = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     reviewed_at = Column(DateTime, nullable=True, index=True)
     reject_reason = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False, index=True)
+    created_at = Column(DateTime, default=_shanghai_naive_now, nullable=False, index=True)
+    updated_at = Column(DateTime, default=_shanghai_naive_now, onupdate=_shanghai_naive_now, nullable=False, index=True)
 
     submitter = relationship("User", foreign_keys=[submitted_by])
     reviewer = relationship("User", foreign_keys=[reviewed_by])
@@ -404,7 +409,7 @@ class ResourceFavorite(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     resource_id = Column(Integer, ForeignKey("resource_entries.id", ondelete="CASCADE"), nullable=False, index=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    created_at = Column(DateTime, default=_shanghai_naive_now, nullable=False, index=True)
 
     user = relationship("User")
     resource = relationship("ResourceEntry")
@@ -427,8 +432,8 @@ class PaymentOrder(Base):
         default="pending",
         index=True,
     )
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False, index=True)
+    created_at = Column(DateTime, default=_shanghai_naive_now, nullable=False, index=True)
+    updated_at = Column(DateTime, default=_shanghai_naive_now, onupdate=_shanghai_naive_now, nullable=False, index=True)
 
     user = relationship("User")
 
