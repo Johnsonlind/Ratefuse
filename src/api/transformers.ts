@@ -4,6 +4,7 @@
 import type { Movie, TVShow } from '../shared/types/media';
 import { getImageUrl } from './image';
 import { getChineseJobTitle } from '../shared/utils/jobTitles';
+import { calendarYearFromIsoDate } from '../shared/utils/time';
 
 type PosterSize = '小' | '列表' | '中' | '大' | '原始';
 
@@ -17,7 +18,7 @@ export function transformTMDBMovie(
     id: Number(data.id),
     title: data.title,
     originalTitle: data.original_title,
-    year: new Date(data.release_date).getFullYear(),
+    year: calendarYearFromIsoDate(data.release_date) ?? 0,
     poster: getImageUrl(data.poster_path, posterSize, 'poster'),
     backdrop: getImageUrl(data.backdrop_path, '原始', 'poster'),
     overview: data.overview,
@@ -52,7 +53,7 @@ export function transformTMDBTVShow(
     id: Number(data.id),
     title: data.name,
     originalTitle: data.original_name,
-    year: new Date(data.first_air_date).getFullYear(),
+    year: calendarYearFromIsoDate(data.first_air_date) ?? 0,
     poster: getImageUrl(data.poster_path, posterSize, 'poster'),
     backdrop: getImageUrl(data.backdrop_path, '原始', 'poster'),
     overview: data.overview,
