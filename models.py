@@ -10,7 +10,7 @@ from sqlalchemy.orm import sessionmaker, relationship, declarative_base
 from sqlalchemy.pool import QueuePool
 from sqlalchemy.dialects.mysql import LONGTEXT
 from sqlalchemy.engine import Engine
-from datetime import datetime
+from datetime import datetime, timezone as dt_timezone
 
 load_dotenv()
 
@@ -31,16 +31,25 @@ SQLALCHEMY_DATABASE_URL = _ensure_mysql_utf8mb4(
 )
 if not SQLALCHEMY_DATABASE_URL:
     raise RuntimeError("缺少环境变量 SQLALCHEMY_DATABASE_URL，请在 .env 中配置数据库连接串")
-engine = create_engine(
-    SQLALCHEMY_DATABASE_URL,
+_engine_kwargs = dict(
     poolclass=QueuePool,
     pool_size=10,
     max_overflow=20,
     pool_timeout=30,
     pool_recycle=1800,
 )
+if SQLALCHEMY_DATABASE_URL.startswith("mysql+"):
+    _engine_kwargs["connect_args"] = {"init_command": "SET time_zone='+00:00'"}
+
+engine = create_engine(SQLALCHEMY_DATABASE_URL, **_engine_kwargs)
 SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
+
+
+def _utc_naive_now() -> datetime:
+    """与 main._now_utc_naive 一致：UTC 墙钟、naive，写入 MySQL DATETIME。"""
+    return datetime.now(dt_timezone.utc).replace(tzinfo=None)
+
 
 class User(Base):
     __tablename__ = "users"
@@ -348,12 +357,8 @@ class MediaLinkMapping(Base):
     confidence = Column(Float, nullable=True)
     last_verified_at = Column(DateTime, nullable=True, index=True)
 
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
-    # `updated_at` should only move when we explicitly decide it:
-    #  - manual edits in admin
-    #  - auto sync only when mapping content actually changes
-    # So we intentionally do NOT use SQLAlchemy `onupdate` here.
-    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    created_at = Column(DateTime, default=_utc_naive_now, nullable=False, index=True)
+    updated_at = Column(DateTime, default=_utc_naive_now, nullable=False, index=True)
 
 
 class ResourceEntry(Base):
@@ -459,7 +464,6 @@ def _ensure_users_table_columns(engine: Engine) -> None:
         return bool(exists)
 
     with engine.begin() as conn:
-        # `is_member` introduced after initial deployments; default false.
         if not _has_column(conn, "users", "is_member"):
             conn.execute(
                 text(
@@ -469,7 +473,6 @@ def _ensure_users_table_columns(engine: Engine) -> None:
                 )
             )
 
-        # Some DBs may also be missing `member_expired_at` depending on version.
         if not _has_column(conn, "users", "member_expired_at"):
             conn.execute(
                 text(
