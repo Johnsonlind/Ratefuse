@@ -11,7 +11,8 @@ import { OverallRatingCard } from './OverallRatingCard';
 import { calculateTVShowOverallRating } from './calculateTVShowOverallRating';
 import { isValidRatingData } from '../../modules/rating/ratingHelpers';
 import { 
-  getDoubanUrl, 
+  getDoubanUrl,
+  getDoubanTvAggregatedRatingCardUrl,
   getImdbUrl, 
   getLetterboxdUrl, 
   getRottenTomatoesUrl, 
@@ -111,7 +112,7 @@ export function TVShowRatingGrid({
     }
     
     return {
-      douban: ratingData?.douban?.url || (mediaInfo ? getDoubanUrl(mediaInfo) : null),
+      douban: getDoubanTvAggregatedRatingCardUrl(ratingData?.douban, mediaInfo ?? null),
       imdb: ratingData?.imdb?.url || (mediaInfo ? getImdbUrl(mediaInfo) : null),
       letterboxd: ratingData?.letterboxd?.url || (mediaInfo ? getLetterboxdUrl(mediaInfo) : null),
       rottentomatoes: ratingData?.rottentomatoes?.url || (mediaInfo ? getRottenTomatoesUrl(mediaInfo) : null),
