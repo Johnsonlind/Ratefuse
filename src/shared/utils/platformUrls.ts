@@ -11,6 +11,28 @@ interface MediaInfo {
   type?: 'movie' | 'tv';
 }
 
+/** 多季聚合豆瓣分时，卡片跳转应指向第一季条目页 */
+export interface DoubanRatingLike {
+  url?: string | null;
+  seasons?: Array<{ season_number: number; url?: string | null }>;
+}
+
+export function getDoubanTvAggregatedRatingCardUrl(
+  douban: DoubanRatingLike | null | undefined,
+  media?: MediaInfo | null
+): string | null {
+  if (!douban) return media ? getDoubanUrl(media) : null;
+  const seasons = Array.isArray(douban.seasons) ? douban.seasons : [];
+  if (seasons.length > 1) {
+    const sorted = [...seasons].sort((a, b) => a.season_number - b.season_number);
+    const first = sorted.find((s) => s.season_number === 1) ?? sorted[0];
+    const u = (first?.url && String(first.url).trim()) || '';
+    return u || douban.url || (media ? getDoubanUrl(media) : null);
+  }
+  const s0 = seasons[0];
+  return douban.url || (s0?.url && String(s0.url).trim()) || (media ? getDoubanUrl(media) : null);
+}
+
 export function getDoubanUrl(media: MediaInfo): string | null {
   if (!media.title && !media.originalTitle) return null;
   const searchTitle = encodeURIComponent(media.title || media.originalTitle || '');
