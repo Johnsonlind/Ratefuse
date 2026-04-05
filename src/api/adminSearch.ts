@@ -3,6 +3,7 @@
 // ==========================================
 import { buildTmdbApiUrl } from './api';
 import { posterPathToSiteUrl } from './image';
+import { calendarYearFromIsoDate } from '../shared/utils/time';
 
 export interface AdminMediaItem {
   id: number;
@@ -64,14 +65,14 @@ export async function adminSearchMedia(q: string): Promise<AdminSearchResult> {
         type: 'movie' as const,
         title: r.title || '',
         poster: adminPoster(r.poster_path),
-        year: r.release_date ? new Date(r.release_date).getFullYear() : undefined,
+        year: calendarYearFromIsoDate(r.release_date),
       }));
       const tvs = (data.tv_results || []).slice(0, 12).map((r: any) => ({
         id: r.id,
         type: 'tv' as const,
         title: r.name || '',
         poster: adminPoster(r.poster_path),
-        year: r.first_air_date ? new Date(r.first_air_date).getFullYear() : undefined,
+        year: calendarYearFromIsoDate(r.first_air_date),
       }));
       return { movies: { results: movies }, tvShows: { results: tvs } };
     } catch {
@@ -96,7 +97,7 @@ export async function adminSearchMedia(q: string): Promise<AdminSearchResult> {
             type: 'movie',
             title: m.title || '',
             poster: adminPoster(m.poster_path),
-            year: m.release_date ? new Date(m.release_date).getFullYear() : undefined,
+            year: calendarYearFromIsoDate(m.release_date),
           });
         }
       }
@@ -108,7 +109,7 @@ export async function adminSearchMedia(q: string): Promise<AdminSearchResult> {
             type: 'tv',
             title: t.name || '',
             poster: adminPoster(t.poster_path),
-            year: t.first_air_date ? new Date(t.first_air_date).getFullYear() : undefined,
+            year: calendarYearFromIsoDate(t.first_air_date),
           });
         }
       }
@@ -154,14 +155,14 @@ export async function adminSearchMedia(q: string): Promise<AdminSearchResult> {
         type: 'movie' as const,
         title: r.title || '',
         poster: adminPoster(r.poster_path),
-        year: r.release_date ? new Date(r.release_date).getFullYear() : undefined,
+        year: calendarYearFromIsoDate(r.release_date),
       }));
       const tvs = (tvData.results || []).slice(0, 12).map((r: any) => ({
         id: r.id,
         type: 'tv' as const,
         title: r.name || '',
         poster: adminPoster(r.poster_path),
-        year: r.first_air_date ? new Date(r.first_air_date).getFullYear() : undefined,
+        year: calendarYearFromIsoDate(r.first_air_date),
       }));
       return { movies: { results: movies }, tvShows: { results: tvs } };
     }
@@ -180,7 +181,7 @@ export async function adminSearchMedia(q: string): Promise<AdminSearchResult> {
         type: 'movie' as const,
         title: r.title || '',
         poster: adminPoster(r.poster_path),
-        year: r.release_date ? new Date(r.release_date).getFullYear() : undefined,
+        year: calendarYearFromIsoDate(r.release_date),
       }));
 
     const tvs = rawResults
@@ -191,7 +192,7 @@ export async function adminSearchMedia(q: string): Promise<AdminSearchResult> {
         type: 'tv' as const,
         title: r.name || '',
         poster: adminPoster(r.poster_path),
-        year: r.first_air_date ? new Date(r.first_air_date).getFullYear() : undefined,
+        year: calendarYearFromIsoDate(r.first_air_date),
       }));
 
     return { movies: { results: movies }, tvShows: { results: tvs } };
