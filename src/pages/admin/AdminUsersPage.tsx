@@ -18,6 +18,7 @@ import {
 } from '../../api/adminUsers';
 import { toast } from 'sonner';
 import { MEMBERSHIP_ENABLED } from '../../config/features';
+import { formatChinaDateTime } from '../../shared/utils/time';
 
 const PAGE_SIZE = 20;
 
@@ -492,7 +493,7 @@ export default function AdminUsersPage() {
                         {user.is_member ? '会员' : '普通'}
                       </span>
                       {user.member_expired_at ? (
-                        <div className="text-[11px] text-gray-500 mt-1">到期：{new Date(user.member_expired_at).toLocaleString()}</div>
+                        <div className="text-[11px] text-gray-500 mt-1">到期：{formatChinaDateTime(user.member_expired_at)}</div>
                       ) : null}
                     </td>
                   )}
