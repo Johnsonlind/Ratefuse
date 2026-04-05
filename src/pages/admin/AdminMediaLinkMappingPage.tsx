@@ -21,31 +21,19 @@ import {
   type MediaLinkMappingItem,
   type MediaType,
 } from '../../api/mediaLinkMapping';
+import { formatChinaDateTime } from '../../shared/utils/time';
 
 type PageSize = 20 | 50 | 100 | 200;
 type SeasonUrlEntry = { season_number: number; url: string };
 type DoubanSeasonEntry = { season_number: number; url: string; douban_id: string };
 
+/** 后端已返回北京时间墙钟 `YYYY-MM-DD HH:mm:ss` 时直接展示，避免再解析；其余走统一中国时区格式化 */
 function formatBeijingDateTime(value?: string | null): string {
   const s = String(value || '').trim();
   if (!s) return '-';
   if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(s)) return s;
-  const d = new Date(s);
-  if (Number.isNaN(d.getTime())) return s;
-
-  const parts = new Intl.DateTimeFormat('zh-CN', {
-    timeZone: 'Asia/Shanghai',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  }).formatToParts(d);
-
-  const get = (type: string) => parts.find((p) => p.type === type)?.value || '';
-  return `${get('year')}-${get('month')}-${get('day')} ${get('hour')}:${get('minute')}:${get('second')}`;
+  const out = formatChinaDateTime(s);
+  return out || s;
 }
 
 function extractDoubanIdFromUrl(url: string): string | null {
