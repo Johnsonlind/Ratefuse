@@ -7,6 +7,7 @@ import type { TVShow } from '../../shared/types/media';
 import { ErrorMessage } from '../../shared/ui/ErrorMessage';
 import { TVShowRatingGrid } from './TVShowRatingGrid';
 import { isValidRatingData } from '../../modules/rating/ratingHelpers';
+import { calendarYearFromIsoDate } from '../../shared/utils/time';
 
 interface SeasonRatingsProps {
   seasons: {
@@ -90,7 +91,7 @@ export function SeasonRatings({
                 {season.seasonNumber === 0 ? '特别篇' : `第 ${season.seasonNumber} 季`}
               </h4>
               <p className="text-sm dark:text-gray-300">
-                {season.episodeCount} 集 • {new Date(season.airDate).getFullYear()}
+                {season.episodeCount} 集 • {calendarYearFromIsoDate(season.airDate) ?? '—'}
               </p>
             </div>
             <TVShowRatingGrid 
