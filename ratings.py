@@ -16,11 +16,12 @@ from dataclasses import dataclass
 from fastapi import Request
 import unicodedata
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import Optional
 import time
 from sqlalchemy.orm import Session
 from sqlalchemy import func
-from models import MediaPlatformStatus, MediaPlatformStatusLog
+from models import MediaPlatformStatus, MediaPlatformStatusLog, _shanghai_naive_now
 from browser_pool import (
     browser_pool,
     douban_playwright_session_semaphore,
@@ -192,7 +193,7 @@ def update_platform_status_after_fetch(
             from_status = record.status
             record.failure_count = 0
             record.last_failure_status = None
-            record.last_status_changed_at = datetime.utcnow()
+            record.last_status_changed_at = _shanghai_naive_now()
             db.add(
                 MediaPlatformStatusLog(
                     media_type=media_type,
@@ -216,7 +217,7 @@ def update_platform_status_after_fetch(
 
     record.failure_count = (record.failure_count or 0) + 1
     record.last_failure_status = status
-    record.last_status_changed_at = datetime.utcnow()
+    record.last_status_changed_at = _shanghai_naive_now()
 
     db.add(
         MediaPlatformStatusLog(
@@ -236,7 +237,7 @@ def update_platform_status_after_fetch(
         record.lock_source = "auto"
         auto_remark = f"自动锁定：连续{AUTO_LOCK_THRESHOLD}次抓取失败（最后一次状态：{status} - {status_reason or ''}）"
         record.remark = (record.remark + " | " if record.remark else "") + auto_remark
-        record.last_status_changed_at = datetime.utcnow()
+        record.last_status_changed_at = _shanghai_naive_now()
 
         db.add(
             MediaPlatformStatusLog(
@@ -2471,7 +2472,7 @@ async def handle_rt_search(page, search_url, tmdb_info):
                     if year:
                         year_match = year == match_year
                     else:
-                        current_year = datetime.now().year
+                        current_year = datetime.now(ZoneInfo("Asia/Shanghai")).year
                         target_year = int(match_year) if match_year else current_year
                         if target_year > current_year and title_match:
                             year_match = True
