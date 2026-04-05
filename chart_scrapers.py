@@ -13,10 +13,13 @@ import json
 from urllib.parse import quote
 from typing import List, Dict, Optional, TYPE_CHECKING
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 from sqlalchemy.orm import Session
 
 from browser_pool import browser_pool, wait_turn
 from models import ChartEntry, SessionLocal
+
+_TZ_SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 if TYPE_CHECKING:
     from starlette.requests import Request
@@ -493,7 +496,7 @@ class ChartScraper:
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
             
             api_url = "https://api.graphql.imdb.com/"
-            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            today = datetime.now(_TZ_SHANGHAI).strftime("%Y-%m-%d")
             
             variables_dict = {
                 "fanPicksFirst": 30, "first": 30, "locale": "zh-CN",
@@ -3865,7 +3868,7 @@ class TelegramNotifier:
     
     async def send_update_success(self, results: Dict[str, int], duration: float):
         """发送更新成功通知"""
-        beijing_tz = timezone(timedelta(hours=8))
+        beijing_tz = _TZ_SHANGHAI
         now_beijing = datetime.now(beijing_tz)
         
         message = f"🎉 *榜单更新成功*\n\n"
@@ -3880,7 +3883,7 @@ class TelegramNotifier:
     
     async def send_update_error(self, error: str, platform: str = None):
         """发送更新失败通知"""
-        beijing_tz = timezone(timedelta(hours=8))
+        beijing_tz = _TZ_SHANGHAI
         now_beijing = datetime.now(beijing_tz)
         
         message = f"❌ *榜单更新失败*\n\n"
@@ -3893,7 +3896,7 @@ class TelegramNotifier:
     
     async def send_scheduler_status(self, status: Dict):
         """发送调度器状态通知"""
-        beijing_tz = timezone(timedelta(hours=8))
+        beijing_tz = _TZ_SHANGHAI
         now_beijing = datetime.now(beijing_tz)
         
         message = f"📋 *调度器状态报告*\n\n"
@@ -3930,7 +3933,7 @@ class AutoUpdateScheduler:
         logger.info("定时任务调度器已启动")
         
         await telegram_notifier.send_message("🔄 *定时调度器已启动*\n\n⏰ 启动时间: " +
-                                           datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M:%S') + " (北京时间)\n\n📅 每天21:30自动更新所有榜单")
+                                           datetime.now(_TZ_SHANGHAI).strftime('%Y-%m-%d %H:%M:%S') + " (北京时间)\n\n📅 每天21:30自动更新所有榜单")
         
         try:
             self.task = asyncio.create_task(self._update_loop())
@@ -3950,14 +3953,14 @@ class AutoUpdateScheduler:
         logger.info("定时任务调度器已停止")
         
         await telegram_notifier.send_message("⏹️ *定时调度器已停止*\n\n⏰ 停止时间: " +
-                                           datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M:%S') + " (北京时间)")
+                                           datetime.now(_TZ_SHANGHAI).strftime('%Y-%m-%d %H:%M:%S') + " (北京时间)")
     
     
     def get_status(self) -> dict:
         """获取调度器状态"""
         from datetime import datetime, timezone, timedelta
         
-        beijing_tz = timezone(timedelta(hours=8))
+        beijing_tz = _TZ_SHANGHAI
         now_beijing = datetime.now(beijing_tz)
         today_2130 = now_beijing.replace(hour=21, minute=30, second=0, microsecond=0)
         
@@ -3976,7 +3979,7 @@ class AutoUpdateScheduler:
         """检查是否应该执行更新 - 每天北京21:30执行（无论之前是否更新过）"""
         from datetime import datetime, timezone, timedelta
     
-        beijing_tz = timezone(timedelta(hours=8))
+        beijing_tz = _TZ_SHANGHAI
         now_beijing = datetime.now(beijing_tz)
     
         today_2130_start = now_beijing.replace(hour=21, minute=30, second=0, microsecond=0)
@@ -3992,8 +3995,8 @@ class AutoUpdateScheduler:
             if self.last_update.tzinfo:
                 last_update_beijing = self.last_update.astimezone(beijing_tz)
             else:
-                last_update_utc = self.last_update.replace(tzinfo=timezone.utc)
-                last_update_beijing = last_update_utc.astimezone(beijing_tz)
+                # naive：与库内 DATETIME 一致，为北京时间墙钟
+                last_update_beijing = self.last_update.replace(tzinfo=beijing_tz)
         
             last_update_date = last_update_beijing.date()
             today_date = now_beijing.date()
@@ -4015,7 +4018,7 @@ class AutoUpdateScheduler:
         logger.info("开始执行定时更新任务...")
         
         await telegram_notifier.send_message("🚀 *开始执行定时更新任务*\n\n⏰ 开始时间: " +
-                                           datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M:%S') + " (北京时间)")
+                                           datetime.now(_TZ_SHANGHAI).strftime('%Y-%m-%d %H:%M:%S') + " (北京时间)")
         
         db = SessionLocal()
         results = {}
@@ -4051,10 +4054,11 @@ class AutoUpdateScheduler:
                     error_occurred = True
                     await telegram_notifier.send_update_error(str(e), platform_name)
             
-            beijing_tz = timezone(timedelta(hours=8))
+            beijing_tz = _TZ_SHANGHAI
             now_beijing = datetime.now(beijing_tz)
             today_2130 = now_beijing.replace(hour=21, minute=30, second=0, microsecond=0)
-            self.last_update = today_2130.astimezone(timezone.utc)
+            self.last_update = today_2130
+            today_2130_naive = today_2130.replace(tzinfo=None)
             logger.info(f"更新完成，将last_update设置为今天的21:30: {today_2130.strftime('%Y-%m-%d %H:%M:%S')} (北京时间)")
             
             duration = time.time() - start_time
@@ -4063,7 +4067,7 @@ class AutoUpdateScheduler:
                 from models import SchedulerStatus
                 db_status = db.query(SchedulerStatus).order_by(SchedulerStatus.updated_at.desc()).first()
                 if db_status:
-                    db_status.last_update = self.last_update
+                    db_status.last_update = today_2130_naive
                     db.commit()
                     logger.info("数据库中的last_update已更新")
             except Exception as db_error:
@@ -4089,7 +4093,7 @@ class AutoUpdateScheduler:
         while self.running:
             try:
                 from datetime import datetime, timezone, timedelta
-                beijing_tz = timezone(timedelta(hours=8))
+                beijing_tz = _TZ_SHANGHAI
                 now_beijing = datetime.now(beijing_tz)
                 
                 if now_beijing.hour == 21 and now_beijing.minute == 30:
@@ -4165,7 +4169,7 @@ def get_scheduler_status() -> dict:
     else:
         from datetime import datetime, timezone, timedelta
         
-        beijing_tz = timezone(timedelta(hours=8))
+        beijing_tz = _TZ_SHANGHAI
         now_beijing = datetime.now(beijing_tz)
         today_2130 = now_beijing.replace(hour=21, minute=30, second=0, microsecond=0)
         
