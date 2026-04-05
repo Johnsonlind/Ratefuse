@@ -1,7 +1,8 @@
 # ==========================================
 # 生成 sitemap.xml 模块
 # ==========================================
-from datetime import datetime, timezone
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 import os
 
@@ -9,7 +10,7 @@ load_dotenv()
 SITEMAP_FILE_PATH = os.getenv("SITEMAP_FILE_PATH")
 
 def generate_sitemap():
-    lastmod = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    lastmod = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d")
 
     urls = [
         {"loc": "https://ratefuse.cn/", "changefreq": "daily", "priority": "1.0"},
