@@ -122,6 +122,7 @@ from models import (
     ResourceEntry,
     ResourceFavorite,
     PaymentOrder,
+    _shanghai_naive_now,
 )
 from sqlalchemy.orm import Session, selectinload
 from ratings import (
@@ -431,7 +432,7 @@ def is_active_member(user: Optional[User]) -> bool:
     expired_at = getattr(user, "member_expired_at", None)
     if not expired_at:
         return True
-    return expired_at > datetime.utcnow()
+    return expired_at > _shanghai_naive_now()
 
 
 def require_member(current_user: User = Depends(get_current_user)) -> User:
@@ -528,7 +529,7 @@ def _create_notification(
         content=content,
         link=link,
         is_read=False,
-        created_at=_now_utc_naive(),
+        created_at=_shanghai_naive_now(),
     )
     db.add(n)
     return n
@@ -599,7 +600,7 @@ def _notify_favorited_media_new_resource(db: Session, entry: "ResourceEntry", ac
     already = {int(uid) for (uid,) in existing_fav_rows if uid}
     to_add = [uid for uid in user_ids if uid not in already]
 
-    now = _now_utc_naive()
+    now = _shanghai_naive_now()
     created = 0
     for uid in to_add:
         db.add(ResourceFavorite(user_id=uid, resource_id=entry.id, created_at=now))
@@ -799,7 +800,7 @@ async def forgot_password(
             )
         
         token = generate_reset_token()
-        expires_at = datetime.utcnow() + timedelta(hours=24)
+        expires_at = _shanghai_naive_now() + timedelta(hours=24)
         
         reset_record = PasswordReset(
             email=email,
@@ -881,7 +882,7 @@ async def reset_password(
     reset_record = db.query(PasswordReset).filter(
         PasswordReset.token == token,
         PasswordReset.used == False,
-        PasswordReset.expires_at > datetime.utcnow()
+        PasswordReset.expires_at > _shanghai_naive_now()
     ).first()
     
     if not reset_record:
@@ -2070,7 +2071,7 @@ async def admin_set_user_member(
 
     user.is_member = is_member
     if is_member:
-        now = datetime.utcnow()
+        now = _shanghai_naive_now()
         base = user.member_expired_at if getattr(user, "member_expired_at", None) and user.member_expired_at > now else now
         user.member_expired_at = base + timedelta(days=days)
     else:
@@ -2109,7 +2110,7 @@ async def admin_set_user_member_batch(
         raise HTTPException(status_code=400, detail="ids 无效")
 
     users = db.query(User).filter(User.id.in_(user_ids)).all()
-    now = datetime.utcnow()
+    now = _shanghai_naive_now()
     for u in users:
         u.is_member = is_member
         if is_member:
@@ -2514,7 +2515,7 @@ async def mark_notifications_read(
     updated = 0
 
     try:
-        now = datetime.utcnow()
+        now = _shanghai_naive_now()
         if mark_all:
             updated = (
                 db.query(Notification)
@@ -2680,7 +2681,6 @@ _MAPPING_LINK_COLUMNS = frozenset(
     }
 )
 
-
 def _is_effectively_empty_mapping_value(v: Any) -> bool:
     if v is None:
         return True
@@ -2690,13 +2690,11 @@ def _is_effectively_empty_mapping_value(v: Any) -> bool:
             return True
     return False
 
-
 def _filter_patch_by_verified(patch: dict[str, Any], verified: bool) -> dict[str, Any]:
     """抓取失败时不写入任何平台链接字段，避免把已有映射清空或覆盖。"""
     if verified:
         return patch
     return {k: v for k, v in patch.items() if k not in _MAPPING_LINK_COLUMNS}
-
 
 def _sanitize_link_patch_no_overwrite_clear(row: Any, patch: dict[str, Any]) -> dict[str, Any]:
     """成功抓取但某字段为空时，不覆盖数据库里已有非空链接。"""
@@ -2710,6 +2708,75 @@ def _sanitize_link_patch_no_overwrite_clear(row: Any, patch: dict[str, Any]) -> 
             del out[k]
     return out
 
+def _normalize_mapping_url(u: Optional[str]) -> str:
+    """用于比较两条平台 URL 是否指向同一资源（忽略末尾 /、scheme 大小写等）。"""
+    if not u:
+        return ""
+    s = str(u).strip()
+    if not s:
+        return ""
+    try:
+        p = urlparse(s)
+        path = (p.path or "").rstrip("/")
+        if not path:
+            path = "/"
+        netloc = (p.netloc or "").lower()
+        scheme = (p.scheme or "https").lower()
+        return urlunparse((scheme, netloc, path, p.params, p.query, p.fragment))
+    except Exception:
+        return s.rstrip("/")
+
+def _canonical_json_for_compare(j: Optional[Any]) -> str:
+    if j is None:
+        return ""
+    if not str(j).strip():
+        return ""
+    try:
+        o = json.loads(j)
+        if isinstance(o, dict):
+            return json.dumps(o, ensure_ascii=False, sort_keys=True)
+        if isinstance(o, list):
+            return json.dumps(o, ensure_ascii=False)
+        return json.dumps(o, ensure_ascii=False)
+    except Exception:
+        return str(j).strip()
+
+def _mapping_link_field_semantically_equal(col: str, a: Any, b: Any) -> bool:
+    if a == b:
+        return True
+    if col in (
+        "douban_url",
+        "letterboxd_url",
+        "rotten_tomatoes_url",
+        "metacritic_url",
+    ):
+        return _normalize_mapping_url(a) == _normalize_mapping_url(b)
+    if col in (
+        "douban_seasons_json",
+        "douban_seasons_ids_json",
+        "rotten_tomatoes_seasons_json",
+        "metacritic_seasons_json",
+    ):
+        return _canonical_json_for_compare(a) == _canonical_json_for_compare(b)
+    if col in ("douban_id", "letterboxd_slug", "rotten_tomatoes_slug", "metacritic_slug"):
+        return str(a or "").strip() == str(b or "").strip()
+    return False
+
+def _prune_noop_mapping_link_patch(row: Any, patch: dict[str, Any]) -> dict[str, Any]:
+    """
+    抓取结果生成的 patch 若与库中已有链接语义相同（JSON 键序、URL 末尾 / 等），则去掉，
+    避免无谓触发 updated_at 与无意义写入。
+    """
+    out: dict[str, Any] = {}
+    for k, v in patch.items():
+        if k not in _MAPPING_LINK_COLUMNS:
+            out[k] = v
+            continue
+        cur = getattr(row, k, None)
+        if _mapping_link_field_semantically_equal(k, cur, v):
+            continue
+        out[k] = v
+    return out
 
 def _apply_tv_douban_series_link_consistency(row: Any) -> bool:
     """
@@ -2752,7 +2819,6 @@ def _apply_tv_douban_series_link_consistency(row: Any) -> bool:
             row.douban_id = did
             changed = True
     return changed
-
 
 _DOUBAN_ID_RE = re.compile(r"/subject/(\d+)")
 
@@ -2904,7 +2970,7 @@ def _upsert_media_link_mapping(
         .filter(MediaLinkMapping.tmdb_id == tmdb_id, MediaLinkMapping.media_type == media_type)
         .one_or_none()
     )
-    now = _now_utc_naive()
+    now = _shanghai_naive_now()
     title = tmdb_info.get("zh_title") or tmdb_info.get("title") or tmdb_info.get("name")
     year = tmdb_info.get("year")
     try:
@@ -2916,6 +2982,7 @@ def _upsert_media_link_mapping(
 
     if row is not None:
         patch = _sanitize_link_patch_no_overwrite_clear(row, patch)
+        patch = _prune_noop_mapping_link_patch(row, patch)
 
     if row is None:
         row = MediaLinkMapping(
@@ -2950,6 +3017,7 @@ def _upsert_media_link_mapping(
             if row is None:
                 raise
             patch = _sanitize_link_patch_no_overwrite_clear(row, patch)
+            patch = _prune_noop_mapping_link_patch(row, patch)
 
     snap_links = {k: getattr(row, k) for k in _MAPPING_LINK_COLUMNS}
 
@@ -4093,7 +4161,7 @@ async def telegram_webhook(update: TelegramUpdate, db: Session = Depends(get_db)
                 resource = db.query(ResourceEntry).filter(ResourceEntry.id == resource_id).first()
                 if resource:
                     resource.status = "approved" if action == "approve" else "rejected"
-                    resource.reviewed_at = datetime.utcnow()
+                    resource.reviewed_at = _shanghai_naive_now()
                     db.commit()
             return {"ok": True}
         if len(parts) == 4 and parts[0] == "fb" and parts[2] == "status":
@@ -4111,7 +4179,7 @@ async def telegram_webhook(update: TelegramUpdate, db: Session = Depends(get_db)
                 return {"ok": True}
 
             from_status = feedback.status
-            now = _now_utc_naive()
+            now = _shanghai_naive_now()
             feedback.status = new_status
             feedback.updated_at = now
             if new_status == "closed":
@@ -4170,7 +4238,7 @@ async def telegram_webhook(update: TelegramUpdate, db: Session = Depends(get_db)
     if not text:
         return {"ok": True}
 
-    now = _now_utc_naive()
+    now = _shanghai_naive_now()
     message = FeedbackMessage(
         feedback_id=feedback.id,
         sender_id=None,
@@ -4211,56 +4279,41 @@ def require_admin(user: User):
     if not user.is_admin:
         raise HTTPException(status_code=403, detail="需要管理员权限")
 
+# 时间约定（全项目）：MySQL DATETIME 存北京时间墙钟（naive，Asia/Shanghai）；接口 JSON 用 _to_shanghai_iso 格式化为同一套显示串。
 _TZ_SHANGHAI = ZoneInfo("Asia/Shanghai")
 
-def _now_utc_naive() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 def _iso_now_shanghai() -> str:
-    return _to_shanghai_iso(_now_utc_naive()) or ""
+    return _to_shanghai_iso(_shanghai_naive_now()) or ""
+
 
 def _to_shanghai_iso(dt: Optional[datetime]) -> Optional[str]:
     if not dt:
         return None
     if dt.tzinfo is None:
-        aware_utc = dt.replace(tzinfo=timezone.utc)
-    else:
-        aware_utc = dt.astimezone(timezone.utc)
-    # 固定为北京时间墙钟字符串，避免 ISO 字符串在前端被误解析
-    return aware_utc.astimezone(_TZ_SHANGHAI).strftime("%Y-%m-%d %H:%M:%S")
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    return dt.astimezone(_TZ_SHANGHAI).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _mapping_library_ts_to_display(dt: Optional[datetime]) -> Optional[str]:
-    """
-    映射库 API 返回给前端的「北京时间」显示串。
-
-    约定应用写入使用 _now_utc_naive()（UTC 墙钟存 DATETIME）。若历史数据或其它客户端
-    把「东八区墙钟」误写入同一列，按 UTC 再转北京会整体快约 8 小时（例如现实 4/5 18:40
-    却显示 4/6 02:40）。此时设置环境变量 RATEFUSE_MAPPING_NAIVE_IS_SHANGHAI_WALL=1，
-    则 naive 按数字直接当作北京时间输出（不做 UTC→北京转换）。
-    """
-    if not dt:
-        return None
-    if os.getenv("RATEFUSE_MAPPING_NAIVE_IS_SHANGHAI_WALL", "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-    ):
-        if dt.tzinfo is None:
-            return dt.strftime("%Y-%m-%d %H:%M:%S")
-        return dt.astimezone(_TZ_SHANGHAI).strftime("%Y-%m-%d %H:%M:%S")
+    """映射库时间列与库内其它 DATETIME 一致，均为北京时间 naive。"""
     return _to_shanghai_iso(dt)
 
-def _parse_iso_to_utc_naive(value: Optional[str]) -> Optional[datetime]:
+
+def _parse_iso_to_shanghai_naive(value: Optional[str]) -> Optional[datetime]:
+    """将 ISO 字符串转为北京时间墙钟（naive）写入 DATETIME。无时区时按北京时间理解。"""
     if not value:
         return None
     try:
-        dt = datetime.fromisoformat(str(value))
+        raw = str(value).strip()
+        if " " in raw and "T" not in raw:
+            raw = raw.replace(" ", "T", 1)
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
     except Exception:
         return None
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=_TZ_SHANGHAI)
-    return dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt
+    return dt.astimezone(_TZ_SHANGHAI).replace(tzinfo=None)
 
 def _add_status_event(
     db: Session,
@@ -4278,7 +4331,7 @@ def _add_status_event(
         changed_by_id=changed_by_id,
         changed_by_type=changed_by_type,
         reason=reason,
-        created_at=_now_utc_naive(),
+        created_at=_shanghai_naive_now(),
     )
     db.add(evt)
 
@@ -4415,7 +4468,7 @@ def _upsert_telegram_mapping(db: Session, feedback_id: int, telegram_chat_id: in
         )
         .first()
     )
-    now = _now_utc_naive()
+    now = _shanghai_naive_now()
     if existing:
         existing.telegram_message_id = telegram_message_id
         existing.updated_at = now
@@ -4473,7 +4526,7 @@ def _serialize_feedback(feedback: Feedback, include_messages: bool = False, incl
                 "content": msg.content,
                 "created_at": _to_shanghai_iso(msg.created_at),
             }
-            for msg in sorted(feedback.messages, key=lambda m: m.created_at or _now_utc_naive())
+            for msg in sorted(feedback.messages, key=lambda m: m.created_at or _shanghai_naive_now())
         ]
 
     return data
@@ -4512,9 +4565,9 @@ async def create_feedback(
         resolved_at=None,
         closed_by=None,
         closed_at=None,
-        created_at=_now_utc_naive(),
-        updated_at=_now_utc_naive(),
-        last_message_at=_now_utc_naive(),
+        created_at=_shanghai_naive_now(),
+        updated_at=_shanghai_naive_now(),
+        last_message_at=_shanghai_naive_now(),
     )
     db.add(feedback)
     db.flush()
@@ -4533,7 +4586,7 @@ async def create_feedback(
         sender_id=current_user.id,
         sender_type="user",
         content=content.strip(),
-        created_at=_now_utc_naive(),
+        created_at=_shanghai_naive_now(),
     )
     db.add(message)
 
@@ -4568,7 +4621,7 @@ async def create_feedback(
         img = FeedbackImage(
             feedback_id=feedback.id,
             image_path=relative_path,
-            created_at=_now_utc_naive(),
+            created_at=_shanghai_naive_now(),
         )
         db.add(img)
         saved_images.append(img)
@@ -4641,7 +4694,7 @@ async def user_reply_feedback(
     if feedback.status == "closed":
         raise HTTPException(status_code=400, detail="该反馈已关闭，无法继续回复")
 
-    now = _now_utc_naive()
+    now = _shanghai_naive_now()
     msg = FeedbackMessage(
         feedback_id=feedback.id,
         sender_id=current_user.id,
@@ -4709,7 +4762,7 @@ async def user_mark_feedback_resolved(
     if feedback.status == "closed":
         raise HTTPException(status_code=400, detail="该反馈已关闭，无需标记")
 
-    now = _now_utc_naive()
+    now = _shanghai_naive_now()
     feedback.is_resolved_by_user = True
     feedback.resolved_at = now
     feedback.updated_at = now
@@ -4833,7 +4886,7 @@ async def admin_reply_feedback(
     if not feedback:
         raise HTTPException(status_code=404, detail="反馈不存在")
 
-    now = _now_utc_naive()
+    now = _shanghai_naive_now()
     message = FeedbackMessage(
         feedback_id=feedback.id,
         sender_id=current_user.id,
@@ -4915,7 +4968,7 @@ async def admin_update_feedback_status(
         raise HTTPException(status_code=404, detail="反馈不存在")
 
     from_status = feedback.status
-    now = _now_utc_naive()
+    now = _shanghai_naive_now()
     feedback.status = status
     feedback.updated_at = now
     if status == "closed":
@@ -5075,8 +5128,8 @@ async def manual_lock_platform(
             remark=body.remark,
             failure_count=0,
             title_snapshot=body.title,
-            last_status_changed_at=_now_utc_naive(),
-            created_at=_now_utc_naive(),
+            last_status_changed_at=_shanghai_naive_now(),
+            created_at=_shanghai_naive_now(),
         )
         db.add(record)
         from_status = None
@@ -5088,7 +5141,7 @@ async def manual_lock_platform(
             record.remark = body.remark
         if body.title:
             record.title_snapshot = body.title
-        record.last_status_changed_at = _now_utc_naive()
+        record.last_status_changed_at = _shanghai_naive_now()
 
     log = MediaPlatformStatusLog(
         media_type=body.media_type,
@@ -5099,7 +5152,7 @@ async def manual_lock_platform(
         change_type="manual_lock",
         reason=body.remark,
         operator_id=current_user.id,
-        created_at=_now_utc_naive(),
+        created_at=_shanghai_naive_now(),
     )
     db.add(log)
 
@@ -5154,7 +5207,7 @@ async def manual_unlock_platform(
     record.last_failure_status = None
     if body.remark is not None:
         record.remark = body.remark
-    record.last_status_changed_at = _now_utc_naive()
+    record.last_status_changed_at = _shanghai_naive_now()
 
     log = MediaPlatformStatusLog(
         media_type=body.media_type,
@@ -5165,7 +5218,7 @@ async def manual_unlock_platform(
         change_type="manual_unlock",
         reason=body.remark,
         operator_id=current_user.id,
-        created_at=_now_utc_naive(),
+        created_at=_shanghai_naive_now(),
     )
     db.add(log)
 
@@ -5360,7 +5413,7 @@ async def admin_create_media_link_mapping(
         year_int = None
     imdb_id = (tmdb_info or {}).get("imdb_id") or None
 
-    now = _now_utc_naive()
+    now = _shanghai_naive_now()
     row = MediaLinkMapping(
         tmdb_id=int(body.tmdb_id),
         media_type=media_type,
@@ -5441,11 +5494,11 @@ async def admin_update_media_link_mapping(
     if body.confidence is not None:
         row.confidence = body.confidence
     if body.last_verified_at is not None:
-        row.last_verified_at = _parse_iso_to_utc_naive(body.last_verified_at)
+        row.last_verified_at = _parse_iso_to_shanghai_naive(body.last_verified_at)
 
     _apply_tv_douban_series_link_consistency(row)
     row.match_status = "manual"
-    row.updated_at = _now_utc_naive()
+    row.updated_at = _shanghai_naive_now()
 
     try:
         db.commit()
@@ -5479,9 +5532,9 @@ async def admin_delete_media_link_mapping(
 # ==========================================
 
 def _parse_yyyy_mm_dd(value: str) -> datetime:
+    """按北京日历日的 0 点（naive，与 visited_at 同约定）。"""
     try:
-        local_midnight = datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=_TZ_SHANGHAI)
-        return local_midnight.astimezone(timezone.utc).replace(tzinfo=None)
+        return datetime.strptime(value, "%Y-%m-%d")
     except Exception:
         raise HTTPException(status_code=400, detail="日期格式必须是 YYYY-MM-DD")
 
@@ -5527,7 +5580,7 @@ async def track_media_detail_view(
 
     log = MediaDetailAccessLog(
         user_id=current_user.id if current_user else None,
-        visited_at=datetime.utcnow(),
+        visited_at=_shanghai_naive_now(),
         media_type=media_type,
         tmdb_id=tmdb_id_int,
         title=title,
@@ -6402,7 +6455,7 @@ async def sync_charts(
         ).distinct().all()
         
         synced_count = 0
-        synced_at = datetime.utcnow()
+        synced_at = _shanghai_naive_now()
         
         for platform, chart_name, media_type in distinct_charts:
             sub = db.query(
@@ -6628,17 +6681,17 @@ async def auto_update_charts(
         results['豆瓣全球剧集'] = await scraper.update_douban_weekly_global_tv()
         
         update_time = datetime.now(_TZ_SHANGHAI)
-        update_time_utc_naive = update_time.astimezone(timezone.utc).replace(tzinfo=None)
-        
+        update_time_naive = update_time.replace(tzinfo=None)
+
         from chart_scrapers import scheduler_instance
         if scheduler_instance:
             scheduler_instance.last_update = update_time
             logger.info(f"手动更新后，更新调度器实例的last_update: {update_time}")
-        
+
         try:
             db_status = db.query(SchedulerStatus).order_by(SchedulerStatus.updated_at.desc()).first()
             if db_status:
-                db_status.last_update = update_time_utc_naive
+                db_status.last_update = update_time_naive
                 db.commit()
                 logger.info("手动更新后，数据库中的last_update已更新")
         except Exception as db_error:
@@ -6998,8 +7051,8 @@ async def start_scheduler_endpoint(
         
         db_status = SchedulerStatus(
             running=True,
-            next_update=_parse_iso_to_utc_naive(scheduler_status.get("next_update")),
-            last_update=_parse_iso_to_utc_naive(scheduler_status.get("last_update")),
+            next_update=_parse_iso_to_shanghai_naive(scheduler_status.get("next_update")),
+            last_update=_parse_iso_to_shanghai_naive(scheduler_status.get("last_update")),
         )
         db.add(db_status)
         db.commit()
@@ -7047,9 +7100,7 @@ async def stop_scheduler_endpoint(
         raise HTTPException(status_code=500, detail=f"停止调度器失败: {str(e)}")
 
 def calculate_next_update():
-    from datetime import timezone, timedelta
-    beijing_tz = timezone(timedelta(hours=8))
-    now_beijing = datetime.now(beijing_tz)
+    now_beijing = datetime.now(_TZ_SHANGHAI)
     today_2130 = now_beijing.replace(hour=21, minute=30, second=0, microsecond=0)
     
     if now_beijing >= today_2130:
@@ -7182,7 +7233,7 @@ async def create_member_order(
     db.refresh(order)
     # 开发阶段：立即模拟支付回调成功
     order.status = "paid"
-    now = datetime.utcnow()
+    now = _shanghai_naive_now()
     base = current_user.member_expired_at if current_user.member_expired_at and current_user.member_expired_at > now else now
     current_user.is_member = True
     current_user.member_expired_at = base + timedelta(days=int(plan["days"]))
@@ -7275,7 +7326,7 @@ async def create_resource(
         status="approved",  # 开发阶段自动通过
         submitted_by=current_user.id,
         reviewed_by=current_user.id if current_user.is_admin else None,
-        reviewed_at=datetime.utcnow(),
+        reviewed_at=_shanghai_naive_now(),
     )
     if not entry.link:
         raise HTTPException(status_code=400, detail="链接不能为空")
@@ -7420,7 +7471,7 @@ async def admin_review_resource(
         raise HTTPException(status_code=400, detail="审核动作错误")
     entry.status = "approved" if action == "approve" else "rejected"
     entry.reviewed_by = current_user.id
-    entry.reviewed_at = datetime.utcnow()
+    entry.reviewed_at = _shanghai_naive_now()
     if action == "reject":
         entry.reject_reason = str(data.get("reason") or "").strip() or None
     db.commit()
