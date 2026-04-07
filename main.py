@@ -2691,10 +2691,8 @@ def _is_effectively_empty_mapping_value(v: Any) -> bool:
     return False
 
 def _filter_patch_by_verified(patch: dict[str, Any], verified: bool) -> dict[str, Any]:
-    """抓取失败时不写入任何平台链接字段，避免把已有映射清空或覆盖。"""
-    if verified:
-        return patch
-    return {k: v for k, v in patch.items() if k not in _MAPPING_LINK_COLUMNS}
+    """无论评分状态如何，只要抓到链接信息就允许写入映射库。"""
+    return patch
 
 def _sanitize_link_patch_no_overwrite_clear(row: Any, patch: dict[str, Any]) -> dict[str, Any]:
     """成功抓取但某字段为空时，不覆盖数据库里已有非空链接。"""
