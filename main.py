@@ -2831,6 +2831,20 @@ def _extract_metacritic_slug_from_url(url: str) -> Optional[str]:
     except Exception:
         return None
 
+def _is_season_specific_url(url: str, platform: str) -> bool:
+    if not url:
+        return False
+    try:
+        path = (urlparse(url).path or "").lower()
+    except Exception:
+        return False
+
+    if platform == "rottentomatoes":
+        return bool(re.search(r"/s\d{1,2}$", path))
+    if platform == "metacritic":
+        return "/season-" in path
+    return False
+
 def _mapping_patch_from_platform_result(platform: str, media_type: str, rating_data: dict) -> dict[str, Any]:
     url = str(rating_data.get("url") or "").strip()
     patch: dict[str, Any] = {}
@@ -2891,16 +2905,18 @@ def _mapping_patch_from_platform_result(platform: str, media_type: str, rating_d
         if slug:
             patch["letterboxd_slug"] = slug
     elif platform == "rottentomatoes":
-        if url:
+        is_tv = (media_type or "").lower() == "tv"
+        if url and not (is_tv and _is_season_specific_url(url, "rottentomatoes")):
             patch["rotten_tomatoes_url"] = url
         slug = _extract_rt_slug_from_url(url) if url else None
-        if slug:
+        if slug and not (is_tv and _is_season_specific_url(url, "rottentomatoes")):
             patch["rotten_tomatoes_slug"] = slug
         sj = _dump_seasons_json()
         if sj:
             patch["rotten_tomatoes_seasons_json"] = sj
     elif platform == "metacritic":
-        if not url and (media_type or "").lower() == "tv":
+        is_tv = (media_type or "").lower() == "tv"
+        if not url and is_tv:
             seasons = rating_data.get("seasons")
             if isinstance(seasons, list) and seasons:
                 for s in seasons:
@@ -2909,10 +2925,10 @@ def _mapping_patch_from_platform_result(platform: str, media_type: str, rating_d
                         if su:
                             url = su
                             break
-        if url:
+        if url and not (is_tv and _is_season_specific_url(url, "metacritic")):
             patch["metacritic_url"] = url
         slug = _extract_metacritic_slug_from_url(url) if url else None
-        if slug:
+        if slug and not (is_tv and _is_season_specific_url(url, "metacritic")):
             patch["metacritic_slug"] = slug
         sj = _dump_seasons_json()
         if sj:
@@ -3510,6 +3526,13 @@ async def get_platform_rating(
                     direct_url = str(mapping_dict.get("douban_url") or "").strip()
                 elif platform == "douban" and media_type == "tv":
                     seasons_json = str(mapping_dict.get("douban_seasons_json") or "").strip()
+                    if not seasons_json:
+                        direct_url = str(mapping_dict.get("douban_url") or "").strip()
+                        if direct_url:
+                            try:
+                                seasons_json = json.dumps({"1": direct_url}, ensure_ascii=False)
+                            except Exception:
+                                seasons_json = '{"1": "' + direct_url.replace('"', '\\"') + '"}'
                     if seasons_json:
                         used_mapping = True
                         mapping_attempted = True
@@ -3721,13 +3744,25 @@ async def get_platform_rating(
             and isinstance(rating_info, dict)
             and rating_info.get("status") == RATING_STATUS["NO_RATING"]
         )
-        if skip_search_no_rating:
+        skip_search_after_douban_mapping = (
+            platform == "douban"
+            and mapping_attempted
+            and isinstance(rating_info, dict)
+            and rating_info.get("status") in (
+                RATING_STATUS["NO_FOUND"],
+                RATING_STATUS["RATE_LIMIT"],
+                RATING_STATUS["TIMEOUT"],
+                RATING_STATUS["FETCH_FAILED"],
+                RATING_STATUS["NO_RATING"],
+            )
+        )
+        if skip_search_no_rating or skip_search_after_douban_mapping:
             logger.info(
-                f"{platform} 映射已为同一条目且结果为 No Rating，跳过搜索: "
+                f"{platform} 映射已尝试，结果={rating_info.get('status') if isinstance(rating_info, dict) else None}，跳过搜索: "
                 f"media_type={media_type} tmdb_id={tmdb_id}"
             )
 
-        if not skip_search_no_rating:
+        if not (skip_search_no_rating or skip_search_after_douban_mapping):
             if platform == "douban":
                 rating_info = await douban_search_and_extract_rating(media_type, tmdb_info, request, douban_cookie)
                 search_results = None
