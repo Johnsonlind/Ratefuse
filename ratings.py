@@ -3324,6 +3324,7 @@ async def rt_extract_rating_from_season_urls(
     tmdb_info: dict,
     *,
     seasons_json: str,
+    series_url: Optional[str] = None,
     request=None,
     douban_cookie: Optional[str] = None,
 ) -> dict:
@@ -3371,6 +3372,17 @@ async def rt_extract_rating_from_season_urls(
             seasons_out: list[dict] = []
             series_scores: Optional[dict] = None
 
+            series_url_clean = str(series_url or "").strip()
+            if series_url_clean:
+                try:
+                    await page.goto(series_url_clean, wait_until="domcontentloaded", timeout=15000)
+                    await asyncio.sleep(0.15)
+                    score_data = await get_rt_rating_fast(page)
+                    if score_data:
+                        series_scores = _rt_scores_from_score_data(score_data)
+                except Exception:
+                    pass
+
             for sn, url in season_urls:
                 if request and await request.is_disconnected():
                     return {"status": "cancelled"}
@@ -3400,7 +3412,7 @@ async def rt_extract_rating_from_season_urls(
                 "series": series_scores,
                 "seasons": seasons_out,
                 "status": RATING_STATUS["SUCCESSFUL"],
-                "url": str(season_urls[0][1]),
+                "url": series_url_clean or str(season_urls[0][1]),
                 "_match_score": 100.0,
             }
         finally:
@@ -3498,6 +3510,7 @@ async def metacritic_extract_rating_from_season_urls(
     tmdb_info: dict,
     *,
     seasons_json: str,
+    series_url: Optional[str] = None,
     request=None,
     douban_cookie: Optional[str] = None,
 ) -> dict:
@@ -3545,6 +3558,23 @@ async def metacritic_extract_rating_from_season_urls(
             seasons_out: list[dict] = []
             overall_first: Optional[dict] = None
 
+            series_url_clean = str(series_url or "").strip()
+            if series_url_clean:
+                try:
+                    await page.goto(series_url_clean, wait_until="domcontentloaded", timeout=15000)
+                    await asyncio.sleep(0.2)
+                    content_series = await page.content()
+                    json_rating_series = await get_metacritic_rating_via_json(page, content=content_series)
+                    overall_series = _metacritic_overall_from_content(content_series)
+                    if json_rating_series:
+                        if json_rating_series.get("metascore"):
+                            overall_series["metascore"] = str(json_rating_series.get("metascore"))
+                        if json_rating_series.get("critics_count"):
+                            overall_series["critics_count"] = str(json_rating_series.get("critics_count"))
+                    overall_first = overall_series
+                except Exception:
+                    pass
+
             for sn, url in season_urls:
                 if request and await request.is_disconnected():
                     return {"status": "cancelled"}
@@ -3589,7 +3619,7 @@ async def metacritic_extract_rating_from_season_urls(
                 "overall": overall_first,
                 "seasons": seasons_out,
                 "status": RATING_STATUS["SUCCESSFUL"],
-                "url": str(season_urls[0][1]),
+                "url": series_url_clean or str(season_urls[0][1]),
                 "_match_score": 100.0,
             }
         finally:
