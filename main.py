@@ -560,7 +560,6 @@ def _notify_admins(
         created += 1
     return created
 
-
 def _notify_favorited_media_new_resource(db: Session, entry: "ResourceEntry", actor_user_id: int) -> int:
     try:
         media_type = str(entry.media_type or "").strip()
@@ -2665,6 +2664,26 @@ _MAPPING_LINK_COLUMNS = frozenset(
     }
 )
 
+_MAPPING_LINK_COMPARE_COLUMNS_MOVIE = frozenset(
+    {
+        "douban_id",
+        "douban_url",
+        "letterboxd_url",
+        "letterboxd_slug",
+        "rotten_tomatoes_url",
+        "rotten_tomatoes_slug",
+        "metacritic_url",
+        "metacritic_slug",
+    }
+)
+
+def _mapping_link_compare_columns_for_media_type(media_type: Optional[str]) -> frozenset[str]:
+    return (
+        _MAPPING_LINK_COLUMNS
+        if (media_type or "").lower() == "tv"
+        else _MAPPING_LINK_COMPARE_COLUMNS_MOVIE
+    )
+
 def _is_effectively_empty_mapping_value(v: Any) -> bool:
     if v is None:
         return True
@@ -2688,109 +2707,17 @@ def _sanitize_link_patch_no_overwrite_clear(row: Any, patch: dict[str, Any]) -> 
             del out[k]
     return out
 
-def _normalize_mapping_url(u: Optional[str]) -> str:
-    if not u:
-        return ""
-    s = str(u).strip()
-    if not s:
-        return ""
-    try:
-        p = urlparse(s)
-        path = (p.path or "").rstrip("/")
-        if not path:
-            path = "/"
-        netloc = (p.netloc or "").lower()
-        if netloc.startswith("www."):
-            netloc = netloc[4:]
-        scheme = (p.scheme or "https").lower()
-        return urlunparse((scheme, netloc, path, p.params, p.query, p.fragment))
-    except Exception:
-        return s.rstrip("/")
-
-def _canonical_json_for_compare(j: Optional[Any]) -> str:
-    if j is None:
-        return ""
-    if not str(j).strip():
-        return ""
-    try:
-        o = json.loads(j)
-        if isinstance(o, dict):
-            return json.dumps(o, ensure_ascii=False, sort_keys=True)
-        if isinstance(o, list):
-            return json.dumps(o, ensure_ascii=False)
-        return json.dumps(o, ensure_ascii=False)
-    except Exception:
-        return str(j).strip()
-
-def _canonical_season_url_map_json_for_compare(j: Optional[Any]) -> str:
-    if j is None:
-        return ""
-    s = str(j).strip()
-    if not s or s in ("{}", "[]", "null"):
-        return ""
-    try:
-        o = json.loads(s)
-        if not isinstance(o, dict):
-            return _canonical_json_for_compare(j)
-        norm: dict[str, str] = {}
-        for k, v in o.items():
-            ku = str(k).strip()
-            if not ku:
-                continue
-            norm[ku] = _normalize_mapping_url(str(v or "").strip())
-        return json.dumps(norm, ensure_ascii=False, sort_keys=True)
-    except Exception:
-        return str(j).strip()
-
-def _canonical_season_id_map_json_for_compare(j: Optional[Any]) -> str:
-    if j is None:
-        return ""
-    s = str(j).strip()
-    if not s or s in ("{}", "null"):
-        return ""
-    try:
-        o = json.loads(s)
-        if not isinstance(o, dict):
-            return _canonical_json_for_compare(j)
-        norm: dict[str, str] = {}
-        for k, v in o.items():
-            ku = str(k).strip()
-            if not ku:
-                continue
-            norm[ku] = str(v or "").strip()
-        return json.dumps(norm, ensure_ascii=False, sort_keys=True)
-    except Exception:
-        return str(j).strip()
-
-def _mapping_link_field_semantically_equal(col: str, a: Any, b: Any) -> bool:
-    if a == b:
+def _mapping_link_field_strictly_equal(a: Any, b: Any) -> bool:
+    if a is None and b is None:
         return True
-    if col in (
-        "douban_url",
-        "letterboxd_url",
-        "rotten_tomatoes_url",
-        "metacritic_url",
-    ):
-        return _normalize_mapping_url(a) == _normalize_mapping_url(b)
-    if col in (
-        "douban_seasons_json",
-        "rotten_tomatoes_seasons_json",
-        "metacritic_seasons_json",
-    ):
-        return _canonical_season_url_map_json_for_compare(a) == _canonical_season_url_map_json_for_compare(
-            b
-        )
-    if col == "douban_seasons_ids_json":
-        return _canonical_season_id_map_json_for_compare(a) == _canonical_season_id_map_json_for_compare(
-            b
-        )
-    if col in ("douban_id", "letterboxd_slug", "rotten_tomatoes_slug", "metacritic_slug"):
-        return str(a or "").strip() == str(b or "").strip()
-    return False
+    if a is None or b is None:
+        return False
+    return a == b
 
-def _mapping_link_columns_semantically_unchanged(row: Any, snap_links: dict[str, Any]) -> bool:
-    for k in _MAPPING_LINK_COLUMNS:
-        if not _mapping_link_field_semantically_equal(k, snap_links.get(k), getattr(row, k, None)):
+def _mapping_link_columns_strictly_unchanged(row: Any, snap_links: dict[str, Any]) -> bool:
+    cols = _mapping_link_compare_columns_for_media_type(getattr(row, "media_type", None))
+    for k in cols:
+        if not _mapping_link_field_strictly_equal(snap_links.get(k), getattr(row, k, None)):
             return False
     return True
 
@@ -2801,7 +2728,7 @@ def _prune_noop_mapping_link_patch(row: Any, patch: dict[str, Any]) -> dict[str,
             out[k] = v
             continue
         cur = getattr(row, k, None)
-        if _mapping_link_field_semantically_equal(k, cur, v):
+        if _mapping_link_field_strictly_equal(cur, v):
             continue
         out[k] = v
     return out
@@ -3084,7 +3011,7 @@ def _upsert_media_link_mapping(
         if not hasattr(row, k):
             continue
         current = getattr(row, k)
-        if k in _MAPPING_LINK_COLUMNS and _mapping_link_field_semantically_equal(k, current, v):
+        if k in _MAPPING_LINK_COLUMNS and _mapping_link_field_strictly_equal(current, v):
             continue
         if current != v:
             setattr(row, k, v)
@@ -3104,7 +3031,7 @@ def _upsert_media_link_mapping(
 
     _apply_tv_douban_series_link_consistency(row)
 
-    if not _mapping_link_columns_semantically_unchanged(row, snap_links):
+    if not _mapping_link_columns_strictly_unchanged(row, snap_links):
         row.updated_at = now
 
 @app.get("/")
@@ -5385,6 +5312,9 @@ class MediaLinkMappingUpdateRequest(BaseModel):
 async def admin_list_media_link_mappings(
     q: Optional[str] = None,
     tmdb_id: Optional[int] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    media_type: Optional[str] = None,
     page: int = 1,
     page_size: int = 20,
     db: Session = Depends(get_db),
@@ -5397,11 +5327,32 @@ async def admin_list_media_link_mappings(
     if page_size not in _ALLOWED_MAPPING_PAGE_SIZES:
         page_size = 20
 
+    start_dt: Optional[datetime] = None
+    end_dt_exclusive: Optional[datetime] = None
+    if start_date and str(start_date).strip():
+        start_dt = _parse_yyyy_mm_dd(str(start_date).strip())
+    if end_date and str(end_date).strip():
+        end_dt_exclusive = _parse_yyyy_mm_dd(str(end_date).strip()) + timedelta(days=1)
+    if start_dt is not None and end_dt_exclusive is not None and start_dt >= end_dt_exclusive:
+        raise HTTPException(status_code=400, detail="开始日期不能晚于结束日期")
+
+    media_type_f: Optional[str] = None
+    if media_type is not None and str(media_type).strip():
+        media_type_f = str(media_type).strip().lower()
+        if media_type_f not in ("movie", "tv"):
+            raise HTTPException(status_code=400, detail="media_type 必须是 movie 或 tv")
+
     query = db.query(MediaLinkMapping)
     if tmdb_id is not None:
         query = query.filter(MediaLinkMapping.tmdb_id == tmdb_id)
     if q:
         query = query.filter(MediaLinkMapping.title.contains(q))
+    if media_type_f:
+        query = query.filter(MediaLinkMapping.media_type == media_type_f)
+    if start_dt is not None:
+        query = query.filter(MediaLinkMapping.updated_at >= start_dt)
+    if end_dt_exclusive is not None:
+        query = query.filter(MediaLinkMapping.updated_at < end_dt_exclusive)
 
     query = query.order_by(MediaLinkMapping.updated_at.desc())
     total = query.count()
@@ -5436,6 +5387,11 @@ async def admin_list_media_link_mappings(
         "total": int(total),
         "page": int(page),
         "page_size": int(page_size),
+        "filters": {
+            "start_date": str(start_date).strip() if start_date else None,
+            "end_date": str(end_date).strip() if end_date else None,
+            "media_type": media_type_f,
+        },
     }
 
 @app.get("/api/admin/media-link-mappings/{mapping_id}")
@@ -5562,7 +5518,7 @@ async def admin_update_media_link_mapping(
 
     _apply_tv_douban_series_link_consistency(row)
     row.match_status = "manual"
-    if not _mapping_link_columns_semantically_unchanged(row, snap_links):
+    if not _mapping_link_columns_strictly_unchanged(row, snap_links):
         row.updated_at = _shanghai_naive_now()
 
     try:
@@ -5615,8 +5571,6 @@ async def track_media_detail_view(
 
     title = str(body.get("title") or "").strip()
     url = str(body.get("url") or "").strip()
-    if not title:
-        raise HTTPException(status_code=400, detail="缺少 title")
     if not url:
         raise HTTPException(status_code=400, detail="缺少 url")
 
@@ -5627,6 +5581,9 @@ async def track_media_detail_view(
             tmdb_id_int = int(tmdb_id)
         except (TypeError, ValueError):
             tmdb_id_int = None
+
+    if not title:
+        title = f"TMDB {tmdb_id_int}" if tmdb_id_int is not None else "未知影视"
 
     platform_rating_fetch_statuses = body.get("platform_rating_fetch_statuses")
     platform_rating_fetch_statuses_json: Optional[str] = None
