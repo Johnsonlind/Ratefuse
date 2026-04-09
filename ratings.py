@@ -4708,6 +4708,8 @@ async def extract_metacritic_rating(page, media_type, tmdb_info):
             },
             "seasons": []
         }
+        season_attempts = 0
+        season_timeout_failures = 0
         
         parsed_overall = _metacritic_overall_from_content(content)
         if parsed_overall.get("metascore") not in (None, "", "暂无"):
@@ -4804,7 +4806,8 @@ async def extract_metacritic_rating(page, media_type, tmdb_info):
                     
                     print(f"Metacritic访问匹配的季: {season_url}")
                     try:
-                        await page.goto(season_url, wait_until='networkidle')
+                        season_attempts += 1
+                        await page.goto(season_url, wait_until='domcontentloaded', timeout=9000)
                         await asyncio.sleep(0.5)
 
                         tmdb_season_number = 1
@@ -4843,6 +4846,8 @@ async def extract_metacritic_rating(page, media_type, tmdb_info):
 
                     except Exception as e:
                         print(f"Metacritic获取Season {season_number}评分数据时出错: {e}")
+                        if "Timeout" in str(e):
+                            season_timeout_failures += 1
                 else:
                     print(f"Metacritic未找到与年份{tmdb_year}匹配的季")
             
@@ -4862,7 +4867,8 @@ async def extract_metacritic_rating(page, media_type, tmdb_info):
                     
                     print(f"Metacritic访问第一季: {season_url}")
                     try:
-                        await page.goto(season_url, wait_until='networkidle')
+                        season_attempts += 1
+                        await page.goto(season_url, wait_until='domcontentloaded', timeout=9000)
                         await asyncio.sleep(0.5)
                         
                         season_data = {
@@ -4897,6 +4903,8 @@ async def extract_metacritic_rating(page, media_type, tmdb_info):
 
                     except Exception as e:
                         print(f"Metacritic获取单季剧评分数据时出错: {e}")
+                        if "Timeout" in str(e):
+                            season_timeout_failures += 1
                 else:
                     print(f"Metacritic未找到分季数据")
             
@@ -4908,7 +4916,8 @@ async def extract_metacritic_rating(page, media_type, tmdb_info):
                     season_number = season.get("season_number")
                     try:
                         season_url = f"{base_url}/season-{season_number}/"
-                        await page.goto(season_url, wait_until='networkidle')
+                        season_attempts += 1
+                        await page.goto(season_url, wait_until='domcontentloaded', timeout=9000)
                         await asyncio.sleep(0.5)
 
                         season_data = {
@@ -4943,22 +4952,21 @@ async def extract_metacritic_rating(page, media_type, tmdb_info):
 
                     except Exception as e:
                         print(f"Metacritic获取第{season_number}季评分数据时出错: {e}")
+                        if "Timeout" in str(e):
+                            season_timeout_failures += 1
                         continue
 
-        all_no_rating = all(
-            value == "暂无" or value == "tbd" 
-            for value in [
-                ratings["overall"]["metascore"],
-                ratings["overall"]["critics_count"],
-                ratings["overall"]["userscore"],
-                ratings["overall"]["users_count"]
-            ]
+        overall_has_any = _metacritic_scores_has_any_rating(ratings.get("overall", {}))
+        season_valid_count = sum(
+            1 for s in ratings.get("seasons", []) if _metacritic_scores_has_any_rating(s)
         )
-        
-        ratings["status"] = (
-            RATING_STATUS["NO_RATING"] if all_no_rating
-            else RATING_STATUS["SUCCESSFUL"]
-        )
+        if media_type == "tv" and season_attempts > 0 and season_valid_count == 0 and season_timeout_failures > 0:
+            ratings["status"] = RATING_STATUS["TIMEOUT"]
+            ratings["status_reason"] = "Metacritic 分季详情页请求超时"
+        elif (not overall_has_any) and season_valid_count == 0:
+            ratings["status"] = RATING_STATUS["NO_RATING"]
+        else:
+            ratings["status"] = RATING_STATUS["SUCCESSFUL"]
 
         return ratings
 
