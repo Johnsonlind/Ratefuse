@@ -147,9 +147,11 @@ export function RottenTomatoesCard({
               alt="" 
               className={`${isCompact ? 'w-8 h-8' : 'w-10 h-10'} object-contain flex-shrink-0`} 
             />
-            <div className="flex-1">
+            <div className="flex-1 min-w-0">
               <div className="flex items-start gap-2">
-                <span className={`${isCompact ? 'text-3xl' : 'text-4xl'} font-bold leading-none`}>
+                <span
+                  className={`${isCompact ? 'text-3xl' : 'text-4xl'} font-bold leading-none tabular-nums whitespace-nowrap flex-shrink-0`}
+                >
                   {`${criticScore}%`}
                 </span>
                 <div className="flex flex-col">
@@ -177,9 +179,11 @@ export function RottenTomatoesCard({
               alt="" 
               className={`${isCompact ? 'w-8 h-8' : 'w-10 h-10'} object-contain flex-shrink-0`} 
             />
-            <div className="flex-1">
+            <div className="flex-1 min-w-0">
               <div className="flex items-start gap-2">
-                <span className={`${isCompact ? 'text-3xl' : 'text-4xl'} font-bold leading-none`}>
+                <span
+                  className={`${isCompact ? 'text-3xl' : 'text-4xl'} font-bold leading-none tabular-nums whitespace-nowrap flex-shrink-0`}
+                >
                   {`${audienceScore}%`}
                 </span>
                 <div className="flex flex-col">
