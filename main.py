@@ -3516,12 +3516,12 @@ async def get_platform_rating(
 
         used_mapping = False
         mapping_failed = False
+        mapping_attempted = False
         rating_info: Any = None
 
         if mapping_dict:
             try:
                 direct_url = ""
-                mapping_attempted = False
                 if platform == "douban" and media_type == "movie":
                     direct_url = str(mapping_dict.get("douban_url") or "").strip()
                 elif platform == "douban" and media_type == "tv":
