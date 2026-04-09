@@ -28,35 +28,44 @@ export default defineConfig({
         runtimeCaching: [
           {
             urlPattern: /^https:\/\/image\.tmdb\.org\/.*/i,
-            handler: 'CacheFirst',
+            // CacheFirst + SW 易与 <img crossorigin> / CORS 缓存键不一致，导致二次进入页面海报随机空白；优先走网络并只缓存真实 200。
+            handler: 'NetworkFirst',
             options: {
-              cacheName: 'tmdb-images',
-              expiration: { maxEntries: 200, maxAgeSeconds: 30 * 24 * 60 * 60 }
-            }
+              cacheName: 'tmdb-images-v2',
+              networkTimeoutSeconds: 4,
+              cacheableResponse: { statuses: [200] },
+              expiration: { maxEntries: 200, maxAgeSeconds: 30 * 24 * 60 * 60 },
+            },
           },
           {
             urlPattern: /^https:\/\/tmdb\.ratefuse\.cn\/.*/i,
-            handler: 'CacheFirst',
+            handler: 'NetworkFirst',
             options: {
-              cacheName: 'tmdb-ratefuse-mirror',
-              expiration: { maxEntries: 200, maxAgeSeconds: 30 * 24 * 60 * 60 }
-            }
+              cacheName: 'tmdb-ratefuse-mirror-v2',
+              networkTimeoutSeconds: 4,
+              cacheableResponse: { statuses: [200] },
+              expiration: { maxEntries: 200, maxAgeSeconds: 30 * 24 * 60 * 60 },
+            },
           },
           {
             urlPattern: /^\/tmdb\//i,
-            handler: 'CacheFirst',
+            handler: 'NetworkFirst',
             options: {
-              cacheName: 'tmdb-site-proxy',
-              expiration: { maxEntries: 200, maxAgeSeconds: 30 * 24 * 60 * 60 }
-            }
+              cacheName: 'tmdb-site-proxy-v2',
+              networkTimeoutSeconds: 4,
+              cacheableResponse: { statuses: [200] },
+              expiration: { maxEntries: 200, maxAgeSeconds: 30 * 24 * 60 * 60 },
+            },
           },
           {
             urlPattern: /^\/tmdb-images\//i,
-            handler: 'CacheFirst',
+            handler: 'NetworkFirst',
             options: {
-              cacheName: 'tmdb-images-site-proxy',
-              expiration: { maxEntries: 200, maxAgeSeconds: 30 * 24 * 60 * 60 }
-            }
+              cacheName: 'tmdb-images-site-proxy-v2',
+              networkTimeoutSeconds: 4,
+              cacheableResponse: { statuses: [200] },
+              expiration: { maxEntries: 200, maxAgeSeconds: 30 * 24 * 60 * 60 },
+            },
           },
           {
             urlPattern: /\/logos\/.*\.(png|svg|ico)$/i,
