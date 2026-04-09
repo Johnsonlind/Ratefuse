@@ -2983,7 +2983,7 @@ async def extract_rating_info(media_type, platform, tmdb_info, search_results, r
                         return {"status": "cancelled"}
 
                     if platform == "imdb":
-                        await page.goto(detail_url, wait_until="domcontentloaded", timeout=15000)
+                        await page.goto(detail_url, wait_until="domcontentloaded", timeout=9000)
                         await asyncio.sleep(0.3)
                     elif platform == "douban":
                         await page.goto(detail_url, wait_until="domcontentloaded", timeout=15000)
@@ -3033,7 +3033,7 @@ async def extract_rating_info(media_type, platform, tmdb_info, search_results, r
                                                 page = await context.new_page()
                                                 page.set_default_timeout(30000)
                                                 await context.add_cookies(pw)
-                                                await page.goto(detail_url, wait_until="domcontentloaded", timeout=15000)
+                                                await page.goto(detail_url, wait_until="domcontentloaded", timeout=9000)
                                                 await asyncio.sleep(0.3)
                                                 if await _is_cloudflare_challenge(page):
                                                     ret = create_empty_rating_data("letterboxd", media_type, RATING_STATUS["RATE_LIMIT"])
@@ -3063,10 +3063,10 @@ async def extract_rating_info(media_type, platform, tmdb_info, search_results, r
                                 ret["status_reason"] = "详情页触发 Cloudflare 安全验证，请稍后重试"
                                 return ret
                     elif platform == "rottentomatoes":
-                        await page.goto(detail_url, wait_until="domcontentloaded", timeout=15000)
+                        await page.goto(detail_url, wait_until="domcontentloaded", timeout=9000)
                         await asyncio.sleep(0.3)
                     elif platform == "metacritic":
-                        await page.goto(detail_url, wait_until="domcontentloaded", timeout=15000)
+                        await page.goto(detail_url, wait_until="domcontentloaded", timeout=9000)
                         await asyncio.sleep(0.3)
                     else:
                         await page.goto(detail_url, wait_until="domcontentloaded", timeout=15000)
@@ -4033,7 +4033,7 @@ async def extract_douban_rating(page, media_type, matched_results, tmdb_info=Non
                 
                 season_rating = "暂无"
                 season_rating_people = "暂无"
-                for attempt in range(1 if fast_mode else 3):
+                for attempt in range(3):
                     try:
                         json_match = re.search(r'"aggregateRating":\s*{\s*"@type":\s*"AggregateRating",\s*"ratingCount":\s*"([^"]+)",\s*"bestRating":\s*"([^"]+)",\s*"worstRating":\s*"([^"]+)",\s*"ratingValue":\s*"([^"]+)"', season_content)
                         
@@ -4070,8 +4070,9 @@ async def extract_douban_rating(page, media_type, matched_results, tmdb_info=Non
                             
                     except Exception as e:
                         print(f"豆瓣第{attempt + 1}次尝试获取第{season_number}季评分失败: {e}")
-                        if not fast_mode and attempt < 2:
-                            await random_delay()
+                        if attempt < 2:
+                            if not fast_mode:
+                                await random_delay()
                             await page.reload()
                             await page.wait_for_load_state("networkidle", timeout=5000)
                             season_content = await page.content()
@@ -5367,11 +5368,11 @@ async def parallel_extract_ratings(tmdb_info, media_type, request=None, douban_c
     platforms = ["douban", "imdb", "letterboxd", "rottentomatoes", "metacritic"]
 
     platform_timeouts = {
-        "douban": 6.0,
+        "douban": 10.0,
         "imdb": 12.0,
-        "letterboxd": 18.0,
-        "rottentomatoes": 12.0,
-        "metacritic": 12.0,
+        "letterboxd": 10.0,
+        "rottentomatoes": 10.0,
+        "metacritic": 10.0,
     }
     
     title = tmdb_info.get('zh_title') or tmdb_info.get('title', 'Unknown')
