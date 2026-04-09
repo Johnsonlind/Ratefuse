@@ -3468,9 +3468,11 @@ def _metacritic_overall_from_content(content: str) -> dict:
     ]
     users_count_patterns = [
         r'Based on\s*([\d.,KkMm]+)\s*User Ratings?',
-        r'Based on\s*([\d.,KkMm]+)\s*Ratings?',
         r'"userReviewCount"\s*:\s*"?([\d.,KkMm]+)"?',
     ]
+
+    critic_unavailable = bool(re.search(r'Critic reviews are not available yet', content or "", re.IGNORECASE))
+    user_unavailable = bool(re.search(r'User reviews are not available yet', content or "", re.IGNORECASE))
 
     try:
         for p in metascore_patterns:
@@ -3480,30 +3482,32 @@ def _metacritic_overall_from_content(content: str) -> dict:
                 break
     except Exception:
         pass
-    try:
-        for p in critics_count_patterns:
-            m = re.search(p, content or "", re.IGNORECASE)
-            if m:
-                overall["critics_count"] = _normalize_count(m.group(1))
-                break
-    except Exception:
-        pass
-    try:
-        for p in userscore_patterns:
-            m = re.search(p, content or "", re.IGNORECASE)
-            if m:
-                overall["userscore"] = m.group(1)
-                break
-    except Exception:
-        pass
-    try:
-        for p in users_count_patterns:
-            m = re.search(p, content or "", re.IGNORECASE)
-            if m:
-                overall["users_count"] = _normalize_count(m.group(1))
-                break
-    except Exception:
-        pass
+    if not critic_unavailable:
+        try:
+            for p in critics_count_patterns:
+                m = re.search(p, content or "", re.IGNORECASE)
+                if m:
+                    overall["critics_count"] = _normalize_count(m.group(1))
+                    break
+        except Exception:
+            pass
+    if not user_unavailable:
+        try:
+            for p in userscore_patterns:
+                m = re.search(p, content or "", re.IGNORECASE)
+                if m:
+                    overall["userscore"] = m.group(1)
+                    break
+        except Exception:
+            pass
+        try:
+            for p in users_count_patterns:
+                m = re.search(p, content or "", re.IGNORECASE)
+                if m:
+                    overall["users_count"] = _normalize_count(m.group(1))
+                    break
+        except Exception:
+            pass
     return overall
 
 async def metacritic_extract_rating_from_season_urls(
@@ -4588,7 +4592,10 @@ async def extract_metacritic_rating(page, media_type, tmdb_info):
                     if metascore_text and metascore_text.lower() != 'tbd':
                         ratings["overall"]["metascore"] = metascore_text
 
-        if ratings["overall"]["critics_count"] == "暂无":
+        critic_unavailable = bool(re.search(r'Critic reviews are not available yet', content or "", re.IGNORECASE))
+        user_unavailable = bool(re.search(r'User reviews are not available yet', content or "", re.IGNORECASE))
+
+        if ratings["overall"]["critics_count"] == "暂无" and not critic_unavailable:
             critics_count_match = re.search(r'Based on (\d+) Critic Reviews?', content)
             if critics_count_match:
                 ratings["overall"]["critics_count"] = critics_count_match.group(1)
@@ -4600,26 +4607,27 @@ async def extract_metacritic_rating(page, media_type, tmdb_info):
                     if match:
                         ratings["overall"]["critics_count"] = match.group(1)
 
-        userscore_match = re.search(r'title="User score ([\d.]+) out of 10"', content)
-        if userscore_match:
-            ratings["overall"]["userscore"] = userscore_match.group(1)
-        else:
-            userscore_elem = await page.query_selector('div[data-v-e408cafe][title*="User score"] span')
-            if userscore_elem:
-                userscore_text = await userscore_elem.inner_text()
-                if userscore_text and userscore_text.lower() != 'tbd':
-                    ratings["overall"]["userscore"] = userscore_text
+        if not user_unavailable:
+            userscore_match = re.search(r'title="User score ([\d.]+) out of 10"', content)
+            if userscore_match:
+                ratings["overall"]["userscore"] = userscore_match.group(1)
+            else:
+                userscore_elem = await page.query_selector('div[data-v-e408cafe][title*="User score"] span')
+                if userscore_elem:
+                    userscore_text = await userscore_elem.inner_text()
+                    if userscore_text and userscore_text.lower() != 'tbd':
+                        ratings["overall"]["userscore"] = userscore_text
 
-        users_count_match = re.search(r'Based on ([\d,]+) User Ratings?', content)
-        if users_count_match:
-            ratings["overall"]["users_count"] = users_count_match.group(1).replace(',', '')
-        else:
-            users_count_elem = await page.query_selector('a[data-testid="user-path"] span')
-            if users_count_elem:
-                users_text = await users_count_elem.inner_text()
-                match = re.search(r'Based on ([\d,]+) User', users_text)
-                if match:
-                    ratings["overall"]["users_count"] = match.group(1).replace(',', '')
+            users_count_match = re.search(r'Based on ([\d,]+) User Ratings?', content)
+            if users_count_match:
+                ratings["overall"]["users_count"] = users_count_match.group(1).replace(',', '')
+            else:
+                users_count_elem = await page.query_selector('a[data-testid="user-path"] span')
+                if users_count_elem:
+                    users_text = await users_count_elem.inner_text()
+                    match = re.search(r'Based on ([\d,]+) User', users_text)
+                    if match:
+                        ratings["overall"]["users_count"] = match.group(1).replace(',', '')
         
         print(f"Metacritic评分获取成功")
 
