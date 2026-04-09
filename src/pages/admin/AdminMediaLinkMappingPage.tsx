@@ -3,7 +3,7 @@
 // ==========================================
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Lock } from 'lucide-react';
+import { CalendarDays, Film, Lock } from 'lucide-react';
 import { toast } from 'sonner';
 import { Input } from '../../shared/ui/Input';
 import { Button } from '../../shared/ui/Button';
@@ -224,6 +224,9 @@ export default function AdminMediaLinkMappingPage() {
   const [keyword, setKeyword] = useState('');
   const [searchValue, setSearchValue] = useState('');
   const [tmdbIdFilter, setTmdbIdFilter] = useState<string>('');
+  const [updatedFrom, setUpdatedFrom] = useState('');
+  const [updatedTo, setUpdatedTo] = useState('');
+  const [listMediaType, setListMediaType] = useState<'' | MediaType>('');
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState<PageSize>(20);
 
@@ -256,15 +259,35 @@ export default function AdminMediaLinkMappingPage() {
     return Number.isFinite(n) ? n : undefined;
   }, [tmdbIdFilter]);
 
-  const { data, isLoading, isFetching } = useQuery({
-    queryKey: ['admin-media-link-mappings', { keyword, tmdbIdFilterInt, page, pageSize }],
-    queryFn: () =>
-      fetchMediaLinkMappings({
+  const { data, isLoading, isFetching, isError, error } = useQuery({
+    queryKey: [
+      'admin-media-link-mappings',
+      {
+        keyword,
+        tmdbIdFilterInt,
+        updatedFrom,
+        updatedTo,
+        listMediaType,
+        page,
+        pageSize,
+      },
+    ],
+    queryFn: () => {
+      const from = updatedFrom.trim();
+      const to = updatedTo.trim();
+      if (from && to && from > to) {
+        throw new Error('「更新时间从」不能晚于「更新时间至」');
+      }
+      return fetchMediaLinkMappings({
         q: keyword || undefined,
         tmdb_id: tmdbIdFilterInt,
+        start_date: from || undefined,
+        end_date: to || undefined,
+        media_type: listMediaType || undefined,
         page,
         page_size: pageSize,
-      }),
+      });
+    },
   });
 
   const total = data?.total ?? 0;
@@ -578,6 +601,67 @@ export default function AdminMediaLinkMappingPage() {
           </div>
         </div>
       </form>
+
+      <div className="rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-800/50 p-4 mb-4">
+        <div className="flex flex-col sm:flex-row gap-3 sm:items-end flex-wrap">
+          <div className="flex-1 min-w-[140px]">
+            <label className="text-sm text-gray-700 dark:text-gray-300 flex items-center gap-2 mb-1">
+              <CalendarDays className="w-4 h-4 shrink-0" />
+              更新时间从（含当日）
+            </label>
+            <input
+              type="date"
+              value={updatedFrom}
+              onChange={(e) => {
+                setUpdatedFrom(e.target.value);
+                setPage(1);
+              }}
+              className="w-full max-w-full min-w-0 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900/40 text-gray-900 dark:text-white text-sm"
+            />
+          </div>
+          <div className="flex-1 min-w-[140px]">
+            <label className="text-sm text-gray-700 dark:text-gray-300 flex items-center gap-2 mb-1">
+              <CalendarDays className="w-4 h-4 shrink-0" />
+              更新时间至（含当日）
+            </label>
+            <input
+              type="date"
+              value={updatedTo}
+              onChange={(e) => {
+                setUpdatedTo(e.target.value);
+                setPage(1);
+              }}
+              className="w-full max-w-full min-w-0 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900/40 text-gray-900 dark:text-white text-sm"
+            />
+          </div>
+          <div className="w-full sm:w-48 min-w-0">
+            <label className="text-sm text-gray-700 dark:text-gray-300 flex items-center gap-2 mb-1">
+              <Film className="w-4 h-4 shrink-0" />
+              影视类型
+            </label>
+            <select
+              value={listMediaType}
+              onChange={(e) => {
+                setListMediaType(e.target.value as '' | MediaType);
+                setPage(1);
+              }}
+              className="w-full max-w-full min-w-0 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900/40 text-gray-900 dark:text-white text-sm"
+            >
+              <option value="">全部</option>
+              <option value="movie">电影</option>
+              <option value="tv">剧集</option>
+            </select>
+          </div>
+        </div>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
+          时间段按映射记录的「更新时间」过滤；留空表示不限制该端。
+        </p>
+        {isError ? (
+          <p className="text-sm text-red-600 dark:text-red-400 mt-2">
+            {(error as Error)?.message || '加载失败'}
+          </p>
+        ) : null}
+      </div>
 
       <div className="overflow-x-auto rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900/40">
         <table className="min-w-full text-sm">
