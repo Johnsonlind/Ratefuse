@@ -3064,6 +3064,8 @@ def _upsert_media_link_mapping(
             if not patch:
                 return
 
+    _apply_tv_douban_series_link_consistency(row)
+
     snap_links = {k: getattr(row, k) for k in _MAPPING_LINK_COLUMNS}
 
     desired_media_type = media_type
