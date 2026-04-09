@@ -3453,6 +3453,43 @@ def _metacritic_overall_from_content(content: str) -> dict:
         "userscore": "暂无",
         "users_count": "暂无",
     }
+
+    score_blocks = re.findall(
+        r'<div[^>]*data-testid="product-score"[^>]*>.*?</div>\s*</div>\s*</div>',
+        content or "",
+        re.IGNORECASE | re.DOTALL,
+    )
+    for block in score_blocks:
+        block_text = block or ""
+        header_match = re.search(
+            r'data-testid="global-score-header"[^>]*>\s*([^<]+)\s*<',
+            block_text,
+            re.IGNORECASE,
+        )
+        if not header_match:
+            continue
+        header = header_match.group(1).strip().lower()
+
+        if "metascore" in header:
+            if "Critic reviews are not available yet" not in block_text:
+                m_score = re.search(r'title="Metascore\s*(\d+)\s*out of 100"', block_text, re.IGNORECASE)
+                if m_score:
+                    overall["metascore"] = m_score.group(1)
+                m_count = re.search(r'Based on\s*([\d.,KkMm]+)\s*Critic Reviews?', block_text, re.IGNORECASE)
+                if m_count:
+                    overall["critics_count"] = _normalize_count(m_count.group(1))
+        elif "user score" in header:
+            if "User reviews are not available yet" not in block_text:
+                u_score = re.search(r'title="User score\s*([\d.]+)\s*out of 10"', block_text, re.IGNORECASE)
+                if u_score:
+                    overall["userscore"] = u_score.group(1)
+                u_count = re.search(r'Based on\s*([\d.,KkMm]+)\s*User Ratings?', block_text, re.IGNORECASE)
+                if u_count:
+                    overall["users_count"] = _normalize_count(u_count.group(1))
+
+    if any(overall[k] != "暂无" for k in ("metascore", "critics_count", "userscore", "users_count")):
+        return overall
+
     metascore_patterns = [
         r'title="Metascore\s*(\d+)\s*out of 100"',
         r'"metascore"\s*:\s*"?(\d+)"?',
