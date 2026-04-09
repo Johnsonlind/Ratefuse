@@ -127,19 +127,6 @@ function TopChartCard({
   compact?: boolean;
 }) {
   const posterUrl = item.poster ? resolvePosterUrl(item.poster) : '';
-  const imgRef = useRef<HTMLImageElement>(null);
-
-  const revealPoster = useCallback((el: HTMLImageElement | null) => {
-    if (!el || !el.complete || el.naturalWidth <= 0) return;
-    requestAnimationFrame(() => {
-      el.style.opacity = '1';
-    });
-  }, []);
-
-  useLayoutEffect(() => {
-    revealPoster(imgRef.current);
-  }, [posterUrl, revealPoster]);
-
   const linkPath = item.type === 'movie' ? `/movie/${item.id}` : `/tv/${item.id}`;
   return (
     <div
@@ -159,28 +146,17 @@ function TopChartCard({
         >
           {item.poster ? (
             <img
-              ref={imgRef}
               src={posterUrl}
               alt={item.title}
               className="h-full w-full object-cover transition-all duration-200 group-hover:scale-105"
               loading={eager ? 'eager' : 'lazy'}
               fetchPriority={eager ? 'high' : 'auto'}
-              decoding="async"
               sizes={compact ? '(min-width:1024px) 10vw, 28vw' : '(min-width:640px) 18vw, 22vw'}
-              style={{
-                minHeight: '100%',
-                display: 'block',
-                opacity: 0,
-                transition: 'opacity 0.2s ease-in',
-              }}
-              onLoad={(e) => {
-                revealPoster(e.target as HTMLImageElement);
-              }}
+              style={{ minHeight: '100%', display: 'block' }}
               onError={(e) => {
                 const target = e.target as HTMLImageElement;
-                if (target) target.style.opacity = '0';
+                if (target) target.style.visibility = 'hidden';
               }}
-              crossOrigin="anonymous"
             />
           ) : (
             <div className="flex h-full w-full items-center justify-center bg-gray-200 dark:bg-gray-800">
