@@ -2722,6 +2722,46 @@ def _canonical_json_for_compare(j: Optional[Any]) -> str:
     except Exception:
         return str(j).strip()
 
+def _canonical_season_url_map_json_for_compare(j: Optional[Any]) -> str:
+    if j is None:
+        return ""
+    s = str(j).strip()
+    if not s or s in ("{}", "[]", "null"):
+        return ""
+    try:
+        o = json.loads(s)
+        if not isinstance(o, dict):
+            return _canonical_json_for_compare(j)
+        norm: dict[str, str] = {}
+        for k, v in o.items():
+            ku = str(k).strip()
+            if not ku:
+                continue
+            norm[ku] = _normalize_mapping_url(str(v or "").strip())
+        return json.dumps(norm, ensure_ascii=False, sort_keys=True)
+    except Exception:
+        return str(j).strip()
+
+def _canonical_season_id_map_json_for_compare(j: Optional[Any]) -> str:
+    if j is None:
+        return ""
+    s = str(j).strip()
+    if not s or s in ("{}", "null"):
+        return ""
+    try:
+        o = json.loads(s)
+        if not isinstance(o, dict):
+            return _canonical_json_for_compare(j)
+        norm: dict[str, str] = {}
+        for k, v in o.items():
+            ku = str(k).strip()
+            if not ku:
+                continue
+            norm[ku] = str(v or "").strip()
+        return json.dumps(norm, ensure_ascii=False, sort_keys=True)
+    except Exception:
+        return str(j).strip()
+
 def _mapping_link_field_semantically_equal(col: str, a: Any, b: Any) -> bool:
     if a == b:
         return True
@@ -2734,14 +2774,25 @@ def _mapping_link_field_semantically_equal(col: str, a: Any, b: Any) -> bool:
         return _normalize_mapping_url(a) == _normalize_mapping_url(b)
     if col in (
         "douban_seasons_json",
-        "douban_seasons_ids_json",
         "rotten_tomatoes_seasons_json",
         "metacritic_seasons_json",
     ):
-        return _canonical_json_for_compare(a) == _canonical_json_for_compare(b)
+        return _canonical_season_url_map_json_for_compare(a) == _canonical_season_url_map_json_for_compare(
+            b
+        )
+    if col == "douban_seasons_ids_json":
+        return _canonical_season_id_map_json_for_compare(a) == _canonical_season_id_map_json_for_compare(
+            b
+        )
     if col in ("douban_id", "letterboxd_slug", "rotten_tomatoes_slug", "metacritic_slug"):
         return str(a or "").strip() == str(b or "").strip()
     return False
+
+def _mapping_link_columns_semantically_unchanged(row: Any, snap_links: dict[str, Any]) -> bool:
+    for k in _MAPPING_LINK_COLUMNS:
+        if not _mapping_link_field_semantically_equal(k, snap_links.get(k), getattr(row, k, None)):
+            return False
+    return True
 
 def _prune_noop_mapping_link_patch(row: Any, patch: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
@@ -3031,6 +3082,8 @@ def _upsert_media_link_mapping(
         if not hasattr(row, k):
             continue
         current = getattr(row, k)
+        if k in _MAPPING_LINK_COLUMNS and _mapping_link_field_semantically_equal(k, current, v):
+            continue
         if current != v:
             setattr(row, k, v)
 
@@ -3049,8 +3102,7 @@ def _upsert_media_link_mapping(
 
     _apply_tv_douban_series_link_consistency(row)
 
-    link_changed = any(getattr(row, k) != snap_links.get(k) for k in _MAPPING_LINK_COLUMNS)
-    if link_changed:
+    if not _mapping_link_columns_semantically_unchanged(row, snap_links):
         row.updated_at = now
 
 @app.get("/")
@@ -5469,6 +5521,8 @@ async def admin_update_media_link_mapping(
     if not row:
         raise HTTPException(status_code=404, detail="记录不存在")
 
+    snap_links = {k: getattr(row, k) for k in _MAPPING_LINK_COLUMNS}
+
     if body.title is not None:
         row.title = body.title
     if body.year is not None:
@@ -5506,7 +5560,8 @@ async def admin_update_media_link_mapping(
 
     _apply_tv_douban_series_link_consistency(row)
     row.match_status = "manual"
-    row.updated_at = _shanghai_naive_now()
+    if not _mapping_link_columns_semantically_unchanged(row, snap_links):
+        row.updated_at = _shanghai_naive_now()
 
     try:
         db.commit()
