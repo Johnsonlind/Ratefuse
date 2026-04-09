@@ -2114,55 +2114,38 @@ async def handle_douban_search(page, search_url, fast_mode: bool = False):
             return {"status": RATING_STATUS["RATE_LIMIT"], "status_reason": "访问频率限制"} 
         
         try:
-            selectors_to_try = [
-                '.sc-bZQynM .item-root',
-                '.item-root',
-                'a[class*="title-text"]',
-                '[class*="item-root"]',
-                'a[href*="/subject/"]',
-            ]
+            try:
+                await page.wait_for_selector('a[href*="/subject/"]', timeout=(1800 if fast_mode else 4000))
+            except Exception:
+                pass
 
             results = await page.evaluate(
                 """(args) => {
-                    const selectors = args.selectors || [];
-                    const maxItems = args.maxItems;
-                    const selectorsList = Array.isArray(selectors) ? selectors : [];
-                    let nodes = [];
-                    for (const sel of selectorsList) {
-                        const found = Array.from(document.querySelectorAll(sel || ''));
-                        if (found.length) { nodes = found; break; }
-                    }
-                    if (!nodes.length) return [];
-
+                    const maxItems = args.maxItems || 5;
+                    const anchors = Array.from(document.querySelectorAll('a[href*="/subject/"]'));
+                    const seen = new Set();
                     const out = [];
-                    const max = Math.min(maxItems || 0, nodes.length);
                     const titleRe = /(.*?)\\s*\\((\\d{4})\\)/;
 
-                    for (let i = 0; i < max; i++) {
-                        const node = nodes[i];
-                        try {
-                            let titleElem = node.querySelector ? node.querySelector('.title-text') : null;
-                            if (!titleElem && node.matches && node.matches('.title-text')) titleElem = node;
-                            if (!titleElem) {
-                                const a = node.querySelector ? node.querySelector('a[href]') : null;
-                                titleElem = a || node;
-                            }
+                    for (const a of anchors) {
+                        if (out.length >= maxItems) break;
+                        const href = (a.getAttribute('href') || '').trim();
+                        if (!href || !/\\/subject\\/\\d+/.test(href)) continue;
+                        if (seen.has(href)) continue;
+                        seen.add(href);
 
-                            const titleText = (titleElem && titleElem.textContent ? titleElem.textContent : (node.textContent || '')).trim();
-                            const url = (titleElem && titleElem.getAttribute ? titleElem.getAttribute('href') : null) || (node.getAttribute ? node.getAttribute('href') : null) || '';
+                        const text = (a.textContent || '').replace(/\\s+/g, ' ').trim();
+                        if (!text) continue;
 
-                            const m = titleText.match(titleRe);
-                            if (m) {
-                                out.push({ title: (m[1] || '').trim(), year: m[2] || '', url });
-                            } else {
-                                out.push({ title: titleText, year: '', url });
-                            }
-                        } catch (e) {}
+                        const m = text.match(titleRe);
+                        const title = (m ? (m[1] || '').trim() : text).trim();
+                        const year = m ? (m[2] || '') : '';
+                        if (!title) continue;
+                        out.push({ title, year, url: href });
                     }
-
                     return out;
                 }""",
-                {"selectors": selectors_to_try, "maxItems": MAX_MATCH_CANDIDATES_PER_PLATFORM},
+                {"maxItems": MAX_MATCH_CANDIDATES_PER_PLATFORM},
             )
 
             if not results:
@@ -4727,53 +4710,8 @@ async def extract_metacritic_rating(page, media_type, tmdb_info):
             if ratings["overall"]["critics_count"] == "暂无" and json_rating.get("critics_count") and not flags["critic_unavailable"]:
                 ratings["overall"]["critics_count"] = json_rating["critics_count"]
 
-        if ratings["overall"]["metascore"] == "暂无":
-            metascore_match = re.search(r'title="Metascore (\d+) out of 100"', content)
-            if metascore_match:
-                ratings["overall"]["metascore"] = metascore_match.group(1)
-            else:
-                metascore_elem = await page.query_selector('div[data-v-e408cafe][title*="Metascore"] span')
-                if metascore_elem:
-                    metascore_text = await metascore_elem.inner_text()
-                    if metascore_text and metascore_text.lower() != 'tbd':
-                        ratings["overall"]["metascore"] = metascore_text
-
         critic_unavailable = flags["critic_unavailable"]
         user_unavailable = flags["user_unavailable"]
-
-        if ratings["overall"]["critics_count"] == "暂无" and not critic_unavailable:
-            critics_count_match = re.search(r'Based on (\d+) Critic Reviews?', content)
-            if critics_count_match:
-                ratings["overall"]["critics_count"] = critics_count_match.group(1)
-            else:
-                critics_count_elem = await page.query_selector('a[data-testid="critic-path"] span')
-                if critics_count_elem:
-                    critics_text = await critics_count_elem.inner_text()
-                    match = re.search(r'Based on (\d+) Critic', critics_text)
-                    if match:
-                        ratings["overall"]["critics_count"] = match.group(1)
-
-        if not user_unavailable:
-            userscore_match = re.search(r'title="User score ([\d.]+) out of 10"', content)
-            if userscore_match:
-                ratings["overall"]["userscore"] = userscore_match.group(1)
-            else:
-                userscore_elem = await page.query_selector('div[data-v-e408cafe][title*="User score"] span')
-                if userscore_elem:
-                    userscore_text = await userscore_elem.inner_text()
-                    if userscore_text and userscore_text.lower() != 'tbd':
-                        ratings["overall"]["userscore"] = userscore_text
-
-            users_count_match = re.search(r'Based on ([\d,]+) User Ratings?', content)
-            if users_count_match:
-                ratings["overall"]["users_count"] = users_count_match.group(1).replace(',', '')
-            else:
-                users_count_elem = await page.query_selector('a[data-testid="user-path"] span')
-                if users_count_elem:
-                    users_text = await users_count_elem.inner_text()
-                    match = re.search(r'Based on ([\d,]+) User', users_text)
-                    if match:
-                        ratings["overall"]["users_count"] = match.group(1).replace(',', '')
         
         print(f"Metacritic评分获取成功")
 
