@@ -3336,6 +3336,13 @@ def _metacritic_scores_has_any_rating(scores: dict) -> bool:
     fields = ("metascore", "critics_count", "userscore", "users_count")
     return any(str((scores or {}).get(k, "")).strip().lower() not in ("", "暂无", "tbd") for k in fields)
 
+def _metacritic_tbd_flags(content: str) -> dict:
+    raw = content or ""
+    return {
+        "critic_unavailable": bool(re.search(r'Critic reviews are not available yet|title="Metascore\s*TBD"|aria-label="Metascore\s*TBD"', raw, re.IGNORECASE)),
+        "user_unavailable": bool(re.search(r'User reviews are not available yet|title="User score\s*TBD"|aria-label="User score\s*TBD"|Available after\s*\d+\s*ratings', raw, re.IGNORECASE)),
+    }
+
 def _letterboxd_scores_has_rating(rating: object, rating_count: object) -> bool:
     invalid = {"", "暂无", "none", "n/a", "tbd"}
     return (
@@ -3456,6 +3463,34 @@ async def rt_extract_rating_from_season_urls(
         return create_empty_rating_data("rottentomatoes", "tv", RATING_STATUS["FETCH_FAILED"])
 
 def _metacritic_overall_from_content(content: str) -> dict:
+    def _extract_div_block_by_class(raw_html: str, class_name: str) -> str:
+        raw = raw_html or ""
+        open_div_pat = re.compile(r"<div\b[^>]*>", re.IGNORECASE)
+        close_div_pat = re.compile(r"</div\s*>", re.IGNORECASE)
+        class_pat = re.compile(rf'class\s*=\s*"[^"]*\b{re.escape(class_name)}\b[^"]*"', re.IGNORECASE)
+
+        for m in open_div_pat.finditer(raw):
+            tag = m.group(0)
+            if not class_pat.search(tag):
+                continue
+            start = m.start()
+            pos = m.end()
+            depth = 1
+            while depth > 0 and pos < len(raw):
+                next_open = open_div_pat.search(raw, pos)
+                next_close = close_div_pat.search(raw, pos)
+                if not next_close:
+                    break
+                if next_open and next_open.start() < next_close.start():
+                    depth += 1
+                    pos = next_open.end()
+                else:
+                    depth -= 1
+                    pos = next_close.end()
+            if depth == 0:
+                return raw[start:pos]
+        return ""
+
     def _normalize_count(raw: str) -> str:
         s = str(raw or "").strip().replace(",", "").upper()
         if not s:
@@ -3482,7 +3517,9 @@ def _metacritic_overall_from_content(content: str) -> dict:
         "users_count": "暂无",
     }
 
-    raw = content or ""
+    raw_all = content or ""
+    hero_raw = _extract_div_block_by_class(raw_all, "hero-scores")
+    raw = hero_raw or ""
     score_blocks: list[str] = []
     product_starts = [m.start() for m in re.finditer(r'data-testid="product-score"', raw, re.IGNORECASE)]
     for i, start in enumerate(product_starts):
@@ -3537,8 +3574,9 @@ def _metacritic_overall_from_content(content: str) -> dict:
         r'"userReviewCount"\s*:\s*"?([\d.,KkMm]+)"?',
     ]
 
-    critic_unavailable = bool(re.search(r'Critic reviews are not available yet', content or "", re.IGNORECASE))
-    user_unavailable = bool(re.search(r'User reviews are not available yet', content or "", re.IGNORECASE))
+    flags = _metacritic_tbd_flags(raw_all)
+    critic_unavailable = flags["critic_unavailable"]
+    user_unavailable = flags["user_unavailable"]
 
     try:
         for p in metascore_patterns:
@@ -3636,10 +3674,11 @@ async def metacritic_extract_rating_from_season_urls(
                     content_series = await page.content()
                     json_rating_series = await get_metacritic_rating_via_json(page, content=content_series)
                     overall_series = _metacritic_overall_from_content(content_series)
+                    flags_series = _metacritic_tbd_flags(content_series)
                     if json_rating_series:
-                        if json_rating_series.get("metascore"):
+                        if json_rating_series.get("metascore") and not flags_series["critic_unavailable"]:
                             overall_series["metascore"] = str(json_rating_series.get("metascore"))
-                        if json_rating_series.get("critics_count"):
+                        if json_rating_series.get("critics_count") and not flags_series["critic_unavailable"]:
                             overall_series["critics_count"] = str(json_rating_series.get("critics_count"))
                     overall_first = overall_series
                 except Exception:
@@ -3654,10 +3693,11 @@ async def metacritic_extract_rating_from_season_urls(
 
                 json_rating = await get_metacritic_rating_via_json(page, content=content)
                 overall = _metacritic_overall_from_content(content)
+                flags = _metacritic_tbd_flags(content)
                 if json_rating:
-                    if json_rating.get("metascore"):
+                    if json_rating.get("metascore") and not flags["critic_unavailable"]:
                         overall["metascore"] = str(json_rating.get("metascore"))
-                    if json_rating.get("critics_count"):
+                    if json_rating.get("critics_count") and not flags["critic_unavailable"]:
                         overall["critics_count"] = str(json_rating.get("critics_count"))
 
                 if overall_first is None:
@@ -4575,6 +4615,9 @@ async def get_metacritic_rating_via_json(page, content=None) -> dict:
     try:
         if content is None:
             content = await page.content()
+        flags = _metacritic_tbd_flags(content or "")
+        if flags["critic_unavailable"]:
+            return None
         
         json_ld_match = re.search(r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>', content, re.DOTALL)
         if json_ld_match:
@@ -4630,6 +4673,7 @@ async def extract_metacritic_rating(page, media_type, tmdb_info):
     try:
         content = await page.content()
         json_rating = await get_metacritic_rating_via_json(page, content=content)
+        flags = _metacritic_tbd_flags(content)
         
         ratings = {
             "overall": {
@@ -4641,21 +4685,21 @@ async def extract_metacritic_rating(page, media_type, tmdb_info):
             "seasons": []
         }
         
-        if json_rating:
-            if json_rating.get("metascore"):
-                ratings["overall"]["metascore"] = json_rating["metascore"]
-            if json_rating.get("critics_count"):
-                ratings["overall"]["critics_count"] = json_rating["critics_count"]
-
         parsed_overall = _metacritic_overall_from_content(content)
-        if ratings["overall"]["metascore"] == "暂无" and parsed_overall.get("metascore") not in (None, "", "暂无"):
+        if parsed_overall.get("metascore") not in (None, "", "暂无"):
             ratings["overall"]["metascore"] = parsed_overall["metascore"]
-        if ratings["overall"]["critics_count"] == "暂无" and parsed_overall.get("critics_count") not in (None, "", "暂无"):
+        if parsed_overall.get("critics_count") not in (None, "", "暂无"):
             ratings["overall"]["critics_count"] = parsed_overall["critics_count"]
-        if ratings["overall"]["userscore"] == "暂无" and parsed_overall.get("userscore") not in (None, "", "暂无"):
+        if parsed_overall.get("userscore") not in (None, "", "暂无"):
             ratings["overall"]["userscore"] = parsed_overall["userscore"]
-        if ratings["overall"]["users_count"] == "暂无" and parsed_overall.get("users_count") not in (None, "", "暂无"):
+        if parsed_overall.get("users_count") not in (None, "", "暂无"):
             ratings["overall"]["users_count"] = parsed_overall["users_count"]
+
+        if json_rating:
+            if ratings["overall"]["metascore"] == "暂无" and json_rating.get("metascore") and not flags["critic_unavailable"]:
+                ratings["overall"]["metascore"] = json_rating["metascore"]
+            if ratings["overall"]["critics_count"] == "暂无" and json_rating.get("critics_count") and not flags["critic_unavailable"]:
+                ratings["overall"]["critics_count"] = json_rating["critics_count"]
 
         if ratings["overall"]["metascore"] == "暂无":
             metascore_match = re.search(r'title="Metascore (\d+) out of 100"', content)
@@ -4668,8 +4712,8 @@ async def extract_metacritic_rating(page, media_type, tmdb_info):
                     if metascore_text and metascore_text.lower() != 'tbd':
                         ratings["overall"]["metascore"] = metascore_text
 
-        critic_unavailable = bool(re.search(r'Critic reviews are not available yet', content or "", re.IGNORECASE))
-        user_unavailable = bool(re.search(r'User reviews are not available yet', content or "", re.IGNORECASE))
+        critic_unavailable = flags["critic_unavailable"]
+        user_unavailable = flags["user_unavailable"]
 
         if ratings["overall"]["critics_count"] == "暂无" and not critic_unavailable:
             critics_count_match = re.search(r'Based on (\d+) Critic Reviews?', content)
