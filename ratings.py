@@ -2095,7 +2095,11 @@ async def handle_douban_search(page, search_url, fast_mode: bool = False):
         if not fast_mode:
             await douban_human_wait("before_search_nav")
         print(f"访问豆瓣搜索页面: {search_url}")
-        await page.goto(search_url, wait_until='domcontentloaded', timeout=(4500 if fast_mode else 20000))
+        await page.goto(
+            search_url,
+            wait_until="domcontentloaded",
+            timeout=(12000 if fast_mode else 20000),
+        )
         
         if not fast_mode:
             try:
@@ -2115,7 +2119,7 @@ async def handle_douban_search(page, search_url, fast_mode: bool = False):
         
         try:
             try:
-                await page.wait_for_selector('a[href*="/subject/"]', timeout=(1800 if fast_mode else 4000))
+                await page.wait_for_selector('a[href*="/subject/"]', timeout=(6000 if fast_mode else 4000))
             except Exception:
                 pass
 
@@ -2127,14 +2131,34 @@ async def handle_douban_search(page, search_url, fast_mode: bool = False):
                     const out = [];
                     const titleRe = /(.*?)\\s*\\((\\d{4})\\)/;
 
+                    function rowTitleFromAnchor(a) {
+                        let t = (a.textContent || '').replace(/\\s+/g, ' ').trim();
+                        if (t) return t;
+                        const tt = a.querySelector && a.querySelector('.title-text');
+                        if (tt && tt.textContent) return tt.textContent.replace(/\\s+/g, ' ').trim();
+                        let p = a;
+                        for (let d = 0; d < 6 && p; d++) {
+                            const x = p.closest && p.closest('.item-root, .sc-bZQynM, li, .subject-item, [class*=\"item\"]');
+                            if (x) {
+                                const titleEl = x.querySelector('.title-text, .title, h3, [class*=\"title\"]');
+                                if (titleEl && titleEl.textContent) return titleEl.textContent.replace(/\\s+/g, ' ').trim();
+                            }
+                            p = p.parentElement;
+                        }
+                        const img = a.querySelector && a.querySelector('img[alt]');
+                        if (img && img.getAttribute('alt')) return (img.getAttribute('alt') || '').trim();
+                        return '';
+                    }
+
                     for (const a of anchors) {
                         if (out.length >= maxItems) break;
-                        const href = (a.getAttribute('href') || '').trim();
-                        if (!href || !/\\/subject\\/\\d+/.test(href)) continue;
+                        let href = (a.getAttribute('href') || '').trim();
+                        if (!href || !/subject\\/\\d+/.test(href)) continue;
+                        if (href.startsWith('//')) href = 'https:' + href;
                         if (seen.has(href)) continue;
                         seen.add(href);
 
-                        const text = (a.textContent || '').replace(/\\s+/g, ' ').trim();
+                        const text = rowTitleFromAnchor(a);
                         if (!text) continue;
 
                         const m = text.match(titleRe);
@@ -2158,6 +2182,38 @@ async def handle_douban_search(page, search_url, fast_mode: bool = False):
                         "status": RATING_STATUS["RATE_LIMIT"],
                         "status_reason": "豆瓣人机验证：请在本地浏览器打开 douban.com 完成验证后，更新账号中的豆瓣 Cookie 再试",
                     }
+                fallback = []
+                for pat in (
+                    r'href="(https?://movie\.douban\.com/subject/(\d+)/?)"[^>]*>([^<]+)</a>',
+                    r'href="//movie\.douban\.com/subject/(\d+)/?"[^>]*>([^<]+)</a>',
+                ):
+                    for m in re.finditer(pat, raw, re.IGNORECASE):
+                        if pat.startswith(r'href="//'):
+                            sid, title = m.group(1), (m.group(2) or "").strip()
+                            url = f"https://movie.douban.com/subject/{sid}/"
+                        else:
+                            sid, title = m.group(2), (m.group(3) or "").strip()
+                            url = f"https://movie.douban.com/subject/{sid}/"
+                        if not title or len(title) < 2:
+                            continue
+                        if any(x.get("url") == url for x in fallback):
+                            continue
+                        yr_m = re.search(r"\((\d{4})\)", title)
+                        year = yr_m.group(1) if yr_m else ""
+                        fallback.append(
+                            {
+                                "title": re.sub(r"\s*\(\d{4}\)\s*$", "", title).strip(),
+                                "year": year,
+                                "url": url,
+                            }
+                        )
+                        if len(fallback) >= MAX_MATCH_CANDIDATES_PER_PLATFORM:
+                            break
+                    if len(fallback) >= MAX_MATCH_CANDIDATES_PER_PLATFORM:
+                        break
+                results = fallback
+
+            if not results:
                 return {"status": RATING_STATUS["NO_FOUND"], "status_reason": "平台未收录"}
 
             return results if results else {"status": RATING_STATUS["NO_FOUND"]}
@@ -3329,8 +3385,22 @@ def _metacritic_scores_has_any_rating(scores: dict) -> bool:
 def _metacritic_tbd_flags(content: str) -> dict:
     raw = content or ""
     return {
-        "critic_unavailable": bool(re.search(r'Critic reviews are not available yet|title="Metascore\s*TBD"|aria-label="Metascore\s*TBD"', raw, re.IGNORECASE)),
-        "user_unavailable": bool(re.search(r'User reviews are not available yet|title="User score\s*TBD"|aria-label="User score\s*TBD"|Available after\s*\d+\s*ratings', raw, re.IGNORECASE)),
+        "critic_unavailable": bool(
+            re.search(
+                r'Critic reviews are not available yet|title="Metascore\s*TBD"|aria-label="Metascore\s*TBD"'
+                r'|data-testid="global-score-tbd"|Available after\s*\d+\s*critic reviews?',
+                raw,
+                re.IGNORECASE,
+            )
+        ),
+        "user_unavailable": bool(
+            re.search(
+                r'User reviews are not available yet|title="User score\s*TBD"|aria-label="User score\s*TBD"'
+                r'|Available after\s*\d+\s*ratings',
+                raw,
+                re.IGNORECASE,
+            )
+        ),
     }
 
 def _letterboxd_scores_has_rating(rating: object, rating_count: object) -> bool:
@@ -3527,7 +3597,15 @@ def _metacritic_overall_from_content(content: str) -> dict:
         header = header_match.group(1).strip().lower()
 
         if "metascore" in header:
-            if "Critic reviews are not available yet" not in block_text:
+            tbd_block = bool(
+                re.search(
+                    r'Critic reviews are not available yet|data-testid="global-score-tbd"|title="Metascore\s*TBD"'
+                    r'|Available after\s*\d+\s*critic reviews?',
+                    block_text,
+                    re.IGNORECASE,
+                )
+            )
+            if not tbd_block:
                 m_score = re.search(r'title="Metascore\s*(\d+)\s*out of 100"', block_text, re.IGNORECASE)
                 if m_score:
                     overall["metascore"] = m_score.group(1)
@@ -3535,7 +3613,15 @@ def _metacritic_overall_from_content(content: str) -> dict:
                 if m_count:
                     overall["critics_count"] = _normalize_count(m_count.group(1))
         elif "user score" in header:
-            if "User reviews are not available yet" not in block_text:
+            tbd_user_block = bool(
+                re.search(
+                    r'User reviews are not available yet|data-testid="global-score-tbd"|title="User score\s*TBD"'
+                    r'|Available after\s*\d+\s*ratings',
+                    block_text,
+                    re.IGNORECASE,
+                )
+            )
+            if not tbd_user_block:
                 u_score = re.search(r'title="User score\s*([\d.]+)\s*out of 10"', block_text, re.IGNORECASE)
                 if u_score:
                     overall["userscore"] = u_score.group(1)
@@ -4762,22 +4848,11 @@ async def extract_metacritic_rating(page, media_type, tmdb_info):
                         }
 
                         season_content = await page.content()
-                        
-                        season_metascore_match = re.search(r'title="Metascore (\d+) out of 100"', season_content)
-                        if season_metascore_match:
-                            season_data["metascore"] = season_metascore_match.group(1)
-                        
-                        season_critics_count_match = re.search(r'Based on (\d+) Critic Reviews?', season_content)
-                        if season_critics_count_match:
-                            season_data["critics_count"] = season_critics_count_match.group(1)
-                        
-                        season_userscore_match = re.search(r'title="User score ([\d.]+) out of 10"', season_content)
-                        if season_userscore_match:
-                            season_data["userscore"] = season_userscore_match.group(1)
-                        
-                        season_users_count_match = re.search(r'Based on ([\d,]+) User Ratings?', season_content)
-                        if season_users_count_match:
-                            season_data["users_count"] = season_users_count_match.group(1).replace(',', '')
+                        season_parsed = _metacritic_overall_from_content(season_content)
+                        season_data["metascore"] = season_parsed.get("metascore", "暂无")
+                        season_data["critics_count"] = season_parsed.get("critics_count", "暂无")
+                        season_data["userscore"] = season_parsed.get("userscore", "暂无")
+                        season_data["users_count"] = season_parsed.get("users_count", "暂无")
 
                         ratings["seasons"].append(season_data)
                         print(f"Metacritic评分获取成功")
@@ -4819,22 +4894,11 @@ async def extract_metacritic_rating(page, media_type, tmdb_info):
                         }
 
                         season_content = await page.content()
-                        
-                        season_metascore_match = re.search(r'title="Metascore (\d+) out of 100"', season_content)
-                        if season_metascore_match:
-                            season_data["metascore"] = season_metascore_match.group(1)
-                        
-                        season_critics_count_match = re.search(r'Based on (\d+) Critic Reviews?', season_content)
-                        if season_critics_count_match:
-                            season_data["critics_count"] = season_critics_count_match.group(1)
-                        
-                        season_userscore_match = re.search(r'title="User score ([\d.]+) out of 10"', season_content)
-                        if season_userscore_match:
-                            season_data["userscore"] = season_userscore_match.group(1)
-                        
-                        season_users_count_match = re.search(r'Based on ([\d,]+) User Ratings?', season_content)
-                        if season_users_count_match:
-                            season_data["users_count"] = season_users_count_match.group(1).replace(',', '')
+                        season_parsed = _metacritic_overall_from_content(season_content)
+                        season_data["metascore"] = season_parsed.get("metascore", "暂无")
+                        season_data["critics_count"] = season_parsed.get("critics_count", "暂无")
+                        season_data["userscore"] = season_parsed.get("userscore", "暂无")
+                        season_data["users_count"] = season_parsed.get("users_count", "暂无")
 
                         ratings["seasons"].append(season_data)
                         print(f"Metacritic评分获取成功")
@@ -4868,22 +4932,11 @@ async def extract_metacritic_rating(page, media_type, tmdb_info):
                         }
 
                         season_content = await page.content()
-                        
-                        season_metascore_match = re.search(r'title="Metascore (\d+) out of 100"', season_content)
-                        if season_metascore_match:
-                            season_data["metascore"] = season_metascore_match.group(1)
-                        
-                        season_critics_count_match = re.search(r'Based on (\d+) Critic Reviews?', season_content)
-                        if season_critics_count_match:
-                            season_data["critics_count"] = season_critics_count_match.group(1)
-                        
-                        season_userscore_match = re.search(r'title="User score ([\d.]+) out of 10"', season_content)
-                        if season_userscore_match:
-                            season_data["userscore"] = season_userscore_match.group(1)
-                        
-                        season_users_count_match = re.search(r'Based on ([\d,]+) User Ratings?', season_content)
-                        if season_users_count_match:
-                            season_data["users_count"] = season_users_count_match.group(1).replace(',', '')
+                        season_parsed = _metacritic_overall_from_content(season_content)
+                        season_data["metascore"] = season_parsed.get("metascore", "暂无")
+                        season_data["critics_count"] = season_parsed.get("critics_count", "暂无")
+                        season_data["userscore"] = season_parsed.get("userscore", "暂无")
+                        season_data["users_count"] = season_parsed.get("users_count", "暂无")
 
                         ratings["seasons"].append(season_data)
                         print(f"Metacritic第{season_number}季评分获取成功")
