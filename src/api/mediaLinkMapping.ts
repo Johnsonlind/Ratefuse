@@ -40,17 +40,28 @@ export interface MediaLinkMappingListResponse {
   total: number;
   page: number;
   page_size: number;
+  filters?: {
+    start_date: string | null;
+    end_date: string | null;
+    media_type: MediaType | null;
+  };
 }
 
 export async function fetchMediaLinkMappings(params: {
   q?: string;
   tmdb_id?: number;
+  start_date?: string;
+  end_date?: string;
+  media_type?: MediaType;
   page?: number;
   page_size?: 20 | 50 | 100 | 200;
 }): Promise<MediaLinkMappingListResponse> {
   const sp = new URLSearchParams();
   if (params.q) sp.set('q', params.q);
   if (params.tmdb_id != null) sp.set('tmdb_id', String(params.tmdb_id));
+  if (params.start_date?.trim()) sp.set('start_date', params.start_date.trim());
+  if (params.end_date?.trim()) sp.set('end_date', params.end_date.trim());
+  if (params.media_type) sp.set('media_type', params.media_type);
   if (params.page != null) sp.set('page', String(params.page));
   if (params.page_size != null) sp.set('page_size', String(params.page_size));
   return await authFetchJson<MediaLinkMappingListResponse>(`/api/admin/media-link-mappings?${sp.toString()}`);
