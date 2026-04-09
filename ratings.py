@@ -3320,6 +3320,29 @@ def _rt_scores_from_score_data(score_data: dict) -> dict:
         "audience_avg": audience_avg,
     }
 
+
+def _douban_scores_has_rating(rating: object, rating_people: object) -> bool:
+    invalid = {"", "暂无", "none", "n/a", "tbd"}
+    return (
+        str(rating if rating is not None else "").strip().lower() not in invalid
+        and str(rating_people if rating_people is not None else "").strip().lower() not in invalid
+    )
+
+def _rt_scores_has_any_rating(scores: dict) -> bool:
+    fields = ("tomatometer", "audience_score", "critics_avg", "critics_count", "audience_count", "audience_avg")
+    return any(str((scores or {}).get(k, "")).strip().lower() not in ("", "暂无", "tbd") for k in fields)
+
+def _metacritic_scores_has_any_rating(scores: dict) -> bool:
+    fields = ("metascore", "critics_count", "userscore", "users_count")
+    return any(str((scores or {}).get(k, "")).strip().lower() not in ("", "暂无", "tbd") for k in fields)
+
+def _letterboxd_scores_has_rating(rating: object, rating_count: object) -> bool:
+    invalid = {"", "暂无", "none", "n/a", "tbd"}
+    return (
+        str(rating if rating is not None else "").strip().lower() not in invalid
+        and str(rating_count if rating_count is not None else "").strip().lower() not in invalid
+    )
+
 async def rt_extract_rating_from_season_urls(
     tmdb_info: dict,
     *,
@@ -3408,10 +3431,15 @@ async def rt_extract_rating_from_season_urls(
             if not series_scores:
                 return create_empty_rating_data("rottentomatoes", "tv", RATING_STATUS["FETCH_FAILED"])
 
+            has_any_rating = _rt_scores_has_any_rating(series_scores) or any(
+                _rt_scores_has_any_rating(season_item) for season_item in seasons_out
+            )
+            status = RATING_STATUS["SUCCESSFUL"] if has_any_rating else RATING_STATUS["NO_RATING"]
+
             return {
                 "series": series_scores,
                 "seasons": seasons_out,
-                "status": RATING_STATUS["SUCCESSFUL"],
+                "status": status,
                 "url": series_url_clean or str(season_urls[0][1]),
                 "_match_score": 100.0,
             }
@@ -3657,10 +3685,15 @@ async def metacritic_extract_rating_from_season_urls(
             if overall_first is None:
                 return create_empty_rating_data("metacritic", "tv", RATING_STATUS["FETCH_FAILED"])
 
+            has_any_rating = _metacritic_scores_has_any_rating(overall_first) or any(
+                _metacritic_scores_has_any_rating(season_item) for season_item in seasons_out
+            )
+            status = RATING_STATUS["SUCCESSFUL"] if has_any_rating else RATING_STATUS["NO_RATING"]
+
             return {
                 "overall": overall_first,
                 "seasons": seasons_out,
-                "status": RATING_STATUS["SUCCESSFUL"],
+                "status": status,
                 "url": series_url_clean or str(season_urls[0][1]),
                 "_match_score": 100.0,
             }
@@ -4082,6 +4115,11 @@ async def extract_douban_rating(page, media_type, matched_results, tmdb_info=Non
                 ratings["rating"] = first_valid.get("rating")
                 ratings["rating_people"] = first_valid.get("rating_people")
         valid_count = sum(1 for s in ratings.get("seasons", []) if s.get("rating") not in [None, "暂无"] and s.get("rating_people") not in [None, "暂无"])
+        has_any_rating = _douban_scores_has_rating(ratings.get("rating"), ratings.get("rating_people")) or any(
+            _douban_scores_has_rating(s.get("rating"), s.get("rating_people")) for s in ratings.get("seasons", [])
+        )
+        if not has_any_rating:
+            ratings["status"] = RATING_STATUS["NO_RATING"]
         print(f"豆瓣多季返回: status={ratings.get('status')}, 共{len(ratings.get('seasons', []))}季其中{valid_count}季有有效评分")
         return ratings
 
@@ -4875,7 +4913,11 @@ async def extract_letterboxd_rating(page):
             return {
                 "rating": rating,
                 "rating_count": rating_count,
-                "status": RATING_STATUS["SUCCESSFUL"]
+                "status": (
+                    RATING_STATUS["SUCCESSFUL"]
+                    if _letterboxd_scores_has_rating(rating, rating_count)
+                    else RATING_STATUS["NO_RATING"]
+                )
             }
         else:            
             rating_elem = await page.query_selector('span.average-rating a.tooltip')
@@ -4902,7 +4944,11 @@ async def extract_letterboxd_rating(page):
             return {
                 "rating": rating,
                 "rating_count": rating_count,
-                "status": RATING_STATUS["SUCCESSFUL"]
+                "status": (
+                    RATING_STATUS["SUCCESSFUL"]
+                    if _letterboxd_scores_has_rating(rating, rating_count)
+                    else RATING_STATUS["NO_RATING"]
+                )
             }
             
     except Exception as e:
