@@ -3563,6 +3563,9 @@ def _metacritic_overall_from_content(content: str) -> dict:
     if any(overall[k] != "暂无" for k in ("metascore", "critics_count", "userscore", "users_count")):
         return overall
 
+    if not hero_raw:
+        return overall
+
     metascore_patterns = [
         r'title="Metascore\s*(\d+)\s*out of 100"',
         r'"metascore"\s*:\s*"?(\d+)"?',
@@ -3587,7 +3590,7 @@ def _metacritic_overall_from_content(content: str) -> dict:
 
     try:
         for p in metascore_patterns:
-            m = re.search(p, content or "", re.IGNORECASE)
+            m = re.search(p, raw, re.IGNORECASE)
             if m:
                 overall["metascore"] = m.group(1)
                 break
@@ -3596,7 +3599,7 @@ def _metacritic_overall_from_content(content: str) -> dict:
     if not critic_unavailable:
         try:
             for p in critics_count_patterns:
-                m = re.search(p, content or "", re.IGNORECASE)
+                m = re.search(p, raw, re.IGNORECASE)
                 if m:
                     overall["critics_count"] = _normalize_count(m.group(1))
                     break
@@ -3605,7 +3608,7 @@ def _metacritic_overall_from_content(content: str) -> dict:
     if not user_unavailable:
         try:
             for p in userscore_patterns:
-                m = re.search(p, content or "", re.IGNORECASE)
+                m = re.search(p, raw, re.IGNORECASE)
                 if m:
                     overall["userscore"] = m.group(1)
                     break
@@ -3613,7 +3616,7 @@ def _metacritic_overall_from_content(content: str) -> dict:
             pass
         try:
             for p in users_count_patterns:
-                m = re.search(p, content or "", re.IGNORECASE)
+                m = re.search(p, raw, re.IGNORECASE)
                 if m:
                     overall["users_count"] = _normalize_count(m.group(1))
                     break
