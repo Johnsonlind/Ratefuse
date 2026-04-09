@@ -5101,12 +5101,20 @@ def check_tv_status(platform_data, platform):
         )
         if all_no_rating:
             return RATING_STATUS["NO_RATING"]
-            
-        for season in seasons:
-            season_fields = ["rating", "rating_people"]
-            if not all(season.get(key) not in [None, "暂无"] for key in season_fields):
-                return _resolve_failed_status_with_reason(platform_data)
-        return RATING_STATUS["SUCCESSFUL"]
+
+        def _douban_season_pair_ok(s: dict) -> bool:
+            r = str(s.get("rating") or "").strip()
+            p = str(s.get("rating_people") or "").strip()
+            if not r or not p:
+                return False
+            if r in ("暂无", "出错") or p in ("暂无", "出错"):
+                return False
+            return True
+
+        has_any_valid_season = any(_douban_season_pair_ok(s) for s in seasons)
+        if has_any_valid_season:
+            return RATING_STATUS["SUCCESSFUL"]
+        return _resolve_failed_status_with_reason(platform_data)
         
     elif platform == "imdb":
         if platform_data.get("rating") == "暂无" and platform_data.get("rating_people") == "暂无":
