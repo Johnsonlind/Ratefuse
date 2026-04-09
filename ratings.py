@@ -2030,12 +2030,13 @@ async def douban_search_and_extract_rating(
                     page,
                     media_type,
                     matched_results,
+                    tmdb_info=tmdb_info,
                     request=request,
                     douban_cookie=douban_cookie,
                 )
             else:
                 rating_data = await extract_douban_rating(
-                    page, media_type, search_results_list
+                    page, media_type, search_results_list, tmdb_info=tmdb_info
                 )
 
             if request and await request.is_disconnected():
@@ -3068,9 +3069,9 @@ async def extract_rating_info(media_type, platform, tmdb_info, search_results, r
                         if platform == "douban":
                             if media_type == "tv" and len(tmdb_info.get("seasons", [])) > 1 and matched_results:
                                 print("检测到多季剧集，进行分季抓取以获取所有季评分")
-                                rating_data = await extract_douban_rating(page, media_type, matched_results, request=request, douban_cookie=douban_cookie)
+                                rating_data = await extract_douban_rating(page, media_type, matched_results, tmdb_info=tmdb_info, request=request, douban_cookie=douban_cookie)
                             else:
-                                rating_data = await extract_douban_rating(page, media_type, search_results)
+                                rating_data = await extract_douban_rating(page, media_type, search_results, tmdb_info=tmdb_info)
                         elif platform == "imdb":
                             imdb_id = tmdb_info.get("imdb_id")
                             rating_data = None
@@ -3217,29 +3218,51 @@ async def douban_extract_rating_from_season_urls(
             await _playwright_stealth_optional(page)
 
             first_url = str(season_items[0].get("url") or "").strip()
+            warmup_title = str(
+                tmdb_info.get("zh_title")
+                or tmdb_info.get("title")
+                or tmdb_info.get("name")
+                or tmdb_info.get("original_title")
+                or ""
+            ).strip()
+            warmup_search_url = (
+                f"https://search.douban.com/movie/subject_search?search_text={quote(warmup_title)}"
+                if warmup_title
+                else ""
+            )
             if request is not None or douban_cookie:
                 headers = {}
-                if request:
-                    try:
-                        client_ip = get_client_ip(request)
-                        headers.update({"X-Forwarded-For": client_ip, "X-Real-IP": client_ip})
-                    except Exception:
-                        pass
                 if douban_cookie:
                     headers["Cookie"] = douban_cookie
+                    parsed = _parse_douban_cookie_string(douban_cookie)
+                    if parsed:
+                        await context.add_cookies(parsed)
                 if headers:
                     await page.set_extra_http_headers(headers)
 
-            await page.goto(first_url, wait_until="domcontentloaded", timeout=15000)
-            await douban_human_wait("after_detail_dom")
-            await douban_simulate_light_browsing(page)
+            if warmup_search_url:
+                try:
+                    await page.goto(warmup_search_url, wait_until="domcontentloaded", timeout=12000)
+                    await asyncio.sleep(0.25)
+                except Exception:
+                    pass
+
+            await page.goto(
+                first_url,
+                wait_until="domcontentloaded",
+                timeout=15000,
+                referer=(warmup_search_url or "https://search.douban.com/"),
+            )
+            await asyncio.sleep(0.1)
 
             rating_data = await extract_douban_rating(
                 page,
                 "tv",
                 season_items,
+                tmdb_info=tmdb_info,
                 request=request,
                 douban_cookie=douban_cookie,
+                fast_mode=True,
             )
 
             if rating_data:
@@ -3393,34 +3416,80 @@ async def rt_extract_rating_from_season_urls(
         return create_empty_rating_data("rottentomatoes", "tv", RATING_STATUS["FETCH_FAILED"])
 
 def _metacritic_overall_from_content(content: str) -> dict:
+    def _normalize_count(raw: str) -> str:
+        s = str(raw or "").strip().replace(",", "").upper()
+        if not s:
+            return "暂无"
+        try:
+            if s.endswith("K"):
+                return str(int(float(s[:-1]) * 1000))
+            if s.endswith("M"):
+                return str(int(float(s[:-1]) * 1000000))
+            return str(int(float(s)))
+        except Exception:
+            m = re.search(r"([\d.]+)", s)
+            if not m:
+                return "暂无"
+            try:
+                return str(int(float(m.group(1))))
+            except Exception:
+                return "暂无"
+
     overall = {
         "metascore": "暂无",
         "critics_count": "暂无",
         "userscore": "暂无",
         "users_count": "暂无",
     }
+    metascore_patterns = [
+        r'title="Metascore\s*(\d+)\s*out of 100"',
+        r'"metascore"\s*:\s*"?(\d+)"?',
+    ]
+    critics_count_patterns = [
+        r'Based on\s*([\d.,KkMm]+)\s*Critic Reviews?',
+        r'"reviewCount"\s*:\s*"?([\d.,KkMm]+)"?',
+    ]
+    userscore_patterns = [
+        r'title="User score\s*([\d.]+)\s*out of 10"',
+        r'title="User Score\s*([\d.]+)\s*out of 10"',
+        r'"userscore"\s*:\s*"?([\d.]+)"?',
+    ]
+    users_count_patterns = [
+        r'Based on\s*([\d.,KkMm]+)\s*User Ratings?',
+        r'Based on\s*([\d.,KkMm]+)\s*Ratings?',
+        r'"userReviewCount"\s*:\s*"?([\d.,KkMm]+)"?',
+    ]
+
     try:
-        ms = re.search(r'title="Metascore (\d+) out of 100"', content or "")
-        if ms:
-            overall["metascore"] = ms.group(1)
+        for p in metascore_patterns:
+            m = re.search(p, content or "", re.IGNORECASE)
+            if m:
+                overall["metascore"] = m.group(1)
+                break
     except Exception:
         pass
     try:
-        cc = re.search(r'Based on (\d+) Critic Reviews?', content or "")
-        if cc:
-            overall["critics_count"] = cc.group(1)
+        for p in critics_count_patterns:
+            m = re.search(p, content or "", re.IGNORECASE)
+            if m:
+                overall["critics_count"] = _normalize_count(m.group(1))
+                break
     except Exception:
         pass
     try:
-        us = re.search(r'title="User score ([\\d.]+) out of 10"', content or "")
-        if us:
-            overall["userscore"] = us.group(1)
+        for p in userscore_patterns:
+            m = re.search(p, content or "", re.IGNORECASE)
+            if m:
+                overall["userscore"] = m.group(1)
+                break
     except Exception:
         pass
     try:
-        uc = re.search(r'Based on ([\\d,]+) User Ratings?', content or "")
-        if uc:
-            overall["users_count"] = uc.group(1).replace(",", "")
+        for p in users_count_patterns:
+            m = re.search(p, content or "", re.IGNORECASE)
+            if m:
+                overall["users_count"] = _normalize_count(m.group(1))
+                break
     except Exception:
         pass
     return overall
@@ -3535,7 +3604,7 @@ async def metacritic_extract_rating_from_season_urls(
     except Exception:
         return create_empty_rating_data("metacritic", "tv", RATING_STATUS["FETCH_FAILED"])
 
-async def extract_douban_rating(page, media_type, matched_results, request=None, douban_cookie=None):
+async def extract_douban_rating(page, media_type, matched_results, tmdb_info=None, request=None, douban_cookie=None, fast_mode: bool = False):
     """从豆瓣详情页提取评分数据"""
     try:
         try:
@@ -3543,11 +3612,15 @@ async def extract_douban_rating(page, media_type, matched_results, request=None,
         except Exception as e:
             print(f"豆瓣等待domcontentloaded超时或失败，继续尝试直接解析: {e}")
         try:
-            await page.wait_for_selector("strong.rating_num, span[property='v:votes'], [class*='rating_num']", timeout=6000)
+            await page.wait_for_selector(
+                "strong.rating_num, span[property='v:votes'], [class*='rating_num']",
+                timeout=(2000 if fast_mode else 6000),
+            )
         except Exception:
             pass
-        await douban_simulate_light_browsing(page)
-        await douban_human_wait("before_rating_parse")
+        if not fast_mode:
+            await douban_simulate_light_browsing(page)
+            await douban_human_wait("before_rating_parse")
         content = None
         for attempt in range(2):
             try:
@@ -3571,9 +3644,21 @@ async def extract_douban_rating(page, media_type, matched_results, request=None,
             return ret
 
         try:
-            initial_page_url = (page.url() or "").rstrip("/")
+            initial_page_url = str(getattr(page, "url", "") or "").rstrip("/")
         except Exception:
             initial_page_url = ""
+
+        try:
+            current_host = (urlparse(initial_page_url).hostname or "").lower()
+        except Exception:
+            current_host = ""
+        if current_host.startswith("sec.douban.com") or "/b?r=" in (initial_page_url or ""):
+            ret = create_empty_rating_data("douban", media_type, RATING_STATUS["RATE_LIMIT"])
+            ret["status_reason"] = (
+                "豆瓣安全验证拦截（sec.douban.com）：请在本地浏览器完成验证后重试，或稍后再试"
+            )
+            print(f"豆瓣详情页被安全验证重定向: {initial_page_url}")
+            return ret
         
         json_match = re.search(r'"aggregateRating":\s*{\s*"@type":\s*"AggregateRating",\s*"ratingCount":\s*"([^"]+)",\s*"bestRating":\s*"([^"]+)",\s*"worstRating":\s*"([^"]+)",\s*"ratingValue":\s*"([^"]+)"', content)
         
@@ -3632,6 +3717,21 @@ async def extract_douban_rating(page, media_type, matched_results, request=None,
                         "title": title,
                         "url": result.get("url")
                     })
+
+        total_seasons = 0
+        try:
+            total_seasons = int((tmdb_info or {}).get("number_of_seasons") or 0)
+        except Exception:
+            total_seasons = 0
+        is_single_season_tv = media_type == "tv" and total_seasons == 1
+
+        if is_single_season_tv and not season_results and initial_page_url:
+            season_results.append({
+                "season_number": 1,
+                "title": "Season 1",
+                "url": initial_page_url
+            })
+            print("豆瓣分季兜底: 单季剧未解析到季标题，补充第1季链接")
         
         season_results.sort(key=lambda x: x["season_number"])
         print(f"豆瓣分季: 共获取到 {len(season_results)} 个分季详情页链接")
@@ -3682,16 +3782,39 @@ async def extract_douban_rating(page, media_type, matched_results, request=None,
                     continue
 
                 url_norm = url.rstrip("/") if url else ""
-                if (season_number == 1 and url_norm and url_norm == initial_page_url
-                        and rating not in [None, "暂无"] and rating_people not in [None, "暂无"]):
-                    all_seasons_no_rating = False
+                if is_single_season_tv and season_number == 1:
+                    season_rating = str(rating).strip() if rating not in [None, "暂无"] else "暂无"
+                    season_rating_people = str(rating_people).strip() if rating_people not in [None, "暂无"] else "暂无"
+                    if season_rating in ["暂无", "", None] or season_rating_people in ["暂无", "", None]:
+                        json_match_current = re.search(
+                            r'"aggregateRating":\s*{\s*"@type":\s*"AggregateRating",\s*"ratingCount":\s*"([^"]+)",\s*"bestRating":\s*"([^"]+)",\s*"worstRating":\s*"([^"]+)",\s*"ratingValue":\s*"([^"]+)"',
+                            content or ""
+                        )
+                        if json_match_current:
+                            season_rating_people = json_match_current.group(1)
+                            season_rating = json_match_current.group(4)
+                        else:
+                            rating_match_current = re.search(
+                                r'<strong[^>]*class="ll rating_num"[^>]*>([^<]*)</strong>',
+                                content or ""
+                            )
+                            people_match_current = re.search(
+                                r'<span[^>]*property="v:votes">(\d+)</span>',
+                                content or ""
+                            )
+                            if rating_match_current and rating_match_current.group(1).strip():
+                                season_rating = rating_match_current.group(1).strip()
+                            if people_match_current:
+                                season_rating_people = people_match_current.group(1)
+                    if season_rating not in ["暂无", "", None] and season_rating_people not in ["暂无", "", None]:
+                        all_seasons_no_rating = False
                     ratings["seasons"].append({
                         "season_number": 1,
-                        "rating": str(rating).strip(),
-                        "rating_people": str(rating_people).strip(),
-                        "url": url
+                        "rating": str(season_rating).strip() if season_rating not in [None, ""] else "暂无",
+                        "rating_people": str(season_rating_people).strip() if season_rating_people not in [None, ""] else "暂无",
+                        "url": initial_page_url or url
                     })
-                    print(f"豆瓣第1季: 使用当前页评分，未单独访问详情页")
+                    print("豆瓣第1季: 单季剧直接复用当前详情页解析，不再二次访问")
                     continue
 
                 await random_delay()
@@ -4413,6 +4536,16 @@ async def extract_metacritic_rating(page, media_type, tmdb_info):
                 ratings["overall"]["metascore"] = json_rating["metascore"]
             if json_rating.get("critics_count"):
                 ratings["overall"]["critics_count"] = json_rating["critics_count"]
+
+        parsed_overall = _metacritic_overall_from_content(content)
+        if ratings["overall"]["metascore"] == "暂无" and parsed_overall.get("metascore") not in (None, "", "暂无"):
+            ratings["overall"]["metascore"] = parsed_overall["metascore"]
+        if ratings["overall"]["critics_count"] == "暂无" and parsed_overall.get("critics_count") not in (None, "", "暂无"):
+            ratings["overall"]["critics_count"] = parsed_overall["critics_count"]
+        if ratings["overall"]["userscore"] == "暂无" and parsed_overall.get("userscore") not in (None, "", "暂无"):
+            ratings["overall"]["userscore"] = parsed_overall["userscore"]
+        if ratings["overall"]["users_count"] == "暂无" and parsed_overall.get("users_count") not in (None, "", "暂无"):
+            ratings["overall"]["users_count"] = parsed_overall["users_count"]
 
         if ratings["overall"]["metascore"] == "暂无":
             metascore_match = re.search(r'title="Metascore (\d+) out of 100"', content)
