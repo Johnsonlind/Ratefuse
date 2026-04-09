@@ -126,6 +126,20 @@ function TopChartCard({
   eager?: boolean;
   compact?: boolean;
 }) {
+  const posterUrl = item.poster ? resolvePosterUrl(item.poster) : '';
+  const imgRef = useRef<HTMLImageElement>(null);
+
+  const revealPoster = useCallback((el: HTMLImageElement | null) => {
+    if (!el || !el.complete || el.naturalWidth <= 0) return;
+    requestAnimationFrame(() => {
+      el.style.opacity = '1';
+    });
+  }, []);
+
+  useLayoutEffect(() => {
+    revealPoster(imgRef.current);
+  }, [posterUrl, revealPoster]);
+
   const linkPath = item.type === 'movie' ? `/movie/${item.id}` : `/tv/${item.id}`;
   return (
     <div
@@ -145,7 +159,8 @@ function TopChartCard({
         >
           {item.poster ? (
             <img
-              src={resolvePosterUrl(item.poster)}
+              ref={imgRef}
+              src={posterUrl}
               alt={item.title}
               className="h-full w-full object-cover transition-all duration-200 group-hover:scale-105"
               loading={eager ? 'eager' : 'lazy'}
@@ -159,12 +174,7 @@ function TopChartCard({
                 transition: 'opacity 0.2s ease-in',
               }}
               onLoad={(e) => {
-                const target = e.target as HTMLImageElement;
-                if (target && target.complete && target.naturalWidth > 0) {
-                  requestAnimationFrame(() => {
-                    target.style.opacity = '1';
-                  });
-                }
+                revealPoster(e.target as HTMLImageElement);
               }}
               onError={(e) => {
                 const target = e.target as HTMLImageElement;
@@ -381,9 +391,9 @@ function TopHorizontalSection({
           onTouchMove={stopTopListEvent}
           onTouchEnd={stopTopListEvent}
         >
-          {items.map((item, idx) => (
+          {items.map((item) => (
             <div key={`${item.type}-${item.id}`} className={desktop ? 'min-w-0' : 'shrink-0'}>
-              <TopChartCard item={item} eager={!desktop || idx === 0} compact={desktop} />
+              <TopChartCard item={item} eager compact={desktop} />
             </div>
           ))}
         </div>
