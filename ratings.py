@@ -1870,6 +1870,8 @@ async def douban_search_and_extract_rating(
             merged_results = None
             winning_variant = None
 
+            fast_mode = True
+
             for variant in search_variants:
                 await check_req()
                 search_title = variant["title"]
@@ -1880,7 +1882,7 @@ async def douban_search_and_extract_rating(
                     continue
                 print(f"douban 搜索URL: {search_url}")
                 await check_req()
-                results = await handle_douban_search(page, search_url)
+                results = await handle_douban_search(page, search_url, fast_mode=fast_mode)
 
                 if isinstance(results, dict) and "status" in results:
                     st = results["status"]
@@ -1932,7 +1934,7 @@ async def douban_search_and_extract_rating(
                 print(f"\n[豆瓣备用策略] 尝试使用IMDB ID搜索: {imdb_id}")
                 await check_req()
                 imdb_search_url = f"https://search.douban.com/movie/subject_search?search_text={imdb_id}"
-                results = await handle_douban_search(page, imdb_search_url)
+                results = await handle_douban_search(page, imdb_search_url, fast_mode=fast_mode)
                 if isinstance(results, dict) and "status" in results:
                     st = results["status"]
                     if st == RATING_STATUS["RATE_LIMIT"]:
@@ -2010,9 +2012,10 @@ async def douban_search_and_extract_rating(
             print(f"豆瓣访问详情页: {detail_url}")
 
             await check_req()
-            await page.goto(detail_url, wait_until="domcontentloaded", timeout=15000)
-            await douban_human_wait("after_detail_dom")
-            await douban_simulate_light_browsing(page)
+            await page.goto(detail_url, wait_until="domcontentloaded", timeout=(5000 if fast_mode else 15000))
+            if not fast_mode:
+                await douban_human_wait("after_detail_dom")
+                await douban_simulate_light_browsing(page)
 
             rl_detail = await check_rate_limit(page, "douban")
             if rl_detail:
@@ -2033,10 +2036,11 @@ async def douban_search_and_extract_rating(
                     tmdb_info=tmdb_info,
                     request=request,
                     douban_cookie=douban_cookie,
+                    fast_mode=fast_mode,
                 )
             else:
                 rating_data = await extract_douban_rating(
-                    page, media_type, search_results_list, tmdb_info=tmdb_info
+                    page, media_type, search_results_list, tmdb_info=tmdb_info, fast_mode=fast_mode
                 )
 
             if request and await request.is_disconnected():
@@ -2085,21 +2089,24 @@ async def douban_search_and_extract_rating(
 
     return await _await_same_douban_fetch(sf_key, run_exclusive)
 
-async def handle_douban_search(page, search_url):
+async def handle_douban_search(page, search_url, fast_mode: bool = False):
     """处理豆瓣搜索"""
     try:
-        await douban_human_wait("before_search_nav")
+        if not fast_mode:
+            await douban_human_wait("before_search_nav")
         print(f"访问豆瓣搜索页面: {search_url}")
-        await page.goto(search_url, wait_until='domcontentloaded', timeout=20000)
+        await page.goto(search_url, wait_until='domcontentloaded', timeout=(4500 if fast_mode else 20000))
         
-        try:
-            await page.wait_for_load_state('networkidle', timeout=3000)
-        except Exception:
-            pass
+        if not fast_mode:
+            try:
+                await page.wait_for_load_state('networkidle', timeout=3000)
+            except Exception:
+                pass
         
-        await douban_human_wait("after_search_dom")
-        await douban_simulate_light_browsing(page)
-        await douban_human_wait("before_parse_search")
+        if not fast_mode:
+            await douban_human_wait("after_search_dom")
+            await douban_simulate_light_browsing(page)
+            await douban_human_wait("before_parse_search")
 
         rate_limit = await check_rate_limit(page, "douban")
         if rate_limit:
@@ -3753,13 +3760,13 @@ async def extract_douban_rating(page, media_type, matched_results, tmdb_info=Non
     """从豆瓣详情页提取评分数据"""
     try:
         try:
-            await page.wait_for_load_state("domcontentloaded", timeout=8000)
+            await page.wait_for_load_state("domcontentloaded", timeout=(2500 if fast_mode else 8000))
         except Exception as e:
             print(f"豆瓣等待domcontentloaded超时或失败，继续尝试直接解析: {e}")
         try:
             await page.wait_for_selector(
                 "strong.rating_num, span[property='v:votes'], [class*='rating_num']",
-                timeout=(2000 if fast_mode else 6000),
+                timeout=(1200 if fast_mode else 6000),
             )
         except Exception:
             pass
@@ -3767,14 +3774,15 @@ async def extract_douban_rating(page, media_type, matched_results, tmdb_info=Non
             await douban_simulate_light_browsing(page)
             await douban_human_wait("before_rating_parse")
         content = None
-        for attempt in range(2):
+        for attempt in range(1 if fast_mode else 2):
             try:
                 content = await page.content()
                 if content:
                     break
             except Exception as e:
                 print(f"豆瓣获取页面内容失败，第{attempt+1}次重试: {e}")
-                await asyncio.sleep(random.uniform(0.4, 1.0))
+                if not fast_mode:
+                    await asyncio.sleep(random.uniform(0.4, 1.0))
         if not content:
             return create_empty_rating_data("douban", media_type, RATING_STATUS["TIMEOUT"])
 
@@ -3962,10 +3970,11 @@ async def extract_douban_rating(page, media_type, matched_results, tmdb_info=Non
                     print("豆瓣第1季: 单季剧直接复用当前详情页解析，不再二次访问")
                     continue
 
-                await random_delay()
-                season_delay = random.uniform(3, 6)
-                print(f"豆瓣第{season_number}季: 等待 {season_delay:.1f} 秒后访问")
-                await asyncio.sleep(season_delay)
+                if not fast_mode:
+                    await random_delay()
+                    season_delay = random.uniform(3, 6)
+                    print(f"豆瓣第{season_number}季: 等待 {season_delay:.1f} 秒后访问")
+                    await asyncio.sleep(season_delay)
                 if request is not None or douban_cookie:
                     headers = {}
                     if douban_cookie:
@@ -3975,8 +3984,9 @@ async def extract_douban_rating(page, media_type, matched_results, tmdb_info=Non
                         await page.set_extra_http_headers(headers)
                 print(f"豆瓣第{season_number}季: 正在访问分季详情页 {url}")
                 try:
-                    await page.goto(url, wait_until="domcontentloaded", timeout=15000)
-                    await asyncio.sleep(0.5)
+                    await page.goto(url, wait_until="domcontentloaded", timeout=(4000 if fast_mode else 15000))
+                    if not fast_mode:
+                        await asyncio.sleep(0.5)
                     try:
                         current_url = (page.url or "").rstrip("/")
                         if current_url and url_norm and current_url != url_norm:
@@ -3984,7 +3994,10 @@ async def extract_douban_rating(page, media_type, matched_results, tmdb_info=Non
                     except Exception:
                         pass
                     try:
-                        await page.wait_for_selector("strong.rating_num, span[property='v:votes']", timeout=8000)
+                        await page.wait_for_selector(
+                            "strong.rating_num, span[property='v:votes']",
+                            timeout=(1200 if fast_mode else 8000),
+                        )
                     except Exception:
                         pass
                 except Exception as e:
@@ -4020,7 +4033,7 @@ async def extract_douban_rating(page, media_type, matched_results, tmdb_info=Non
                 
                 season_rating = "暂无"
                 season_rating_people = "暂无"
-                for attempt in range(3):
+                for attempt in range(1 if fast_mode else 3):
                     try:
                         json_match = re.search(r'"aggregateRating":\s*{\s*"@type":\s*"AggregateRating",\s*"ratingCount":\s*"([^"]+)",\s*"bestRating":\s*"([^"]+)",\s*"worstRating":\s*"([^"]+)",\s*"ratingValue":\s*"([^"]+)"', season_content)
                         
@@ -4057,7 +4070,7 @@ async def extract_douban_rating(page, media_type, matched_results, tmdb_info=Non
                             
                     except Exception as e:
                         print(f"豆瓣第{attempt + 1}次尝试获取第{season_number}季评分失败: {e}")
-                        if attempt < 2:
+                        if not fast_mode and attempt < 2:
                             await random_delay()
                             await page.reload()
                             await page.wait_for_load_state("networkidle", timeout=5000)
@@ -5354,7 +5367,7 @@ async def parallel_extract_ratings(tmdb_info, media_type, request=None, douban_c
     platforms = ["douban", "imdb", "letterboxd", "rottentomatoes", "metacritic"]
 
     platform_timeouts = {
-        "douban": 20.0,
+        "douban": 6.0,
         "imdb": 12.0,
         "letterboxd": 18.0,
         "rottentomatoes": 12.0,
