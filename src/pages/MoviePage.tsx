@@ -92,30 +92,22 @@ export default function MoviePage() {
 
   useEffect(() => {
     if (!id || !movie) return;
+    const title = String(movie.title || '').trim();
+    if (!title) return;
     if (trackedId === id) return;
 
-    const backendPlatforms = ['douban', 'imdb', 'letterboxd', 'rottentomatoes', 'metacritic'] as const;
-    const allBackendDone = backendPlatforms.every((p) => {
-      const st = platformStatuses[p]?.status;
-      return st && st !== 'pending' && st !== 'loading';
-    });
-    const allTmdbTraktDone =
-      tmdbStatus !== 'pending' &&
-      tmdbStatus !== 'loading' &&
-      traktStatus !== 'pending' &&
-      traktStatus !== 'loading';
+    const url = `${window.location.origin}${window.location.pathname}`;
+    const n = Number(id);
+    const tmdbNum = Number.isFinite(n) ? n : undefined;
 
-    if (!allBackendDone || !allTmdbTraktDone) return;
-
-    const url = `${window.location.origin}/movie/${id}`;
     setTrackedId(id);
     authFetch('/api/track/detail-view', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         media_type: 'movie',
-        tmdb_id: Number(id),
-        title: movie.title,
+        tmdb_id: tmdbNum,
+        title,
         url,
         platform_rating_fetch_statuses: {
           douban: platformStatuses.douban.status,
@@ -128,11 +120,12 @@ export default function MoviePage() {
         },
       }),
       withAuth: true,
+      keepalive: true,
     })
       .catch(() => {
         setTrackedId((prev) => (prev === id ? null : prev));
       });
-  }, [id, movie, trackedId, platformStatuses, tmdbStatus, traktStatus]);
+  }, [id, movie, trackedId]);
 
   useEffect(() => {
     if (movie?.poster) {
