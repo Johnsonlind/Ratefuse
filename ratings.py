@@ -3454,11 +3454,12 @@ def _metacritic_overall_from_content(content: str) -> dict:
         "users_count": "暂无",
     }
 
-    score_blocks = re.findall(
-        r'<div[^>]*data-testid="product-score"[^>]*>.*?</div>\s*</div>\s*</div>',
-        content or "",
-        re.IGNORECASE | re.DOTALL,
-    )
+    raw = content or ""
+    score_blocks: list[str] = []
+    product_starts = [m.start() for m in re.finditer(r'data-testid="product-score"', raw, re.IGNORECASE)]
+    for i, start in enumerate(product_starts):
+        end = product_starts[i + 1] if i + 1 < len(product_starts) else len(raw)
+        score_blocks.append(raw[start:end])
     for block in score_blocks:
         block_text = block or ""
         header_match = re.search(
