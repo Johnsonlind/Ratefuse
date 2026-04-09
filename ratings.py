@@ -3914,6 +3914,7 @@ async def extract_douban_rating(page, media_type, matched_results, tmdb_info=Non
         
         all_seasons_no_rating = True
         processed_seasons = set()
+        season_timeout_failures = 0
         
         for season_info in season_results:
             try:
@@ -4002,6 +4003,8 @@ async def extract_douban_rating(page, media_type, matched_results, tmdb_info=Non
                         pass
                 except Exception as e:
                     print(f"豆瓣访问第{season_number}季页面失败（可能超时或网络/访问限制）: {e}")
+                    if "Timeout" in str(e):
+                        season_timeout_failures += 1
                     ratings["seasons"].append({
                         "season_number": season_number,
                         "rating": "暂无",
@@ -4123,6 +4126,7 @@ async def extract_douban_rating(page, media_type, matched_results, tmdb_info=Non
                 print(f"豆瓣获取第{season_number}季评分时出错: {e}")
                 if "Timeout" in str(e):
                     print(f"豆瓣第{season_number}季访问超时，跳过此季")
+                    season_timeout_failures += 1
                 ratings["seasons"].append({
                     "season_number": season_number,
                     "rating": "暂无",
@@ -4169,10 +4173,13 @@ async def extract_douban_rating(page, media_type, matched_results, tmdb_info=Non
                 ratings["rating"] = first_valid.get("rating")
                 ratings["rating_people"] = first_valid.get("rating_people")
         valid_count = sum(1 for s in ratings.get("seasons", []) if s.get("rating") not in [None, "暂无"] and s.get("rating_people") not in [None, "暂无"])
+        if valid_count == 0 and season_timeout_failures > 0:
+            ratings["status"] = RATING_STATUS["TIMEOUT"]
+            ratings["status_reason"] = "豆瓣分季详情页请求超时"
         has_any_rating = _douban_scores_has_rating(ratings.get("rating"), ratings.get("rating_people")) or any(
             _douban_scores_has_rating(s.get("rating"), s.get("rating_people")) for s in ratings.get("seasons", [])
         )
-        if not has_any_rating:
+        if not has_any_rating and ratings.get("status") != RATING_STATUS["TIMEOUT"]:
             ratings["status"] = RATING_STATUS["NO_RATING"]
         print(f"豆瓣多季返回: status={ratings.get('status')}, 共{len(ratings.get('seasons', []))}季其中{valid_count}季有有效评分")
         return ratings
@@ -5016,26 +5023,32 @@ async def extract_letterboxd_rating(page):
             "rating_count": "暂无",
             "status": "Fail"
         }
+
+def _resolve_failed_status_with_reason(platform_data: dict) -> str:
+    reason = str((platform_data or {}).get("status_reason") or "").lower()
+    if "timeout" in reason or "超时" in reason:
+        return RATING_STATUS["TIMEOUT"]
+    return RATING_STATUS["FETCH_FAILED"]
         
 def check_movie_status(platform_data, platform):
     """检查电影评分数据的状态"""
     if not platform_data:
         return RATING_STATUS["FETCH_FAILED"]
         
-    if "status" in platform_data:
+    if "status" in platform_data and platform_data.get("status") != RATING_STATUS["SUCCESSFUL"]:
         return platform_data["status"]
         
     if platform == "douban":
         if platform_data.get("rating") == "暂无" and platform_data.get("rating_people") == "暂无":
             return RATING_STATUS["NO_RATING"]
         return RATING_STATUS["SUCCESSFUL"] if (platform_data.get("rating") not in [None, "暂无"] and 
-                                            platform_data.get("rating_people") not in [None, "暂无"]) else RATING_STATUS["FETCH_FAILED"]
+                                            platform_data.get("rating_people") not in [None, "暂无"]) else _resolve_failed_status_with_reason(platform_data)
         
     elif platform == "imdb":
         if platform_data.get("rating") == "暂无" and platform_data.get("rating_people") == "暂无":
             return RATING_STATUS["NO_RATING"]
         return RATING_STATUS["SUCCESSFUL"] if (platform_data.get("rating") not in [None, "暂无", "N/A"] and 
-                                            platform_data.get("rating_people") not in [None, "暂无", "N/A"]) else RATING_STATUS["FETCH_FAILED"]
+                                            platform_data.get("rating_people") not in [None, "暂无", "N/A"]) else _resolve_failed_status_with_reason(platform_data)
         
     elif platform == "rottentomatoes":
         series_data = platform_data.get("series", {})
@@ -5043,7 +5056,7 @@ def check_movie_status(platform_data, platform):
         all_no_rating = all(series_data.get(key) == "暂无" for key in required_fields)
         if all_no_rating:
             return RATING_STATUS["NO_RATING"]
-        return RATING_STATUS["SUCCESSFUL"] if all(series_data.get(key) not in [None, "暂无"] for key in required_fields) else RATING_STATUS["FETCH_FAILED"]
+        return RATING_STATUS["SUCCESSFUL"] if all(series_data.get(key) not in [None, "暂无"] for key in required_fields) else _resolve_failed_status_with_reason(platform_data)
         
     elif platform == "metacritic":
         overall_data = platform_data.get("overall", {})
@@ -5051,34 +5064,34 @@ def check_movie_status(platform_data, platform):
         all_no_rating = all(overall_data.get(key) == "暂无" for key in required_fields)
         if all_no_rating:
             return RATING_STATUS["NO_RATING"]
-        return RATING_STATUS["SUCCESSFUL"] if all(overall_data.get(key) not in [None, "暂无"] for key in required_fields) else RATING_STATUS["FETCH_FAILED"]
+        return RATING_STATUS["SUCCESSFUL"] if all(overall_data.get(key) not in [None, "暂无"] for key in required_fields) else _resolve_failed_status_with_reason(platform_data)
     
     elif platform == "letterboxd":
         if platform_data.get("rating") == "暂无" and platform_data.get("rating_count") == "暂无":
             return RATING_STATUS["NO_RATING"]
         return RATING_STATUS["SUCCESSFUL"] if (platform_data.get("rating") not in [None, "暂无"] and 
-                                            platform_data.get("rating_count") not in [None, "暂无"]) else RATING_STATUS["FETCH_FAILED"]
+                                            platform_data.get("rating_count") not in [None, "暂无"]) else _resolve_failed_status_with_reason(platform_data)
     
     elif platform == "trakt":
         if platform_data.get("rating") == "暂无" and platform_data.get("votes") == "暂无":
             return RATING_STATUS["NO_RATING"]
         return RATING_STATUS["SUCCESSFUL"] if (platform_data.get("rating") not in [None, "暂无"] and 
-                                            platform_data.get("votes") not in [None, "暂无"]) else RATING_STATUS["FETCH_FAILED"]
+                                            platform_data.get("votes") not in [None, "暂无"]) else _resolve_failed_status_with_reason(platform_data)
     
-    return RATING_STATUS["FETCH_FAILED"]
+    return _resolve_failed_status_with_reason(platform_data)
 
 def check_tv_status(platform_data, platform):
     """检查剧集评分数据的状态"""
     if not platform_data:
         return RATING_STATUS["FETCH_FAILED"]
         
-    if "status" in platform_data:
+    if "status" in platform_data and platform_data.get("status") != RATING_STATUS["SUCCESSFUL"]:
         return platform_data["status"]
         
     if platform == "douban":
         seasons = platform_data.get("seasons", [])
         if not seasons:
-            return RATING_STATUS["FETCH_FAILED"]
+            return _resolve_failed_status_with_reason(platform_data)
             
         all_no_rating = all(
             season.get("rating") == "暂无" and season.get("rating_people") == "暂无"
@@ -5090,14 +5103,14 @@ def check_tv_status(platform_data, platform):
         for season in seasons:
             season_fields = ["rating", "rating_people"]
             if not all(season.get(key) not in [None, "暂无"] for key in season_fields):
-                return RATING_STATUS["FETCH_FAILED"]
+                return _resolve_failed_status_with_reason(platform_data)
         return RATING_STATUS["SUCCESSFUL"]
         
     elif platform == "imdb":
         if platform_data.get("rating") == "暂无" and platform_data.get("rating_people") == "暂无":
             return RATING_STATUS["NO_RATING"]
         return RATING_STATUS["SUCCESSFUL"] if (platform_data.get("rating") not in [None, "暂无", "N/A"] and 
-                                            platform_data.get("rating_people") not in [None, "暂无", "N/A"]) else RATING_STATUS["FETCH_FAILED"]
+                                            platform_data.get("rating_people") not in [None, "暂无", "N/A"]) else _resolve_failed_status_with_reason(platform_data)
         
     elif platform == "rottentomatoes":
         series_data = platform_data.get("series", {})
@@ -5115,12 +5128,12 @@ def check_tv_status(platform_data, platform):
             return RATING_STATUS["NO_RATING"]
             
         if not all(series_data.get(key) not in [None, "出错"] for key in series_fields):
-            return RATING_STATUS["FETCH_FAILED"]
+            return _resolve_failed_status_with_reason(platform_data)
             
         for season in seasons_data:
             season_fields = ["tomatometer", "audience_score", "critics_avg", "audience_avg", "critics_count", "audience_count"]
             if not all(season.get(key) in ["暂无", "tbd"] or season.get(key) not in [None, "出错"] for key in season_fields):
-                return RATING_STATUS["FETCH_FAILED"]
+                return _resolve_failed_status_with_reason(platform_data)
         return RATING_STATUS["SUCCESSFUL"]
         
     elif platform == "metacritic":
@@ -5139,27 +5152,27 @@ def check_tv_status(platform_data, platform):
             return RATING_STATUS["NO_RATING"]
             
         if not all(overall_data.get(key) not in [None, "出错"] for key in overall_fields):
-            return RATING_STATUS["FETCH_FAILED"]
+            return _resolve_failed_status_with_reason(platform_data)
             
         for season in seasons_data:
             season_fields = ["metascore", "critics_count", "userscore", "users_count"]
             if not all(season.get(key) in ["暂无", "tbd"] or season.get(key) not in [None, "出错"] for key in season_fields):
-                return RATING_STATUS["FETCH_FAILED"]
+                return _resolve_failed_status_with_reason(platform_data)
         return RATING_STATUS["SUCCESSFUL"]
     
     elif platform == "letterboxd":
         if platform_data.get("rating") == "暂无" and platform_data.get("rating_count") == "暂无":
             return RATING_STATUS["NO_RATING"]
         return RATING_STATUS["SUCCESSFUL"] if (platform_data.get("rating") not in [None, "暂无"] and 
-                                            platform_data.get("rating_count") not in [None, "暂无"]) else RATING_STATUS["FETCH_FAILED"]
+                                            platform_data.get("rating_count") not in [None, "暂无"]) else _resolve_failed_status_with_reason(platform_data)
     
     elif platform == "trakt":
         if platform_data.get("rating") == "暂无" and platform_data.get("votes") == "暂无":
             return RATING_STATUS["NO_RATING"]
         return RATING_STATUS["SUCCESSFUL"] if (platform_data.get("rating") not in [None, "暂无"] and 
-                                            platform_data.get("votes") not in [None, "暂无"]) else RATING_STATUS["FETCH_FAILED"]
+                                            platform_data.get("votes") not in [None, "暂无"]) else _resolve_failed_status_with_reason(platform_data)
     
-    return RATING_STATUS["FETCH_FAILED"]
+    return _resolve_failed_status_with_reason(platform_data)
 
 def create_empty_rating_data(platform, media_type, status):
     """创建带有状态的空评分数据结构"""
