@@ -3596,6 +3596,7 @@ async def get_platform_rating(
                             rating_info = await rt_extract_rating_from_season_urls(
                                 tmdb_info,
                                 seasons_json=seasons_json,
+                                series_url=str(mapping_dict.get("rotten_tomatoes_url") or "").strip() or None,
                                 request=request,
                                 douban_cookie=douban_cookie,
                             )
@@ -3646,6 +3647,7 @@ async def get_platform_rating(
                             rating_info = await metacritic_extract_rating_from_season_urls(
                                 tmdb_info,
                                 seasons_json=seasons_json,
+                                series_url=str(mapping_dict.get("metacritic_url") or "").strip() or None,
                                 request=request,
                                 douban_cookie=douban_cookie,
                             )
