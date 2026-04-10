@@ -5053,20 +5053,23 @@ def check_movie_status(platform_data, platform):
                                             platform_data.get("rating_people") not in [None, "暂无", "N/A"]) else _resolve_failed_status_with_reason(platform_data)
         
     elif platform == "rottentomatoes":
-        series_data = platform_data.get("series", {})
-        required_fields = ["tomatometer", "audience_score", "critics_avg", "critics_count", "audience_count", "audience_avg"]
-        all_no_rating = all(series_data.get(key) == "暂无" for key in required_fields)
-        if all_no_rating:
-            return RATING_STATUS["NO_RATING"]
-        return RATING_STATUS["SUCCESSFUL"] if all(series_data.get(key) not in [None, "暂无"] for key in required_fields) else _resolve_failed_status_with_reason(platform_data)
-        
+        series_data = platform_data.get("series", {}) or {}
+        rt_fields = ["tomatometer", "audience_score", "critics_avg", "critics_count", "audience_count", "audience_avg"]
+        if any(series_data.get(key) == "出错" for key in rt_fields):
+            return _resolve_failed_status_with_reason(platform_data)
+
+        if _rt_scores_has_any_rating(series_data):
+            return RATING_STATUS["SUCCESSFUL"]
+        return RATING_STATUS["NO_RATING"]
+
     elif platform == "metacritic":
-        overall_data = platform_data.get("overall", {})
-        required_fields = ["metascore", "critics_count", "userscore", "users_count"]
-        all_no_rating = all(overall_data.get(key) == "暂无" for key in required_fields)
-        if all_no_rating:
-            return RATING_STATUS["NO_RATING"]
-        return RATING_STATUS["SUCCESSFUL"] if all(overall_data.get(key) not in [None, "暂无"] for key in required_fields) else _resolve_failed_status_with_reason(platform_data)
+        overall_data = platform_data.get("overall", {}) or {}
+        mc_fields = ["metascore", "critics_count", "userscore", "users_count"]
+        if any(overall_data.get(key) == "出错" for key in mc_fields):
+            return _resolve_failed_status_with_reason(platform_data)
+        if _metacritic_scores_has_any_rating(overall_data):
+            return RATING_STATUS["SUCCESSFUL"]
+        return RATING_STATUS["NO_RATING"]
     
     elif platform == "letterboxd":
         if platform_data.get("rating") == "暂无" and platform_data.get("rating_count") == "暂无":
