@@ -1,11 +1,10 @@
 // ==========================================
-// 详情页访问记录：离开时写入各平台评分抓取状态
+// 详情页访问记录 Hook
 // ==========================================
 import { useLayoutEffect, useEffect, useRef, useState } from 'react';
 import { authFetch } from '../../api/authFetch';
 import type { FetchStatus } from '../types/status';
 
-/** 与 useMediaRatings 返回的 platformStatuses（索引签名）兼容 */
 type DetailViewPlatformStatuses = Record<string, { status: FetchStatus }>;
 
 const TRACK_PLATFORMS = [
