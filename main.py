@@ -5616,7 +5616,49 @@ async def track_media_detail_view(
         logger.error(f"写入详情页访问日志失败: {e}")
         raise HTTPException(status_code=500, detail="写入访问日志失败")
 
+    return {"ok": True, "id": log.id}
+
+
+@app.patch("/api/track/detail-view/{log_id}")
+async def patch_media_detail_view_statuses(
+    log_id: int,
+    request: Request,
+    current_user: Optional[User] = Depends(get_current_user_optional),
+    db: Session = Depends(get_db),
+):
+    body = await request.json()
+    platform_rating_fetch_statuses = body.get("platform_rating_fetch_statuses")
+    if platform_rating_fetch_statuses is None:
+        raise HTTPException(status_code=400, detail="缺少 platform_rating_fetch_statuses")
+
+    log = db.query(MediaDetailAccessLog).filter(MediaDetailAccessLog.id == log_id).first()
+    if not log:
+        raise HTTPException(status_code=404, detail="访问记录不存在")
+
+    if log.user_id is not None:
+        if current_user is None or current_user.id != log.user_id:
+            raise HTTPException(status_code=403, detail="无权更新此访问记录")
+
+    if isinstance(platform_rating_fetch_statuses, str):
+        log.platform_rating_fetch_statuses = platform_rating_fetch_statuses
+    else:
+        try:
+            log.platform_rating_fetch_statuses = json.dumps(
+                platform_rating_fetch_statuses,
+                ensure_ascii=False,
+            )
+        except Exception:
+            raise HTTPException(status_code=400, detail="platform_rating_fetch_statuses 格式错误")
+
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        logger.error(f"更新详情页访问日志状态失败: {e}")
+        raise HTTPException(status_code=500, detail="更新访问记录失败")
+
     return {"ok": True}
+
 
 @app.get("/api/admin/detail-views")
 async def admin_get_media_detail_views(
