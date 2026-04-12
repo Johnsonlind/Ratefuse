@@ -2,6 +2,7 @@
 // 电影详情页
 // ==========================================
 import { useState, useEffect } from 'react';
+import { useDetailViewTracking } from '../shared/hooks/useDetailViewTracking';
 import { useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { MovieHero } from '../modules/media/MovieHero';
@@ -26,7 +27,6 @@ import { calculateOverallRating } from '../modules/rating/calculateOverallRating
 import { OverallRatingCard } from '../modules/rating/OverallRatingCard';
 import { PageShell } from '../modules/layout/PageShell';
 import { usePageMeta } from '../shared/hooks/usePageMeta';
-import { authFetch } from '../api/authFetch';
 import { ResourceSection } from '../modules/resources/ResourceSection';
 
 const PRELOAD_IMAGES = [
@@ -50,8 +50,6 @@ const formatQueryError = (error: unknown): { status: FetchStatus; detail: string
 export default function MoviePage() {
   const { id } = useParams();
   const [isExporting, setIsExporting] = useState(false);
-  const [trackedId, setTrackedId] = useState<string | null>(null);
-  
   const {
     platformStatuses,
     tmdbStatus,
@@ -67,6 +65,16 @@ export default function MoviePage() {
     queryFn: () => getMovie(id!),
     enabled: !!id,
     staleTime: Infinity
+  });
+
+  useDetailViewTracking({
+    mediaType: 'movie',
+    mediaId: id,
+    mediaLoaded: !!movie,
+    title: movie?.title,
+    platformStatuses,
+    tmdbStatus,
+    traktStatus,
   });
 
   const [posterBase64, setPosterBase64] = useState<string | null>(null);
@@ -89,43 +97,6 @@ export default function MoviePage() {
       });
     }
   }, [movie]);
-
-  useEffect(() => {
-    if (!id || !movie) return;
-    const title = String(movie.title || '').trim();
-    if (!title) return;
-    if (trackedId === id) return;
-
-    const url = `${window.location.origin}${window.location.pathname}`;
-    const n = Number(id);
-    const tmdbNum = Number.isFinite(n) ? n : undefined;
-
-    setTrackedId(id);
-    authFetch('/api/track/detail-view', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        media_type: 'movie',
-        tmdb_id: tmdbNum,
-        title,
-        url,
-        platform_rating_fetch_statuses: {
-          douban: platformStatuses.douban.status,
-          imdb: platformStatuses.imdb.status,
-          letterboxd: platformStatuses.letterboxd.status,
-          rottentomatoes: platformStatuses.rottentomatoes.status,
-          metacritic: platformStatuses.metacritic.status,
-          tmdb: tmdbStatus,
-          trakt: traktStatus,
-        },
-      }),
-      withAuth: true,
-      keepalive: true,
-    })
-      .catch(() => {
-        setTrackedId((prev) => (prev === id ? null : prev));
-      });
-  }, [id, movie, trackedId]);
 
   useEffect(() => {
     if (movie?.poster) {
