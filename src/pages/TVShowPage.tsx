@@ -28,7 +28,7 @@ import { SeasonRatings } from '../modules/rating/SeasonRatings';
 import type { TVShow } from '../shared/types/media';
 import { PageShell } from '../modules/layout/PageShell';
 import { usePageMeta } from '../shared/hooks/usePageMeta';
-import { authFetch } from '../api/authFetch';
+import { useDetailViewTracking } from '../shared/hooks/useDetailViewTracking';
 import { ResourceSection } from '../modules/resources/ResourceSection';
 
 const PRELOAD_IMAGES = [
@@ -54,8 +54,7 @@ export default function TVShowPage() {
   const [selectedSeason, setSelectedSeason] = useState<number | undefined>(undefined);
   const [isExporting, setIsExporting] = useState(false);
   const exportSeasonRef = useRef<number | undefined>(undefined);
-  const [trackedId, setTrackedId] = useState<string | null>(null);
-  
+
   const {
     platformStatuses,
     tmdbStatus,
@@ -75,6 +74,15 @@ export default function TVShowPage() {
     staleTime: Infinity
   });
 
+  useDetailViewTracking({
+    mediaType: 'tv',
+    mediaId: id,
+    mediaLoaded: !!tvShow,
+    title: tvShow?.title,
+    platformStatuses,
+    tmdbStatus,
+    traktStatus,
+  });
 
   useEffect(() => {
     preloadImages({
@@ -103,43 +111,6 @@ export default function TVShowPage() {
       });
     }
   }, [tvShow]);
-
-  useEffect(() => {
-    if (!id || !tvShow) return;
-    const title = String(tvShow.title || '').trim();
-    if (!title) return;
-    if (trackedId === id) return;
-
-    const url = `${window.location.origin}${window.location.pathname}`;
-    const n = Number(id);
-    const tmdbNum = Number.isFinite(n) ? n : undefined;
-
-    setTrackedId(id);
-    authFetch('/api/track/detail-view', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        media_type: 'tv',
-        tmdb_id: tmdbNum,
-        title,
-        url,
-        platform_rating_fetch_statuses: {
-          douban: platformStatuses.douban.status,
-          imdb: platformStatuses.imdb.status,
-          letterboxd: platformStatuses.letterboxd.status,
-          rottentomatoes: platformStatuses.rottentomatoes.status,
-          metacritic: platformStatuses.metacritic.status,
-          tmdb: tmdbStatus,
-          trakt: traktStatus,
-        },
-      }),
-      withAuth: true,
-      keepalive: true,
-    })
-      .catch(() => {
-        setTrackedId((prev) => (prev === id ? null : prev));
-      });
-  }, [id, tvShow, trackedId]);
 
   useEffect(() => {
     if (tvShow?.poster) {
