@@ -228,9 +228,11 @@ export default function ChartsPage() {
     const result = sortedCharts.reduce((acc, chart) => {
     const platformKey = chart.platform;
     
-    const shouldMerge = chart.platform === 'TMDB' || 
-                       chart.platform === 'IMDb' || 
-                       chart.chart_name === '豆瓣2025评分月度热搜影视';
+    const shouldMerge =
+      chart.platform === 'TMDB' ||
+      chart.platform === 'IMDb' ||
+      chart.chart_name === '豆瓣2025评分月度热搜影视' ||
+      (chart.platform === 'Letterboxd' && chart.chart_name === '本周热门影视');
     
     if (shouldMerge) {
       if (acc[platformKey] && acc[platformKey].length > 0) {
