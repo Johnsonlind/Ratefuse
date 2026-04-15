@@ -3119,7 +3119,7 @@ async def get_batch_ratings(
                     
                     ratings = await asyncio.wait_for(
                         parallel_extract_ratings(tmdb_info, media_type, request, douban_cookie),
-                        timeout=20.0
+                        timeout=30.0
                     )
                     
                     cache_key = f"ratings:all:{media_type}:{media_id}"
@@ -3133,7 +3133,7 @@ async def get_batch_ratings(
                     
                 except asyncio.TimeoutError:
                     logger.warning(f"  ⏱ {media_id}: 超时")
-                    return media_id, {'status': 'timeout', 'error': '获取超时（>20秒）'}
+                    return media_id, {'status': 'timeout', 'error': '获取超时（>30秒）'}
                 except Exception as e:
                     logger.error(f"  ✗ {media_id}: {str(e)[:30]}")
                     return media_id, {'status': 'error', 'error': str(e)}
@@ -3248,10 +3248,10 @@ async def get_all_platform_ratings(
         try:
             all_ratings = await asyncio.wait_for(
                 parallel_extract_ratings(tmdb_info, tmdb_info["type"], request, douban_cookie, mapping=mapping_dict),
-                timeout=20.0
+                timeout=30.0
             )
         except asyncio.TimeoutError:
-            logger.error("获取评分超时（>20秒）")
+            logger.error("获取评分超时（>30秒）")
             raise HTTPException(status_code=504, detail="获取评分超时")
 
         try:
