@@ -15,6 +15,22 @@ _DOUBAN_MIN_INTERVAL_SEC = 4.0
 _douban_throttle_lock = threading.Lock()
 _douban_throttle_last: float = 0.0
 
+_DOUBAN_BLOCKED_UNTIL: float = 0.0
+_douban_block_lock = threading.Lock()
+
+def douban_is_blocked() -> tuple[bool, float]:
+    """返回(是否处于冷却期, 剩余秒数)"""
+    with _douban_block_lock:
+        now = time.monotonic()
+        remain = _DOUBAN_BLOCKED_UNTIL - now
+        return (remain > 0), max(remain, 0.0)
+
+def mark_douban_rate_limited(cooldown_sec: float = 600.0) -> None:
+    """标记豆瓣进入冷却期（默认 10 分钟）。"""
+    global _DOUBAN_BLOCKED_UNTIL
+    with _douban_block_lock:
+        _DOUBAN_BLOCKED_UNTIL = max(_DOUBAN_BLOCKED_UNTIL, time.monotonic() + float(cooldown_sec))
+
 _DOUBAN_SAME_COOKIE_MIN_GAP_SEC = 10.0
 _cookie_playwright_lock = threading.Lock()
 _douban_cookie_last_playwright_start: dict[str, float] = {}
