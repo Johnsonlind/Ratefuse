@@ -26,6 +26,8 @@ from browser_pool import (
     browser_pool,
     douban_playwright_session_semaphore,
     wait_before_douban_playwright_async,
+    douban_is_blocked,
+    mark_douban_rate_limited,
 )
 from anthology_handler import anthology_handler
 
@@ -5394,17 +5396,20 @@ async def parallel_extract_ratings(tmdb_info, media_type, request=None, douban_c
     platforms = ["douban", "imdb", "letterboxd", "rottentomatoes", "metacritic"]
 
     platform_timeouts = {
-        "douban": 10.0,
-        "imdb": 12.0,
-        "letterboxd": 10.0,
-        "rottentomatoes": 10.0,
-        "metacritic": 10.0,
+        "douban": 30.0,
+        "imdb": 30.0,
+        "letterboxd": 30.0,
+        "rottentomatoes": 30.0,
+        "metacritic": 30.0,
     }
+
+    GLOBAL_DEADLINE_SEC = 30.0
     
     title = tmdb_info.get('zh_title') or tmdb_info.get('title', 'Unknown')
     print(log.section(f"并行获取评分: {title} ({media_type})"))
     
     is_anthology = tmdb_info.get("is_anthology", False)
+    deadline_at = start_time + GLOBAL_DEADLINE_SEC
     
     async def process_platform(platform):
         platform_start = time.time()
@@ -5484,6 +5489,14 @@ async def parallel_extract_ratings(tmdb_info, media_type, request=None, douban_c
                 rating_data = None
 
             if platform == "douban" and not used_mapping:
+                blocked, remain = douban_is_blocked()
+                if blocked:
+                    return platform, create_error_rating_data(
+                        "douban",
+                        media_type,
+                        RATING_STATUS["RATE_LIMIT"],
+                        f"豆瓣触发风控，冷却中（剩余 {remain:.0f}s）",
+                    )
                 rating_data = await douban_search_and_extract_rating(media_type, tmdb_info, request, cookie)
 
             if platform != "douban" and not used_mapping:
@@ -5515,6 +5528,8 @@ async def parallel_extract_ratings(tmdb_info, media_type, request=None, douban_c
             
             error_str = str(e).lower()
             if "rate limit" in error_str or "频率限制" in error_str:
+                if platform == "douban":
+                    mark_douban_rate_limited(600.0)
                 return platform, create_error_rating_data(platform, media_type, RATING_STATUS["RATE_LIMIT"], "访问频率限制")
             elif "timeout" in error_str or "超时" in error_str:
                 return platform, create_error_rating_data(platform, media_type, RATING_STATUS["TIMEOUT"], "请求超时")
@@ -5527,35 +5542,67 @@ async def parallel_extract_ratings(tmdb_info, media_type, request=None, douban_c
         timeout = platform_timeouts.get(platform, 15.0)
         async with sem:
             try:
-                return await asyncio.wait_for(process_platform(platform), timeout=timeout)
+                remaining = deadline_at - time.time()
+                if remaining <= 0:
+                    return platform, create_error_rating_data(
+                        platform,
+                        media_type,
+                        RATING_STATUS["TIMEOUT"],
+                        f"全局超时 {GLOBAL_DEADLINE_SEC:.0f} 秒",
+                    )
+                return await asyncio.wait_for(process_platform(platform), timeout=min(timeout, remaining))
             except asyncio.TimeoutError:
                 elapsed = time.time() - start_time
                 print(log.error(f"{platform}: overall timeout after {timeout:.1f}s (elapsed {elapsed:.1f}s)"))
+                if platform == "douban":
+                    mark_douban_rate_limited(600.0)
                 return platform, create_error_rating_data(
                     platform,
                     media_type,
                     RATING_STATUS["TIMEOUT"],
-                    f"整体超时 {timeout:.1f} 秒",
+                    f"超时（平台上限 {timeout:.0f}s / 全局 {GLOBAL_DEADLINE_SEC:.0f}s）",
                 )
     
+    async def run_all_platforms() -> dict:
+        task_map: dict[str, asyncio.Task] = {
+            p: asyncio.create_task(process_with_semaphore(p)) for p in platforms
+        }
+
+        remaining = max(deadline_at - time.time(), 0.0)
+        done, pending = await asyncio.wait(task_map.values(), timeout=remaining)
+
+        results: dict[str, dict] = {}
+        for t in done:
+            try:
+                p, data = t.result()
+                results[p] = data
+            except Exception as e:
+                results["unknown"] = create_error_rating_data("unknown", media_type, RATING_STATUS["FETCH_FAILED"], str(e)[:80])
+
+        if pending:
+            for t in pending:
+                t.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+
+            finished = set(results.keys())
+            for p in platforms:
+                if p in finished:
+                    continue
+                results[p] = create_error_rating_data(
+                    p,
+                    media_type,
+                    RATING_STATUS["TIMEOUT"],
+                    f"全局超时 {GLOBAL_DEADLINE_SEC:.0f} 秒",
+                )
+                if p == "douban":
+                    mark_douban_rate_limited(600.0)
+
+        return results
+
     if is_anthology and media_type == "tv":
-        print("检测到选集剧，先执行IMDB，然后执行其他平台...")
-        
-        imdb_result = await process_with_semaphore("imdb")
-        imdb_platform, imdb_rating = imdb_result
-        
-        print(f"IMDB完成，开始执行其他平台（烂番茄和MTC将使用主系列信息）...")
-        
-        other_platforms = [p for p in platforms if p != "imdb"]
-        other_tasks = [process_with_semaphore(platform) for platform in other_platforms]
-        other_results = await asyncio.gather(*other_tasks)
-        
-        all_ratings = {imdb_platform: imdb_rating}
-        all_ratings.update({platform: rating for platform, rating in other_results})
-    else:
-        tasks = [process_with_semaphore(platform) for platform in platforms]
-        results = await asyncio.gather(*tasks)
-        all_ratings = {platform: rating for platform, rating in results}
+        print("检测到选集剧：评分并行执行（保持总耗时上限）...")
+
+    all_ratings = await run_all_platforms()
     
     total_time = time.time() - start_time
     success_count = sum(1 for r in all_ratings.values() if r.get('status') == RATING_STATUS["SUCCESSFUL"])
