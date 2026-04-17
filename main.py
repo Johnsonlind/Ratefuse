@@ -2780,6 +2780,55 @@ def _extract_douban_id_from_url(url: str) -> Optional[str]:
     m = _DOUBAN_ID_RE.search(url)
     return m.group(1) if m else None
 
+def _normalize_douban_rating_url(url: str) -> str:
+    """
+    Normalize Douban URLs so mapping uses the real destination URL.
+
+    Handles security redirect wrappers like:
+    - https://sec.douban.com/c?r=<urlencoded>&...
+    - https://sec.douban.com/b?r=<urlencoded>&...
+    """
+    u = (url or "").strip()
+    if not u:
+        return u
+
+    if u.startswith("//"):
+        u = "https:" + u
+    elif u.startswith("/"):
+        u = "https://movie.douban.com" + u
+
+    try:
+        p = urlparse(u)
+    except Exception:
+        return u
+
+    host = (p.netloc or "").lower()
+    path = p.path or ""
+
+    if host == "sec.douban.com" and path in ("/c", "/b"):
+        try:
+            q = parse_qs(p.query or "")
+            r0 = (q.get("r") or [""])[0]
+            r = r0
+            for _ in range(3):
+                r2 = unquote(r)
+                if r2 == r:
+                    break
+                r = r2
+            r = (r or "").strip()
+            if r.startswith("//"):
+                r = "https:" + r
+            if r.startswith("http://"):
+                r = "https://" + r[len("http://") :]
+            if r:
+                return r
+        except Exception:
+            return u
+
+    if u.startswith("http://movie.douban.com/") or u.startswith("http://www.douban.com/") or u.startswith("http://douban.com/"):
+        u = "https://" + u[len("http://") :]
+    return u
+
 def _extract_letterboxd_slug_from_url(url: str) -> Optional[str]:
     # https://letterboxd.com/film/<slug>/
     try:
@@ -2859,23 +2908,31 @@ def _mapping_patch_from_platform_result(platform: str, media_type: str, rating_d
             return None
     if platform == "douban":
         if url:
+            url = _normalize_douban_rating_url(url)
             patch["douban_url"] = url
             patch["douban_id"] = _extract_douban_id_from_url(url) or patch.get("douban_id")
         sj = _dump_seasons_json()
         if sj:
-            patch["douban_seasons_json"] = sj
             try:
                 season_map = json.loads(sj)
-                if isinstance(season_map, dict):
-                    ids_out: dict[str, str] = {}
-                    for sn_str, su in season_map.items():
-                        sid = _extract_douban_id_from_url(str(su or "")) if su else None
+            except Exception:
+                season_map = None
+            if isinstance(season_map, dict) and season_map:
+                normalized: dict[str, str] = {}
+                ids_out: dict[str, str] = {}
+                for sn_str, su in season_map.items():
+                    nu = _normalize_douban_rating_url(str(su or "").strip()) if su else ""
+                    if nu:
+                        normalized[str(sn_str)] = nu
+                        sid = _extract_douban_id_from_url(nu)
                         if sid:
                             ids_out[str(sn_str)] = sid
-                    if ids_out:
-                        patch["douban_seasons_ids_json"] = json.dumps(ids_out, ensure_ascii=False)
-            except Exception:
-                pass
+                if normalized:
+                    patch["douban_seasons_json"] = json.dumps(normalized, ensure_ascii=False)
+                if ids_out:
+                    patch["douban_seasons_ids_json"] = json.dumps(ids_out, ensure_ascii=False)
+            else:
+                patch["douban_seasons_json"] = sj
     elif platform == "letterboxd":
         if url:
             patch["letterboxd_url"] = url
