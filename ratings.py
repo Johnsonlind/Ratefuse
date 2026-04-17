@@ -1802,6 +1802,51 @@ def _normalize_douban_detail_url(url: str) -> str:
         return "https://movie.douban.com" + u
     return "https://movie.douban.com/" + u
 
+def _normalize_douban_rating_url(url: str) -> str:
+    """
+    Normalize Douban URLs to their real destination.
+
+    Douban search results / pages may return safety redirect wrappers like:
+    https://sec.douban.com/c?r=https%3A%2F%2Fmovie.douban.com%2Fsubject%2F37070283%2F&...
+    """
+    u = (url or "").strip()
+    if not u:
+        return u
+
+    if u.startswith("//") or u.startswith("/"):
+        u = _normalize_douban_detail_url(u)
+
+    try:
+        p = urlparse(u)
+    except Exception:
+        return u
+
+    host = (p.netloc or "").lower()
+    path = p.path or ""
+    if host == "sec.douban.com" and path in ("/c", "/b"):
+        try:
+            q = parse_qs(p.query or "")
+            r0 = (q.get("r") or [""])[0]
+            r = r0
+            for _ in range(3):
+                r2 = unquote(r)
+                if r2 == r:
+                    break
+                r = r2
+            r = (r or "").strip()
+            if r.startswith("//"):
+                r = "https:" + r
+            if r.startswith("http://"):
+                r = "https://" + r[len("http://") :]
+            if r:
+                return r
+        except Exception:
+            return u
+
+    if u.startswith("http://movie.douban.com/"):
+        return "https://" + u[len("http://") :]
+    return u
+
 _douban_inflight_lock = asyncio.Lock()
 _douban_inflight_tasks: dict[str, asyncio.Task] = {}
 
@@ -5423,7 +5468,7 @@ async def parallel_extract_ratings(tmdb_info, media_type, request=None, douban_c
             if mapping and isinstance(mapping, dict):
                 try:
                     if platform == "douban" and media_type == "movie":
-                        url = (mapping.get("douban_url") or "").strip()
+                        url = _normalize_douban_rating_url((mapping.get("douban_url") or "").strip())
                         if url:
                             used_mapping = True
                             rating_data = await extract_rating_info(
