@@ -2631,12 +2631,7 @@ def _can_upsert_platform_mapping(
     media_type: str,
     tmdb_id: Optional[int],
 ) -> bool:
-    if tmdb_id is None:
-        return True
-    try:
-        return not is_platform_locked(db, media_type, int(tmdb_id), platform)
-    except Exception:
-        return True
+    return True
         
 def _should_upsert_mapping(
     db: Session,
@@ -2645,7 +2640,7 @@ def _should_upsert_mapping(
     tmdb_id: Optional[int],
     patch: Optional[dict[str, Any]],
 ) -> bool:
-    return bool(patch) and _can_upsert_platform_mapping(db, platform, media_type, tmdb_id)
+    return bool(patch)
 
 _MAPPING_LINK_COLUMNS = frozenset(
     {
@@ -2720,6 +2715,114 @@ def _mapping_link_columns_strictly_unchanged(row: Any, snap_links: dict[str, Any
         if not _mapping_link_field_strictly_equal(snap_links.get(k), getattr(row, k, None)):
             return False
     return True
+
+def _parse_seasons_json_dict(text: Optional[str]) -> dict[str, str]:
+    raw = (text or "").strip()
+    if not raw:
+        return {}
+    try:
+        obj = json.loads(raw)
+    except Exception:
+        return {}
+    if not isinstance(obj, dict):
+        return {}
+    out: dict[str, str] = {}
+    for k, v in obj.items():
+        ks = str(k).strip()
+        vs = str(v or "").strip()
+        if ks and vs:
+            out[ks] = vs
+    return out
+
+def _expected_tmdb_season_numbers(tmdb_info: dict) -> set[int]:
+    seasons = tmdb_info.get("seasons")
+    out: set[int] = set()
+    if isinstance(seasons, list):
+        for s in seasons:
+            if not isinstance(s, dict):
+                continue
+            sn = s.get("season_number")
+            try:
+                n = int(sn)
+            except Exception:
+                continue
+            if n > 0:
+                out.add(n)
+    return out
+
+def _missing_seasons_from_json(tmdb_info: dict, seasons_json_text: Optional[str]) -> list[int]:
+    expected = _expected_tmdb_season_numbers(tmdb_info)
+    if not expected:
+        return []
+    m = _parse_seasons_json_dict(seasons_json_text)
+    present: set[int] = set()
+    for k in m.keys():
+        try:
+            present.add(int(str(k)))
+        except Exception:
+            continue
+    missing = sorted([n for n in expected if n not in present])
+    return missing
+
+def _rt_build_season_url(series_url: str, season_number: int) -> Optional[str]:
+    base = (series_url or "").strip()
+    if not base:
+        return None
+    base = base.rstrip("/")
+    return f"{base}/s{int(season_number):02d}"
+
+def _metacritic_build_season_url(series_url: str, season_number: int) -> Optional[str]:
+    base = (series_url or "").strip()
+    if not base:
+        return None
+    base = base.rstrip("/") + "/"
+    # If series_url already points to a season page, trim it back to series root.
+    base = re.sub(r"/season-\d+/?$", "/", base, flags=re.IGNORECASE)
+    return f"{base}season-{int(season_number)}/"
+
+def _is_empty_mapping_value(v: Any) -> bool:
+    if v is None:
+        return True
+    if isinstance(v, str) and not v.strip():
+        return True
+    return False
+
+def _prune_patch_for_locked_platform(row: Any, patch: dict[str, Any]) -> dict[str, Any]:
+    """
+    Locked platform policy:
+    - Allow filling empty scalar fields (None/empty string) only.
+    - Allow appending missing seasons_json keys (do not overwrite existing keys).
+    """
+    if not patch:
+        return {}
+    out: dict[str, Any] = {}
+    for k, v in patch.items():
+        if k not in _MAPPING_LINK_COLUMNS:
+            out[k] = v
+            continue
+        if v is None:
+            continue
+        cur = getattr(row, k, None)
+        if k.endswith("_seasons_json") or k.endswith("_seasons_ids_json"):
+            cur_map = _parse_seasons_json_dict(cur if isinstance(cur, str) else None)
+            next_map = _parse_seasons_json_dict(v if isinstance(v, str) else None)
+            if not next_map:
+                continue
+            merged = dict(cur_map)
+            changed = False
+            for sk, sv in next_map.items():
+                if not sk or not sv:
+                    continue
+                if sk not in merged or not str(merged.get(sk) or "").strip():
+                    merged[sk] = sv
+                    changed = True
+            if changed:
+                out[k] = json.dumps(merged, ensure_ascii=False)
+            continue
+
+        if _is_empty_mapping_value(cur) and not _is_empty_mapping_value(v):
+            out[k] = v
+    return out
 
 def _prune_noop_mapping_link_patch(row: Any, patch: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
@@ -2972,6 +3075,7 @@ def _mapping_patch_from_platform_result(platform: str, media_type: str, rating_d
 
 def _upsert_media_link_mapping(
     db: Session,
+    platform: str,
     tmdb_info: dict,
     patch: dict[str, Any],
     *,
@@ -3004,6 +3108,15 @@ def _upsert_media_link_mapping(
         year_int = None
 
     imdb_id = (tmdb_info.get("imdb_id") or "").strip() or None
+
+    try:
+        if tmdb_id is not None and is_platform_locked(db, media_type, int(tmdb_id), platform):
+            if row is not None:
+                patch = _prune_patch_for_locked_platform(row, patch)
+            else:
+                patch = dict(patch or {})
+    except Exception:
+        pass
 
     if row is not None:
         patch = _sanitize_link_patch_no_overwrite_clear(row, patch)
@@ -3337,6 +3450,7 @@ async def get_all_platform_ratings(
                     is_success = data.get("status") == RATING_STATUS["SUCCESSFUL"]
                     _upsert_media_link_mapping(
                         db,
+                        platform,
                         tmdb_info,
                         patch,
                         match_status=ms,
@@ -3494,17 +3608,6 @@ async def get_platform_rating(
         except Exception:
             tmdb_id = None
 
-        if tmdb_id is not None and is_platform_locked(db, media_type, tmdb_id, platform):
-            rating_info = create_rating_data(RATING_STATUS["LOCKED"], "平台已锁定，停止抓取")
-            logger.info(f"跳过抓取（平台已锁定）: platform={platform} media_type={media_type} tmdb_id={tmdb_id}")
-            rating_info["_performance"] = {
-                "total_time": round(time.time() - start_time, 2),
-                "search_time": 0,
-                "extract_time": 0,
-                "cached": False,
-            }
-            return rating_info
-
         cache_key = f"rating:{platform}:{type}:{id}"
         cached_data = await get_cache(cache_key)
         if cached_data:
@@ -3549,6 +3652,59 @@ async def get_platform_rating(
             mapping_row = None
             mapping_dict = None
 
+        locked = False
+        try:
+            locked = tmdb_id is not None and is_platform_locked(db, media_type, int(tmdb_id), platform)
+        except Exception:
+            locked = False
+        if locked:
+            allow_probe = False
+            if mapping_row is None:
+                allow_probe = True
+            else:
+                if platform == "douban":
+                    if (media_type or "").lower() == "movie":
+                        allow_probe = _is_empty_mapping_value(getattr(mapping_row, "douban_url", None)) and _is_empty_mapping_value(
+                            getattr(mapping_row, "douban_id", None)
+                        )
+                    else:
+                        allow_probe = bool(_missing_seasons_from_json(tmdb_info, getattr(mapping_row, "douban_seasons_json", None))) or (
+                            _is_empty_mapping_value(getattr(mapping_row, "douban_seasons_json", None))
+                            and _is_empty_mapping_value(getattr(mapping_row, "douban_url", None))
+                        )
+                elif platform == "rottentomatoes":
+                    if (media_type or "").lower() == "tv":
+                        allow_probe = bool(_missing_seasons_from_json(tmdb_info, getattr(mapping_row, "rotten_tomatoes_seasons_json", None)))
+                    else:
+                        allow_probe = _is_empty_mapping_value(getattr(mapping_row, "rotten_tomatoes_url", None)) and _is_empty_mapping_value(
+                            getattr(mapping_row, "rotten_tomatoes_slug", None)
+                        )
+                elif platform == "metacritic":
+                    if (media_type or "").lower() == "tv":
+                        allow_probe = bool(_missing_seasons_from_json(tmdb_info, getattr(mapping_row, "metacritic_seasons_json", None)))
+                    else:
+                        allow_probe = _is_empty_mapping_value(getattr(mapping_row, "metacritic_url", None)) and _is_empty_mapping_value(
+                            getattr(mapping_row, "metacritic_slug", None)
+                        )
+                elif platform == "letterboxd":
+                    allow_probe = _is_empty_mapping_value(getattr(mapping_row, "letterboxd_url", None)) and _is_empty_mapping_value(
+                        getattr(mapping_row, "letterboxd_slug", None)
+                    )
+
+            if not allow_probe:
+                rating_info = create_rating_data(RATING_STATUS["LOCKED"], "平台已锁定，停止抓取")
+                logger.info(f"跳过抓取（平台已锁定）: platform={platform} media_type={media_type} tmdb_id={tmdb_id}")
+                rating_info["_performance"] = {
+                    "total_time": round(time.time() - start_time, 2),
+                    "search_time": 0,
+                    "extract_time": 0,
+                    "cached": False,
+                }
+                return rating_info
+            logger.info(
+                f"平台已锁定但映射不完整，允许本次按需探测补全: platform={platform} media_type={media_type} tmdb_id={tmdb_id}"
+            )
+
         search_start_time = time.time()
         extract_start_time = search_start_time
 
@@ -3571,7 +3727,8 @@ async def get_platform_rating(
                                 seasons_json = json.dumps({"1": direct_url}, ensure_ascii=False)
                             except Exception:
                                 seasons_json = '{"1": "' + direct_url.replace('"', '\\"') + '"}'
-                    if seasons_json:
+                    missing = _missing_seasons_from_json(tmdb_info, seasons_json)
+                    if seasons_json and not missing:
                         used_mapping = True
                         mapping_attempted = True
                         extract_start_time = time.time()
@@ -3595,6 +3752,7 @@ async def get_platform_rating(
                             if _should_upsert_mapping(db, platform, media_type, tmdb_id, patch):
                                 _upsert_media_link_mapping(
                                     db,
+                        platform,
                                     tmdb_info,
                                     patch,
                                     match_status=mapping_row.match_status if mapping_row else "auto",
@@ -3615,6 +3773,11 @@ async def get_platform_rating(
                                 f"该剧集在豆瓣存在映射但未通过映射抓取: tmdb_id={tmdb_id} status={status} reason={status_reason}"
                             )
                     else:
+                        if seasons_json and missing:
+                            logger.info(
+                                f"该剧集豆瓣映射缺少分季 {missing}，将跳过映射改为按需搜索补全: tmdb_id={tmdb_id}"
+                            )
+                        mapping_failed = True
                         logger.info(
                             f"该剧集在豆瓣存在映射但未通过映射抓取: tmdb_id={tmdb_id} reason=douban_seasons_json 为空"
                         )
@@ -3627,6 +3790,15 @@ async def get_platform_rating(
                 elif platform == "rottentomatoes":
                     if media_type == "tv":
                         seasons_json = str(mapping_dict.get("rotten_tomatoes_seasons_json") or "").strip()
+                        series_url = str(mapping_dict.get("rotten_tomatoes_url") or "").strip() or None
+                        missing = _missing_seasons_from_json(tmdb_info, seasons_json)
+                        if missing and series_url:
+                            cur = _parse_seasons_json_dict(seasons_json)
+                            for sn in missing:
+                                u = _rt_build_season_url(series_url, sn)
+                                if u:
+                                    cur[str(sn)] = u
+                            seasons_json = json.dumps(cur, ensure_ascii=False)
                         if seasons_json:
                             used_mapping = True
                             mapping_attempted = True
@@ -3634,7 +3806,7 @@ async def get_platform_rating(
                             rating_info = await rt_extract_rating_from_season_urls(
                                 tmdb_info,
                                 seasons_json=seasons_json,
-                                series_url=str(mapping_dict.get("rotten_tomatoes_url") or "").strip() or None,
+                                series_url=series_url,
                                 request=request,
                                 douban_cookie=douban_cookie,
                             )
@@ -3652,6 +3824,7 @@ async def get_platform_rating(
                                 if _should_upsert_mapping(db, platform, media_type, tmdb_id, patch):
                                     _upsert_media_link_mapping(
                                         db,
+                                        platform,
                                         tmdb_info,
                                         patch,
                                         match_status=mapping_row.match_status if mapping_row else "auto",
@@ -3678,6 +3851,15 @@ async def get_platform_rating(
                 elif platform == "metacritic":
                     if media_type == "tv":
                         seasons_json = str(mapping_dict.get("metacritic_seasons_json") or "").strip()
+                        series_url = str(mapping_dict.get("metacritic_url") or "").strip() or None
+                        missing = _missing_seasons_from_json(tmdb_info, seasons_json)
+                        if missing and series_url:
+                            cur = _parse_seasons_json_dict(seasons_json)
+                            for sn in missing:
+                                u = _metacritic_build_season_url(series_url, sn)
+                                if u:
+                                    cur[str(sn)] = u
+                            seasons_json = json.dumps(cur, ensure_ascii=False)
                         if seasons_json:
                             used_mapping = True
                             mapping_attempted = True
@@ -3685,7 +3867,7 @@ async def get_platform_rating(
                             rating_info = await metacritic_extract_rating_from_season_urls(
                                 tmdb_info,
                                 seasons_json=seasons_json,
-                                series_url=str(mapping_dict.get("metacritic_url") or "").strip() or None,
+                                series_url=series_url,
                                 request=request,
                                 douban_cookie=douban_cookie,
                             )
@@ -3703,6 +3885,7 @@ async def get_platform_rating(
                                 if _should_upsert_mapping(db, platform, media_type, tmdb_id, patch):
                                     _upsert_media_link_mapping(
                                         db,
+                                        platform,
                                         tmdb_info,
                                         patch,
                                         match_status=mapping_row.match_status if mapping_row else "auto",
@@ -3753,6 +3936,7 @@ async def get_platform_rating(
                         if _should_upsert_mapping(db, platform, media_type, tmdb_id, patch):
                             _upsert_media_link_mapping(
                                 db,
+                                platform,
                                 tmdb_info,
                                 patch,
                                 match_status=mapping_row.match_status if mapping_row else "auto",
@@ -3879,6 +4063,7 @@ async def get_platform_rating(
                 if _should_upsert_mapping(db, platform, media_type, tmdb_id, patch):
                     _upsert_media_link_mapping(
                         db,
+                        platform,
                         tmdb_info,
                         patch,
                         match_status="conflict",
@@ -3922,6 +4107,7 @@ async def get_platform_rating(
                         conf = None
                     _upsert_media_link_mapping(
                         db,
+                        platform,
                         tmdb_info,
                         patch,
                         match_status=ms,
@@ -6145,6 +6331,7 @@ async def save_manual_rating(
             if _should_upsert_mapping(db, platform, media_type, tid, patch):
                 _upsert_media_link_mapping(
                     db,
+                    platform,
                     tmdb_info,
                     patch,
                     match_status="manual",
@@ -6207,6 +6394,7 @@ async def create_manual_rating(
             if _should_upsert_mapping(db, platform, media_type, tid, patch):
                 _upsert_media_link_mapping(
                     db,
+                    platform,
                     tmdb_info,
                     patch,
                     match_status="manual",
