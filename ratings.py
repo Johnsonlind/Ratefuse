@@ -2825,36 +2825,128 @@ async def handle_letterboxd_search(page, search_url, tmdb_info):
                     return {"status": RATING_STATUS["RATE_LIMIT"], "status_reason": "Cloudflare 安全验证拦截，请稍后重试"}
                 print("Letterboxd未找到搜索结果")
                 return {"status": RATING_STATUS["NO_FOUND"], "status_reason": "平台未收录"}
-            
-            first_item = items[0]
-            try:
-                detail_path = None
-                title = "Unknown"
-                
-                detail_path = await first_item.get_attribute('data-item-link')
-                if detail_path:
-                    title = await first_item.get_attribute('data-item-name') or title
-                
-                if not detail_path:
-                    print("Letterboxd 无法提取详情页链接")
-                    html_snippet = await first_item.inner_html()
-                    print(f"HTML片段: {html_snippet[:500]}")
-                    return {"status": RATING_STATUS["NO_FOUND"], "status_reason": "平台未收录"}
-                
-                detail_url = f"https://letterboxd.com{detail_path}" if not detail_path.startswith('http') else detail_path
-                
-                print(f"Letterboxd找到匹配结果: {title}")
-                
-                r = {"title": title, "year": tmdb_info.get("year", ""), "url": detail_url, "match_score": 100}
-                if letterboxd_fs:
-                    r["_flaresolverr"] = letterboxd_fs
-                return [r]
-                
-            except Exception as e:
-                print(f"处理Letterboxd搜索结果项时出错: {e}")
-                import traceback
-                print(traceback.format_exc())
-                return {"status": RATING_STATUS["FETCH_FAILED"], "status_reason": "解析失败"}
+
+            async def _letterboxd_extract_external_ids_from_html(html: str) -> dict:
+                if not html:
+                    return {"tmdb_id": "", "imdb_id": ""}
+                try:
+                    return await page.evaluate(
+                        """(html) => {
+                            const doc = new DOMParser().parseFromString(html, 'text/html');
+                            const text = (doc.body && doc.body.innerText) ? doc.body.innerText : '';
+                            let tmdb = '';
+                            let imdb = '';
+                            const tmdbA = doc.querySelector('a[href*="themoviedb.org/movie/"], a[href*="themoviedb.org/tv/"]');
+                            if (tmdbA) {
+                                const href = tmdbA.getAttribute('href') || '';
+                                const m = href.match(/themoviedb\\.org\\/(?:movie|tv)\\/(\\d+)/i);
+                                if (m) tmdb = m[1];
+                            }
+                            if (!tmdb) {
+                                const m2 = text.match(/themoviedb\\.org\\/(?:movie|tv)\\/(\\d+)/i);
+                                if (m2) tmdb = m2[1];
+                            }
+                            const imdbA = doc.querySelector('a[href*="imdb.com/title/tt"]');
+                            if (imdbA) {
+                                const href = imdbA.getAttribute('href') || '';
+                                const m = href.match(/imdb\\.com\\/title\\/(tt\\d+)/i);
+                                if (m) imdb = m[1];
+                            }
+                            if (!imdb) {
+                                const m2 = text.match(/imdb\\.com\\/title\\/(tt\\d+)/i);
+                                if (m2) imdb = m2[1];
+                            }
+                            return { tmdb_id: tmdb || '', imdb_id: imdb || '' };
+                        }""",
+                        html,
+                    )
+                except Exception:
+                    return {"tmdb_id": "", "imdb_id": ""}
+
+            async def _letterboxd_score_candidate(detail_url: str, title: str, year_text: str) -> Optional[dict]:
+                """
+                Letterboxd search can return irrelevant first hits (especially for TV / unlisted titles).
+                We only accept a candidate if external IDs match TMDB/IMDb, or fuzzy match clears a higher bar.
+                """
+                try:
+                    resp = await page.context.request.get(detail_url, timeout=15000)
+                    if resp.status != 200:
+                        return None
+                    html = await resp.text()
+                except Exception:
+                    return None
+
+                ids = await _letterboxd_extract_external_ids_from_html(html)
+                want_tmdb = str(tmdb_info.get("tmdb_id") or tmdb_info.get("id") or "").strip()
+                want_imdb = str(tmdb_info.get("imdb_id") or "").strip()
+                want_imdb_norm = want_imdb if want_imdb.startswith("tt") else (f"tt{want_imdb}" if want_imdb.isdigit() else want_imdb)
+
+                got_tmdb = str(ids.get("tmdb_id") or "").strip()
+                got_imdb = str(ids.get("imdb_id") or "").strip()
+
+                if want_tmdb and got_tmdb and want_tmdb == got_tmdb:
+                    return {
+                        "title": title,
+                        "year": year_text or tmdb_info.get("year", ""),
+                        "url": detail_url,
+                        "match_score": 100,
+                        "tmdb_id": got_tmdb,
+                        "imdb_id": got_imdb or None,
+                        "_letterboxd_verify": "tmdb_id",
+                    }
+
+                if want_imdb_norm and got_imdb and want_imdb_norm.lower() == got_imdb.lower():
+                    return {
+                        "title": title,
+                        "year": year_text or tmdb_info.get("year", ""),
+                        "url": detail_url,
+                        "match_score": 100,
+                        "tmdb_id": got_tmdb or None,
+                        "imdb_id": got_imdb,
+                        "_letterboxd_verify": "imdb_id",
+                    }
+
+                cand = {"title": title, "year": year_text or tmdb_info.get("year", ""), "url": detail_url}
+                if got_imdb:
+                    cand["imdb_id"] = got_imdb
+                score = await calculate_match_degree(tmdb_info, cand, "letterboxd")
+                # Raise the acceptance bar vs generic search threshold to reduce false positives.
+                min_score = int(os.environ.get("LETTERBOXD_MIN_ACCEPT_SCORE", "92"))
+                if score and score >= min_score:
+                    cand["match_score"] = score
+                    cand["_letterboxd_verify"] = "fuzzy_high"
+                    return cand
+
+                return None
+
+            scored: list[dict] = []
+            for it in items:
+                try:
+                    detail_path = await it.get_attribute("data-item-link")
+                    title = (await it.get_attribute("data-item-name")) or "Unknown"
+                    year_text = (await it.get_attribute("data-item-year")) or ""
+                    if not detail_path:
+                        continue
+                    detail_url = f"https://letterboxd.com{detail_path}" if not detail_path.startswith("http") else detail_path
+                    c = await _letterboxd_score_candidate(detail_url, title, year_text)
+                    if c:
+                        if letterboxd_fs:
+                            c["_flaresolverr"] = letterboxd_fs
+                        scored.append(c)
+                except Exception:
+                    continue
+
+            if scored:
+                scored.sort(key=lambda x: int(x.get("match_score") or 0), reverse=True)
+                best = scored[0]
+                print(
+                    f"Letterboxd: 选中候选（{best.get('_letterboxd_verify')}，score={best.get('match_score')}）: "
+                    f"{best.get('title')} -> {best.get('url')}"
+                )
+                return [best]
+
+            print("Letterboxd: 搜索结果存在，但无法通过外部ID/高置信度校验，视为无可靠匹配")
+            return {"status": RATING_STATUS["NO_FOUND"], "status_reason": "平台未收录或无可靠匹配"}
             
         except Exception as e:
             print(f"处理Letterboxd搜索结果时出错: {e}")
