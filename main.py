@@ -3872,6 +3872,8 @@ async def get_platform_rating(
                             direct_url = f"https://letterboxd.com/film/{slug}/"
                 elif platform == "rottentomatoes":
                     if media_type == "tv":
+                        status = None
+                        status_reason = None
                         seasons_json = str(mapping_dict.get("rotten_tomatoes_seasons_json") or "").strip()
                         series_url = str(mapping_dict.get("rotten_tomatoes_url") or "").strip() or None
                         missing = _missing_seasons_from_json(tmdb_info, seasons_json)
@@ -3924,7 +3926,7 @@ async def get_platform_rating(
                             )
                         else:
                             logger.info(
-                                f"该剧集在rottentomatoes存在映射但未通过映射抓取: tmdb_id={tmdb_id} reason=douban_seasons_json 为空"
+                                f"该剧集在rottentomatoes存在映射但未通过映射抓取: tmdb_id={tmdb_id} reason=rotten_tomatoes_seasons_json 为空"
                             )
                     direct_url = str(mapping_dict.get("rotten_tomatoes_url") or "").strip()
                     if not direct_url:
@@ -3933,6 +3935,8 @@ async def get_platform_rating(
                             direct_url = f"https://www.rottentomatoes.com/{slug}"
                 elif platform == "metacritic":
                     if media_type == "tv":
+                        status = None
+                        status_reason = None
                         seasons_json = str(mapping_dict.get("metacritic_seasons_json") or "").strip()
                         series_url = str(mapping_dict.get("metacritic_url") or "").strip() or None
                         missing = _missing_seasons_from_json(tmdb_info, seasons_json)
@@ -3985,7 +3989,7 @@ async def get_platform_rating(
                             )
                         else:
                             logger.info(
-                                f"该剧集通过metacritic映射获取评分 {status} tmdb_id={tmdb_id} reason={status_reason}"
+                                f"该剧集在metacritic存在映射但未通过映射抓取: tmdb_id={tmdb_id} reason=metacritic_seasons_json 为空"
                             )
                     direct_url = str(mapping_dict.get("metacritic_url") or "").strip()
                     if not direct_url:
@@ -4038,7 +4042,12 @@ async def get_platform_rating(
                 mapping_failed = True
 
                 logger.info(
-                    f"该 {media_type} 在 {platform} 存在映射但未通过映射抓取 tmdb_id={tmdb_id} status={status} reason=exception"
+                    "该 {mt} 在 {pf} 存在映射但未通过映射抓取 tmdb_id={tid} status={st} reason=exception".format(
+                        mt=media_type,
+                        pf=platform,
+                        tid=tmdb_id,
+                        st=(rating_info.get("status") if isinstance(rating_info, dict) else None),
+                    )
                 )
 
         if not mapping_dict:
