@@ -3037,10 +3037,21 @@ def _mapping_patch_from_platform_result(platform: str, media_type: str, rating_d
             else:
                 patch["douban_seasons_json"] = sj
     elif platform == "letterboxd":
-        if url:
+        try:
+            lb_min_automap = int(os.environ.get("LETTERBOXD_MIN_AUTOMAP_MATCH_SCORE", "92"))
+        except Exception:
+            lb_min_automap = 92
+        try:
+            ms = float(rating_data.get("_match_score") or 0.0)
+        except Exception:
+            ms = 0.0
+        direct = bool(rating_data.get("direct_match"))
+        verified_lb = str(rating_data.get("_letterboxd_verify") or "").strip() in ("tmdb_id", "imdb_id")
+        allow_write = direct or verified_lb or (ms >= lb_min_automap)
+        if url and allow_write:
             patch["letterboxd_url"] = url
         slug = _extract_letterboxd_slug_from_url(url) if url else None
-        if slug:
+        if slug and allow_write:
             patch["letterboxd_slug"] = slug
     elif platform == "rottentomatoes":
         is_tv = (media_type or "").lower() == "tv"
