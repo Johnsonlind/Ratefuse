@@ -2830,36 +2830,9 @@ async def handle_letterboxd_search(page, search_url, tmdb_info):
                 if not html:
                     return {"tmdb_id": "", "imdb_id": ""}
                 try:
-                    return await page.evaluate(
-                        """(html) => {
-                            const doc = new DOMParser().parseFromString(html, 'text/html');
-                            const text = (doc.body && doc.body.innerText) ? doc.body.innerText : '';
-                            let tmdb = '';
-                            let imdb = '';
-                            const tmdbA = doc.querySelector('a[href*="themoviedb.org/movie/"], a[href*="themoviedb.org/tv/"]');
-                            if (tmdbA) {
-                                const href = tmdbA.getAttribute('href') || '';
-                                const m = href.match(/themoviedb\\.org\\/(?:movie|tv)\\/(\\d+)/i);
-                                if (m) tmdb = m[1];
-                            }
-                            if (!tmdb) {
-                                const m2 = text.match(/themoviedb\\.org\\/(?:movie|tv)\\/(\\d+)/i);
-                                if (m2) tmdb = m2[1];
-                            }
-                            const imdbA = doc.querySelector('a[href*="imdb.com/title/tt"]');
-                            if (imdbA) {
-                                const href = imdbA.getAttribute('href') || '';
-                                const m = href.match(/imdb\\.com\\/title\\/(tt\\d+)/i);
-                                if (m) imdb = m[1];
-                            }
-                            if (!imdb) {
-                                const m2 = text.match(/imdb\\.com\\/title\\/(tt\\d+)/i);
-                                if (m2) imdb = m2[1];
-                            }
-                            return { tmdb_id: tmdb || '', imdb_id: imdb || '' };
-                        }""",
-                        html,
-                    )
+                    tmdb_m = re.search(r"themoviedb\.org/(?:movie|tv)/(\d+)\b", html, flags=re.IGNORECASE)
+                    imdb_m = re.search(r"imdb\.com/title/(tt\d+)\b", html, flags=re.IGNORECASE)
+                    return {"tmdb_id": (tmdb_m.group(1) if tmdb_m else ""), "imdb_id": (imdb_m.group(1) if imdb_m else "")}
                 except Exception:
                     return {"tmdb_id": "", "imdb_id": ""}
 
@@ -2906,12 +2879,20 @@ async def handle_letterboxd_search(page, search_url, tmdb_info):
                         "_letterboxd_verify": "imdb_id",
                     }
 
+                allow_fuzzy = str(os.environ.get("LETTERBOXD_ALLOW_FUZZY_MATCH", "0")).strip().lower() in (
+                    "1",
+                    "true",
+                    "yes",
+                    "on",
+                )
+                if not allow_fuzzy:
+                    return None
+
                 cand = {"title": title, "year": year_text or tmdb_info.get("year", ""), "url": detail_url}
                 if got_imdb:
                     cand["imdb_id"] = got_imdb
                 score = await calculate_match_degree(tmdb_info, cand, "letterboxd")
-                # Raise the acceptance bar vs generic search threshold to reduce false positives.
-                min_score = int(os.environ.get("LETTERBOXD_MIN_ACCEPT_SCORE", "92"))
+                min_score = int(os.environ.get("LETTERBOXD_MIN_ACCEPT_SCORE", "98"))
                 if score and score >= min_score:
                     cand["match_score"] = score
                     cand["_letterboxd_verify"] = "fuzzy_high"
@@ -2965,6 +2946,53 @@ async def handle_letterboxd_search(page, search_url, tmdb_info):
                 await new_ctx.close()
             except Exception:
                 pass
+
+_LETTERBOXD_EXTERNAL_IDS_RE = re.compile(
+    r"(?:https?:)?//(?:www\.)?themoviedb\.org/(?:movie|tv)/(\d+)\b|(?:https?:)?//(?:www\.)?imdb\.com/title/(tt\d+)\b",
+    flags=re.IGNORECASE,
+)
+
+def _extract_letterboxd_external_ids_from_html(html: str) -> tuple[Optional[str], Optional[str]]:
+    if not html:
+        return None, None
+    tmdb_id = None
+    imdb_id = None
+    for m in _LETTERBOXD_EXTERNAL_IDS_RE.finditer(html):
+        g1, g2 = m.group(1), m.group(2)
+        if g1 and not tmdb_id:
+            tmdb_id = g1
+        if g2 and not imdb_id:
+            imdb_id = g2
+        if tmdb_id and imdb_id:
+            break
+    return tmdb_id, imdb_id
+
+def _letterboxd_detail_page_matches_tmdb(tmdb_info: dict, html: str) -> tuple[bool, str]:
+    """
+    Strict identity check for Letterboxd pages.
+
+    Returns (ok, reason). If the page contains no usable external IDs, we treat it as NOT verifiable
+    (fail closed) unless LETTERBOXD_RELAX_DETAIL_VERIFY=1.
+    """
+    want_tmdb = str(tmdb_info.get("tmdb_id") or tmdb_info.get("id") or "").strip()
+    want_imdb = str(tmdb_info.get("imdb_id") or "").strip()
+    want_imdb_norm = want_imdb if want_imdb.startswith("tt") else (f"tt{want_imdb}" if want_imdb.isdigit() else want_imdb)
+
+    got_tmdb, got_imdb = _extract_letterboxd_external_ids_from_html(html)
+    relax = str(os.environ.get("LETTERBOXD_RELAX_DETAIL_VERIFY", "0")).strip().lower() in ("1", "true", "yes", "on")
+
+    if want_tmdb and got_tmdb and want_tmdb == got_tmdb:
+        return True, "tmdb_id_match"
+    if want_imdb_norm and got_imdb and want_imdb_norm.lower() == got_imdb.lower():
+        return True, "imdb_id_match"
+
+    if got_tmdb or got_imdb:
+        return False, "external_id_mismatch"
+
+    if relax:
+        return True, "no_external_ids_relaxed"
+
+    return False, "no_external_ids"
     
 async def extract_rating_info(media_type, platform, tmdb_info, search_results, request=None, douban_cookie=None):
     """从各平台详情页中提取对应评分数据"""
@@ -3240,6 +3268,19 @@ async def extract_rating_info(media_type, platform, tmdb_info, search_results, r
                                 ret = create_empty_rating_data("letterboxd", media_type, RATING_STATUS["RATE_LIMIT"])
                                 ret["status_reason"] = "详情页触发 Cloudflare 安全验证，请稍后重试"
                                 return ret
+                        
+                        try:
+                            html = await page.content()
+                        except Exception:
+                            html = ""
+                        ok_lb, why = _letterboxd_detail_page_matches_tmdb(tmdb_info, html or "")
+                        if not ok_lb:
+                            ret = create_rating_data(
+                                RATING_STATUS["NO_FOUND"],
+                                "Letterboxd 页面无法校验为同一部 TMDB 作品（可能未收录或链接不匹配）",
+                            )
+                            ret["_letterboxd_verify_fail"] = why
+                            return ret
                     elif platform == "rottentomatoes":
                         await page.goto(detail_url, wait_until="domcontentloaded", timeout=9000)
                         await asyncio.sleep(0.3)
