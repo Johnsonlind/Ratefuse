@@ -473,6 +473,58 @@ async def set_cache(key: str, data: dict, expire: int = CACHE_EXPIRE_TIME):
     async with _local_cache_lock:
         _local_cache[key] = (expires_at, data)
 
+def _platform_absent_cache_key(platform: str, media_type: str, tmdb_id: int) -> str:
+    p = (platform or "").strip().lower()
+    mt = (media_type or "").strip().lower()
+    return f"platform_absent:{p}:{mt}:{int(tmdb_id)}"
+
+def _platform_absent_ttl_sec() -> int:
+    try:
+        return int(os.environ.get("PLATFORM_ABSENT_COOLDOWN_SEC", str(24 * 60 * 60)))
+    except Exception:
+        return 24 * 60 * 60
+
+async def get_platform_absent_marker(platform: str, media_type: str, tmdb_id: int) -> Optional[dict]:
+    if not redis:
+        return None
+    try:
+        raw = await redis.get(_platform_absent_cache_key(platform, media_type, tmdb_id))
+        if not raw:
+            return None
+        obj = json.loads(raw)
+        return obj if isinstance(obj, dict) else None
+    except Exception:
+        return None
+
+async def set_platform_absent_marker(platform: str, media_type: str, tmdb_id: int, payload: dict) -> None:
+    if not redis:
+        return
+    try:
+        ttl = _platform_absent_ttl_sec()
+        await redis.setex(
+            _platform_absent_cache_key(platform, media_type, tmdb_id),
+            max(60, int(ttl)),
+            json.dumps(payload, ensure_ascii=False),
+        )
+    except Exception as e:
+        logger.warning(f"写入 platform absent 冷却失败: {e}")
+
+def _should_mark_platform_absent(rating_info: Any) -> bool:
+    if not isinstance(rating_info, dict):
+        return False
+    if rating_info.get("status") != RATING_STATUS["NO_FOUND"]:
+        return False
+    reason = str(rating_info.get("status_reason") or "")
+    needles = (
+        "平台未收录",
+        "无可靠匹配",
+        "所有搜索策略都未找到匹配",
+        "未找到匹配",
+        "无法校验",
+        "不匹配",
+    )
+    return any(n in reason for n in needles)
+
 async def get_tmdb_info_cached(id: str, type: str, request: Request):
     cache_key = f"tmdb:info:{type}:{id}"
     cached = await get_cache(cache_key)
@@ -3646,6 +3698,26 @@ async def get_platform_rating(
         if tmdb_id is None:
             tmdb_id = tmdb_info.get("id")
 
+        try:
+            tid_int = int(tmdb_id) if tmdb_id is not None else None
+        except Exception:
+            tid_int = None
+        if tid_int is not None:
+            absent = await get_platform_absent_marker(platform, str(media_type).lower(), tid_int)
+            if absent:
+                rating_info = create_rating_data(
+                    RATING_STATUS["NO_FOUND"],
+                    "短期内已确认未收录（冷却中），跳过重试",
+                )
+                rating_info["_performance"] = {
+                    "total_time": round(time.time() - start_time, 2),
+                    "search_time": 0,
+                    "extract_time": 0,
+                    "cached": False,
+                    "absent_cooldown": True,
+                }
+                return rating_info
+
         mapping_row = None
         mapping_dict = None
         try:
@@ -4018,6 +4090,17 @@ async def get_platform_rating(
                         "extract_time": 0,
                         "cached": False,
                     }
+                    if tmdb_id is not None and _should_mark_platform_absent(rating_info):
+                        await set_platform_absent_marker(
+                            platform,
+                            media_type,
+                            int(tmdb_id),
+                            {
+                                "status": rating_info.get("status"),
+                                "status_reason": rating_info.get("status_reason"),
+                                "ttl_sec": _platform_absent_ttl_sec(),
+                            },
+                        )
                     if tmdb_id is not None:
                         update_platform_status_after_fetch(
                             db,
@@ -4055,6 +4138,17 @@ async def get_platform_rating(
                     "extract_time": round(time.time() - extract_start_time, 2),
                     "cached": False,
                 }
+                if tmdb_id is not None and _should_mark_platform_absent(rating_info):
+                    await set_platform_absent_marker(
+                        platform,
+                        media_type,
+                        int(tmdb_id),
+                        {
+                            "status": rating_info.get("status"),
+                            "status_reason": rating_info.get("status_reason"),
+                            "ttl_sec": _platform_absent_ttl_sec(),
+                        },
+                    )
                 if tmdb_id is not None:
                     update_platform_status_after_fetch(
                         db,
@@ -4159,6 +4253,17 @@ async def get_platform_rating(
                     status_reason=rating_info.get("status_reason"),
                 )
                 db.commit()
+            if tmdb_id is not None and _should_mark_platform_absent(rating_info):
+                await set_platform_absent_marker(
+                    platform,
+                    media_type,
+                    int(tmdb_id),
+                    {
+                        "status": rating_info.get("status"),
+                        "status_reason": rating_info.get("status_reason"),
+                        "ttl_sec": _platform_absent_ttl_sec(),
+                    },
+                )
 
         return rating_info
 
