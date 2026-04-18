@@ -3741,6 +3741,33 @@ async def get_platform_rating(
         except Exception:
             locked = False
         if locked:
+            try:
+                ps = (
+                    db.query(MediaPlatformStatus)
+                    .filter(
+                        func.lower(MediaPlatformStatus.media_type) == (media_type or "").lower(),
+                        MediaPlatformStatus.tmdb_id == int(tmdb_id),
+                        func.lower(MediaPlatformStatus.platform) == (platform or "").lower(),
+                        MediaPlatformStatus.status == "locked",
+                    )
+                    .one_or_none()
+                )
+            except Exception:
+                ps = None
+            remark = str(getattr(ps, "remark", "") or "")
+            if any(k in remark for k in ("未收录", "不再尝试", "do not retry", "unlisted")):
+                rating_info = create_rating_data(RATING_STATUS["LOCKED"], "平台已锁定（未收录），停止抓取")
+                logger.info(
+                    f"跳过抓取（平台未收录已锁定）: platform={platform} media_type={media_type} tmdb_id={tmdb_id}"
+                )
+                rating_info["_performance"] = {
+                    "total_time": round(time.time() - start_time, 2),
+                    "search_time": 0,
+                    "extract_time": 0,
+                    "cached": False,
+                }
+                return rating_info
+
             allow_probe = False
             if mapping_row is None:
                 allow_probe = True
