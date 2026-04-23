@@ -3756,17 +3756,36 @@ async def get_platform_rating(
                 ps = None
             remark = str(getattr(ps, "remark", "") or "")
             if any(k in remark for k in ("未收录", "不再尝试", "do not retry", "unlisted")):
-                rating_info = create_rating_data(RATING_STATUS["LOCKED"], "平台已锁定（未收录），停止抓取")
+                try:
+                    recheck_sec = int(os.environ.get("UNLISTED_LOCK_RECHECK_SEC", str(7 * 24 * 60 * 60)))
+                except Exception:
+                    recheck_sec = 7 * 24 * 60 * 60
+                try:
+                    last_changed_at = getattr(ps, "last_status_changed_at", None)
+                    elapsed = (_shanghai_naive_now() - last_changed_at).total_seconds() if last_changed_at else None
+                except Exception:
+                    elapsed = None
+
+                if elapsed is None or elapsed < recheck_sec:
+                    remain = max(0, int(recheck_sec - (elapsed or 0)))
+                    rating_info = create_rating_data(
+                        RATING_STATUS["LOCKED"],
+                        f"平台已锁定（未收录），冷却后再探测（剩余约 {remain}s）",
+                    )
+                    logger.info(
+                        f"跳过抓取（平台未收录已锁定，冷却中）: platform={platform} media_type={media_type} tmdb_id={tmdb_id} remain={remain}s"
+                    )
+                    rating_info["_performance"] = {
+                        "total_time": round(time.time() - start_time, 2),
+                        "search_time": 0,
+                        "extract_time": 0,
+                        "cached": False,
+                    }
+                    return rating_info
+
                 logger.info(
-                    f"跳过抓取（平台未收录已锁定）: platform={platform} media_type={media_type} tmdb_id={tmdb_id}"
+                    f"平台未收录锁冷却已到，允许本次再探测: platform={platform} media_type={media_type} tmdb_id={tmdb_id} elapsed={int(elapsed)}s"
                 )
-                rating_info["_performance"] = {
-                    "total_time": round(time.time() - start_time, 2),
-                    "search_time": 0,
-                    "extract_time": 0,
-                    "cached": False,
-                }
-                return rating_info
 
             allow_probe = False
             if mapping_row is None:
