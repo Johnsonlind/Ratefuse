@@ -1,6 +1,8 @@
 // ==========================================
 // 多语言数据回退工具(API侧)
 // ==========================================
+import { pickPreferredTmdbImagePath } from './tmdbImagePriority';
+
 const LANGUAGE_PRIORITY = ['zh-CN', 'zh', 'zh-SG', 'zh-TW', 'zh-HK', 'en'] as const;
 
 type LanguageCode = typeof LANGUAGE_PRIORITY[number];
@@ -42,50 +44,9 @@ function getNestedValue(obj: any, path: string): any {
   return path.split('.').reduce((current, key) => current?.[key], obj);
 }
 
-function normalizeLanguageTag(language: string | null | undefined): string {
-  return (language || '').trim().toLowerCase().replace('_', '-');
-}
-
-function matchesLanguage(candidate: string | null | undefined, target: string): boolean {
-  const candidateNorm = normalizeLanguageTag(candidate);
-  const targetNorm = normalizeLanguageTag(target);
-  if (!candidateNorm || !targetNorm) return false;
-  if (candidateNorm === targetNorm || candidateNorm.startsWith(`${targetNorm}-`)) return true;
-  const candidateBase = candidateNorm.split('-')[0];
-  const targetBase = targetNorm.split('-')[0];
-  return candidateBase === targetBase;
-}
-
-function normalizeRegionTag(region: string | null | undefined): string {
-  return (region || '').trim().toUpperCase();
-}
-
-function getPosterPriority(poster: TmdbImageItem, originalLanguage: string | null | undefined): number {
-  const lang = normalizeLanguageTag(poster.iso_639_1);
-  const region = normalizeRegionTag(poster.iso_3166_1);
-  const original = normalizeLanguageTag(originalLanguage);
-
-  if (!poster.file_path) return 999;
-  if (matchesLanguage(lang, 'zh')) {
-    if (region === 'CN') return 0;
-    if (region === 'SG') return 1;
-    if (region === 'TW') return 2;
-    if (region === 'HK') return 3;
-    return 4;
-  }
-  if (matchesLanguage(lang, 'en')) return 5;
-  if (original && matchesLanguage(lang, original)) return 6;
-  if (poster.iso_639_1 === null) return 7;
-  return 8;
-}
-
 function pickPreferredPosterPath(data: any): string | undefined {
   const posters: TmdbImageItem[] = Array.isArray(data?.images?.posters) ? data.images.posters : [];
-  if (posters.length === 0) return undefined;
-  const sorted = posters
-    .filter((poster) => !!poster.file_path)
-    .sort((a, b) => getPosterPriority(a, data?.original_language) - getPosterPriority(b, data?.original_language));
-  return sorted[0]?.file_path;
+  return pickPreferredTmdbImagePath(posters, data?.original_language);
 }
 
 export function mergeMultiLanguageData(dataList: Array<{ data: any; lang: LanguageCode }>): any {
