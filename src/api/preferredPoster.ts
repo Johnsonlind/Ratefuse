@@ -9,9 +9,9 @@ type MediaType = 'movie' | 'tv';
 type TmdbPoster = {
   file_path?: string;
   iso_639_1?: string | null;
+  iso_3166_1?: string | null;
 };
 
-const POSTER_LANGUAGE_PRIORITY = ['zh-CN', 'zh', 'zh-SG', 'zh-TW', 'zh-HK', 'en'] as const;
 const posterPromiseCache = new Map<string, Promise<string>>();
 
 function normalizeLanguageTag(language: string | null | undefined): string {
@@ -28,29 +28,67 @@ function matchesLanguage(candidate: string | null | undefined, target: string): 
   return candidateBase === targetBase;
 }
 
+function normalizeRegionTag(region: string | null | undefined): string {
+  return (region || '').trim().toUpperCase();
+}
+
+function getPosterPriority(poster: TmdbPoster, originalLanguage: string | null | undefined): number {
+  const lang = normalizeLanguageTag(poster.iso_639_1);
+  const region = normalizeRegionTag(poster.iso_3166_1);
+  const original = normalizeLanguageTag(originalLanguage);
+
+  if (!poster.file_path) return 999;
+
+  if (matchesLanguage(lang, 'zh')) {
+    if (region === 'CN') return 0;
+    if (region === 'SG') return 1;
+    if (region === 'TW') return 2;
+    if (region === 'HK') return 3;
+    return 4;
+  }
+
+  if (matchesLanguage(lang, 'en')) return 5;
+  if (original && matchesLanguage(lang, original)) return 6;
+  if (poster.iso_639_1 === null) return 7;
+  return 8;
+}
+
 function pickPreferredPosterPath(
   posters: TmdbPoster[],
   originalLanguage: string | null | undefined
 ): string | undefined {
   if (!Array.isArray(posters) || posters.length === 0) return undefined;
 
-  for (const lang of POSTER_LANGUAGE_PRIORITY) {
-    const match = posters.find((poster) => poster.file_path && matchesLanguage(poster.iso_639_1, lang));
-    if (match?.file_path) return match.file_path;
+  const sorted = posters
+    .filter((poster) => !!poster.file_path)
+    .sort((a, b) => getPosterPriority(a, originalLanguage) - getPosterPriority(b, originalLanguage));
+  return sorted[0]?.file_path;
+}
+
+async function fetchImagesPayload(mediaType: MediaType, mediaId: string | number): Promise<any | null> {
+  const maxAttempts = 2;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const response = await fetch(
+        buildTmdbApiUrl(`${mediaType}/${mediaId}/images`, {
+          include_image_language: 'zh-CN,zh-SG,zh-TW,zh-HK,zh,en,null',
+        })
+      );
+      if (response.ok) return await response.json();
+      if (response.status === 429 && attempt < maxAttempts) {
+        await new Promise((resolve) => setTimeout(resolve, 200 * attempt));
+        continue;
+      }
+      return null;
+    } catch {
+      if (attempt < maxAttempts) {
+        await new Promise((resolve) => setTimeout(resolve, 120 * attempt));
+        continue;
+      }
+      return null;
+    }
   }
-
-  const originalLanguageNorm = normalizeLanguageTag(originalLanguage);
-  if (originalLanguageNorm) {
-    const originalMatch = posters.find(
-      (poster) => poster.file_path && matchesLanguage(poster.iso_639_1, originalLanguageNorm)
-    );
-    if (originalMatch?.file_path) return originalMatch.file_path;
-  }
-
-  const noLanguageMatch = posters.find((poster) => poster.file_path && poster.iso_639_1 === null);
-  if (noLanguageMatch?.file_path) return noLanguageMatch.file_path;
-
-  return posters.find((poster) => poster.file_path)?.file_path;
+  return null;
 }
 
 export async function getPreferredPosterUrlForMedia(
@@ -65,24 +103,17 @@ export async function getPreferredPosterUrlForMedia(
   if (cached) return cached;
 
   const task = (async () => {
-    try {
-      const response = await fetch(
-        buildTmdbApiUrl(`${mediaType}/${mediaId}`, {
-          language: 'zh-CN',
-          append_to_response: 'images',
-          include_image_language: 'zh,en,null',
-        })
-      );
-      if (!response.ok) return fallbackUrl;
+    const [detailData, imagesData] = await Promise.all([
+      fetch(buildTmdbApiUrl(`${mediaType}/${mediaId}`, { language: 'zh-CN' }))
+        .then((r) => (r.ok ? r.json() : null))
+        .catch(() => null),
+      fetchImagesPayload(mediaType, mediaId),
+    ]);
 
-      const data = await response.json();
-      const posters: TmdbPoster[] = Array.isArray(data?.images?.posters) ? data.images.posters : [];
-      const preferredPath = pickPreferredPosterPath(posters, data?.original_language);
-      if (!preferredPath) return fallbackUrl;
-      return posterPathToSiteUrl(preferredPath, size);
-    } catch {
-      return fallbackUrl;
-    }
+    const posters: TmdbPoster[] = Array.isArray(imagesData?.posters) ? imagesData.posters : [];
+    const preferredPath = pickPreferredPosterPath(posters, detailData?.original_language);
+    if (!preferredPath) return fallbackUrl;
+    return posterPathToSiteUrl(preferredPath, size);
   })();
 
   posterPromiseCache.set(key, task);
