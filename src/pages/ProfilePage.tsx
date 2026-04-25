@@ -24,6 +24,7 @@ import { ResourcePlatformRow } from '../modules/resources/ResourcePlatformRow';
 import { ResourceLinkDialog } from '../modules/resources/ResourceLinkDialog';
 import { MEMBERSHIP_ENABLED } from '../config/features';
 import { hasMemberPrivileges } from '../shared/utils/membershipAccess';
+import { getPreferredPosterUrlForMedia } from '../api/preferredPoster';
 
 const formatChinaTime = (value?: string | null) => formatChinaDateTime(value);
 
@@ -71,6 +72,21 @@ interface Following {
   avatar: string;
   note: string | null;
   created_at: string;
+}
+
+async function enrichFavoritePosters(favorites: Favorite[] = []): Promise<Favorite[]> {
+  return await Promise.all(
+    favorites.map(async (favorite) => {
+      const mediaType = favorite.media_type === 'tv' ? 'tv' : 'movie';
+      const preferredPoster = await getPreferredPosterUrlForMedia(
+        mediaType,
+        favorite.media_id,
+        favorite.poster || '',
+        'w500'
+      );
+      return { ...favorite, poster: preferredPoster || favorite.poster };
+    })
+  );
 }
 
 const useElementSize = () => {
@@ -371,7 +387,14 @@ export default function ProfilePage() {
             throw new Error(`HTTP ${response.status}`);
           }
           const data = await response.json();
-          setLists(Array.isArray(data) ? data : []);
+          const normalized = Array.isArray(data) ? data : [];
+          const enriched = await Promise.all(
+            normalized.map(async (list) => ({
+              ...list,
+              favorites: await enrichFavoritePosters(list.favorites || []),
+            }))
+          );
+          setLists(enriched);
           setListsLoadError(null);
           return;
         } catch (error) {
