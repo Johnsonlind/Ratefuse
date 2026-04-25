@@ -652,26 +652,65 @@ class ChartScraper:
                 if not popular_items:
                     logger.warning("Letterboxd Popular: 未命中榜单节点，可能是页面结构变化或仍被拦截")
                 results = []
+                missing_title_count = 0
+                missing_link_count = 0
+                missing_film_id_count = 0
                 
                 for i, item in enumerate(popular_items[:10], 1):
                     try:
                         title_elem = await item.query_selector('[data-item-name]')
+                        title = ""
+                        link = ""
+                        film_id = ""
                         if title_elem:
-                            title = await title_elem.get_attribute('data-item-name')
-                            link = await title_elem.get_attribute('data-item-link')
-                            film_id = await title_elem.get_attribute('data-film-id')
-                            
-                            if title and link and film_id:
-                                results.append({
-                                    'rank': i,
-                                    'title': title,
-                                    'letterboxd_id': film_id,
-                                    'url': f"https://letterboxd.com{link}"
-                                })
+                            title = (await title_elem.get_attribute('data-item-name') or "").strip()
+                            link = (await title_elem.get_attribute('data-item-link') or "").strip()
+                            film_id = (await title_elem.get_attribute('data-film-id') or "").strip()
+
+                        if not title:
+                            title = (await item.get_attribute('data-item-name') or "").strip()
+                        if not link:
+                            link = (await item.get_attribute('data-item-link') or "").strip()
+                        if not film_id:
+                            film_id = (await item.get_attribute('data-film-id') or "").strip()
+
+                        if not title:
+                            img = await item.query_selector('img[alt]')
+                            if img:
+                                title = (await img.get_attribute('alt') or "").strip()
+                        if not link:
+                            anchor = await item.query_selector('a[href*="/film/"]')
+                            if anchor:
+                                link = (await anchor.get_attribute('href') or "").strip()
+
+                        if title and link:
+                            if not link.startswith("http"):
+                                if not link.startswith("/"):
+                                    link = "/" + link
+                                full_url = f"https://letterboxd.com{link}"
+                            else:
+                                full_url = link
+                            if not film_id:
+                                missing_film_id_count += 1
+                            results.append({
+                                'rank': i,
+                                'title': title,
+                                'letterboxd_id': film_id,
+                                'url': full_url
+                            })
+                        else:
+                            if not title:
+                                missing_title_count += 1
+                            if not link:
+                                missing_link_count += 1
                     except Exception as e:
                         logger.error(f"处理Letterboxd榜单项时出错: {e}")
                         continue
                 logger.info(f"Letterboxd Popular: 抓取解析完成，结果 {len(results)} 条")
+                logger.info(
+                    f"Letterboxd Popular: 字段缺失统计 missing_title={missing_title_count}, "
+                    f"missing_link={missing_link_count}, missing_film_id={missing_film_id_count}"
+                )
                 if results:
                     logger.info(f"Letterboxd Popular: 示例首条 title={results[0].get('title','')} rank={results[0].get('rank')}")
                         
