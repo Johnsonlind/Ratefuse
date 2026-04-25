@@ -98,11 +98,17 @@ const toTmdbImagePath = (path: string | null | undefined, size = 'original') => 
 const shuffle = <T,>(arr: T[]) => [...arr].sort(() => Math.random() - 0.5);
 
 function pickLogo(logos: Array<{ file_path?: string; iso_639_1?: string | null }> = []) {
+  const normalize = (lang?: string | null) => (lang || '').trim().toLowerCase();
+  const pickBy = (target: string) =>
+    logos.find((x) => {
+      const lang = normalize(x.iso_639_1);
+      if (!lang) return false;
+      return lang === target || lang.startsWith(`${target}-`) || lang.split('-')[0] === target;
+    });
   const preferred =
-    logos.find((x) => x.iso_639_1 === 'zh') ||
-    logos.find((x) => x.iso_639_1 === 'cn') ||
+    pickBy('zh') ||
+    pickBy('en') ||
     logos.find((x) => x.iso_639_1 === null) ||
-    logos.find((x) => x.iso_639_1 === 'en') ||
     logos[0];
   return toTmdbImagePath(preferred?.file_path, HERO_IMAGE_SIZE);
 }
@@ -627,7 +633,7 @@ function HeroCarousel({
           buildTmdbApiUrl(`${item.type}/${item.id}`, {
             language: 'zh-CN',
             append_to_response: 'images',
-            include_image_language: `zh,cn,${NO_LANG},en`,
+            include_image_language: `zh,en,${NO_LANG}`,
           })
         );
         if (!res.ok) throw new Error('加载轮播详情失败');
