@@ -85,4 +85,3 @@ export async function getPreferredPosterUrlForMedia(
   posterPromiseCache.set(key, task);
   return task;
 }
-
