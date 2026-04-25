@@ -18,6 +18,7 @@ import { useAggressiveImagePreload } from '../shared/hooks/useAggressiveImagePre
 import { PageShell } from '../modules/layout/PageShell';
 import { usePageMeta } from '../shared/hooks/usePageMeta';
 import { authFetch } from '../api/authFetch';
+import { getPreferredPosterUrlForMedia } from '../api/preferredPoster';
 interface Creator {
   id: number;
   username: string;
@@ -48,6 +49,21 @@ interface Favorite {
   overview: string;
   note: string | null;
   sort_order: number | null;
+}
+
+async function enrichFavoritePosters(favorites: Favorite[] = []): Promise<Favorite[]> {
+  return await Promise.all(
+    favorites.map(async (favorite) => {
+      const mediaType = favorite.media_type === 'tv' ? 'tv' : 'movie';
+      const preferredPoster = await getPreferredPosterUrlForMedia(
+        mediaType,
+        favorite.media_id,
+        favorite.poster || '',
+        'w500'
+      );
+      return { ...favorite, poster: preferredPoster || favorite.poster };
+    })
+  );
 }
 
 type SortType = 'time_desc' | 'time_asc' | 'name_asc' | 'name_desc' | 'custom' | 'custom_edit';
@@ -117,9 +133,10 @@ export default function FavoriteListPage() {
           const data = await response.json();
 
           if (data && Array.isArray(data.favorites)) {
+            const enrichedFavorites = await enrichFavoritePosters(data.favorites);
             const processedData: FavoriteList = {
               ...data,
-              favorites: data.favorites,
+              favorites: enrichedFavorites,
             };
 
             const hasCustomSort = processedData.favorites.some(
