@@ -67,7 +67,7 @@ export async function getPreferredPosterUrlForMedia(
         buildTmdbApiUrl(`${mediaType}/${mediaId}`, {
           language: 'zh-CN',
           append_to_response: 'images',
-          include_image_language: 'zh-CN,zh-SG,zh-TW,zh-HK,en,null',
+          include_image_language: 'zh-CN,zh,zh-SG,zh-TW,zh-HK,en,null',
         })
       );
       if (!response.ok) return fallbackUrl;
