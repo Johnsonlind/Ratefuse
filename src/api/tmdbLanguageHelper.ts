@@ -5,11 +5,10 @@ const LANGUAGE_PRIORITY = ['zh-CN', 'zh', 'zh-SG', 'zh-TW', 'zh-HK', 'en'] as co
 
 type LanguageCode = typeof LANGUAGE_PRIORITY[number];
 
-const POSTER_LANGUAGE_PRIORITY = ['zh-CN', 'zh', 'zh-SG', 'zh-TW', 'zh-HK', 'en'] as const;
-
 type TmdbImageItem = {
   file_path?: string;
   iso_639_1?: string | null;
+  iso_3166_1?: string | null;
 };
 
 function isEmpty(value: any): boolean {
@@ -57,27 +56,36 @@ function matchesLanguage(candidate: string | null | undefined, target: string): 
   return candidateBase === targetBase;
 }
 
+function normalizeRegionTag(region: string | null | undefined): string {
+  return (region || '').trim().toUpperCase();
+}
+
+function getPosterPriority(poster: TmdbImageItem, originalLanguage: string | null | undefined): number {
+  const lang = normalizeLanguageTag(poster.iso_639_1);
+  const region = normalizeRegionTag(poster.iso_3166_1);
+  const original = normalizeLanguageTag(originalLanguage);
+
+  if (!poster.file_path) return 999;
+  if (matchesLanguage(lang, 'zh')) {
+    if (region === 'CN') return 0;
+    if (region === 'SG') return 1;
+    if (region === 'TW') return 2;
+    if (region === 'HK') return 3;
+    return 4;
+  }
+  if (matchesLanguage(lang, 'en')) return 5;
+  if (original && matchesLanguage(lang, original)) return 6;
+  if (poster.iso_639_1 === null) return 7;
+  return 8;
+}
+
 function pickPreferredPosterPath(data: any): string | undefined {
   const posters: TmdbImageItem[] = Array.isArray(data?.images?.posters) ? data.images.posters : [];
   if (posters.length === 0) return undefined;
-
-  for (const lang of POSTER_LANGUAGE_PRIORITY) {
-    const match = posters.find((poster) => poster.file_path && matchesLanguage(poster.iso_639_1, lang));
-    if (match?.file_path) return match.file_path;
-  }
-
-  const originalLanguage = normalizeLanguageTag(data?.original_language);
-  if (originalLanguage) {
-    const originalMatch = posters.find(
-      (poster) => poster.file_path && matchesLanguage(poster.iso_639_1, originalLanguage)
-    );
-    if (originalMatch?.file_path) return originalMatch.file_path;
-  }
-
-  const noLanguageMatch = posters.find((poster) => poster.file_path && poster.iso_639_1 === null);
-  if (noLanguageMatch?.file_path) return noLanguageMatch.file_path;
-
-  return posters.find((poster) => poster.file_path)?.file_path;
+  const sorted = posters
+    .filter((poster) => !!poster.file_path)
+    .sort((a, b) => getPosterPriority(a, data?.original_language) - getPosterPriority(b, data?.original_language));
+  return sorted[0]?.file_path;
 }
 
 export function mergeMultiLanguageData(dataList: Array<{ data: any; lang: LanguageCode }>): any {
