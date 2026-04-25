@@ -12,7 +12,6 @@ import { useAggressiveImagePreload } from '../shared/hooks/useAggressiveImagePre
 import { PageShell } from '../modules/layout/PageShell';
 import { usePageMeta } from '../shared/hooks/usePageMeta';
 import { posterPathToSiteUrl } from '../api/image';
-import { getPreferredPosterUrlForMedia } from '../api/preferredPoster';
 const DOWNSCALE_SIZE = 'w500';
 
 const resolvePosterUrl = (poster: string) => posterPathToSiteUrl(poster, DOWNSCALE_SIZE);
@@ -171,16 +170,6 @@ interface ChartSection {
   entries: ChartEntry[];
 }
 
-async function enrichChartEntriesPosters(entries: ChartEntry[] = []): Promise<ChartEntry[]> {
-  return await Promise.all(
-    entries.map(async (entry) => {
-      const mediaType = entry.media_type === 'tv' ? 'tv' : 'movie';
-      const preferredPoster = await getPreferredPosterUrlForMedia(mediaType, entry.tmdb_id, entry.poster || '', DOWNSCALE_SIZE);
-      return { ...entry, poster: preferredPoster || entry.poster };
-    })
-  );
-}
-
 export default function ChartsPage() {
   usePageMeta({
     title: '榜单 - RateFuse',
@@ -214,14 +203,12 @@ export default function ChartsPage() {
         throw new Error('获取榜单数据失败');
       }
       const data = await response.json() as ChartSection[];
-      return await Promise.all(
-        data.map(async (chart) => ({
-          ...chart,
-          platform: PLATFORM_NAME_MAP[chart.platform] || chart.platform,
-          chart_name: CHART_NAME_MAP[chart.chart_name] || chart.chart_name,
-          entries: await enrichChartEntriesPosters(chart.entries || []),
-        }))
-      );
+      return data.map((chart) => ({
+        ...chart,
+        platform: PLATFORM_NAME_MAP[chart.platform] || chart.platform,
+        chart_name: CHART_NAME_MAP[chart.chart_name] || chart.chart_name,
+        entries: chart.entries || [],
+      }));
     },
     placeholderData: (previousData) => previousData,
     staleTime: 60 * 1000,
