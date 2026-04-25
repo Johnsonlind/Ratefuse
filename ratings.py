@@ -11,9 +11,7 @@ import traceback
 from fuzzywuzzy import fuzz
 import copy
 import aiohttp
-from urllib.parse import quote
-from dataclasses import dataclass
-from fastapi import Request
+from urllib.parse import quote, urlparse, parse_qs, unquote
 import unicodedata
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -1427,6 +1425,7 @@ async def search_platform(platform, tmdb_info, request=None, douban_cookie=None)
                 elif platform == "douban":
                     await _playwright_stealth_optional(page)
 
+                    headers = {}
                     if douban_cookie:
                         headers['Cookie'] = douban_cookie
                         print(f"✅ 豆瓣请求使用用户自定义Cookie（长度: {len(douban_cookie)}）")
