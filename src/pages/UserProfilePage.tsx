@@ -10,6 +10,7 @@ import { PageShell } from '../modules/layout/PageShell';
 import { usePageMeta } from '../shared/hooks/usePageMeta';
 import { formatChinaDate } from '../shared/utils/time';
 import { ConfirmDialog } from '../shared/ui/ConfirmDialog';
+import { getPreferredPosterUrlForMedia } from '../api/preferredPoster';
 
 interface Creator {
   id: number;
@@ -39,6 +40,21 @@ interface Favorite {
   overview?: string;
   note?: string | null;
   sort_order: number | null;
+}
+
+async function enrichFavoritePosters(favorites: Favorite[] = []): Promise<Favorite[]> {
+  return await Promise.all(
+    favorites.map(async (favorite) => {
+      const mediaType = favorite.media_type === 'tv' ? 'tv' : 'movie';
+      const preferredPoster = await getPreferredPosterUrlForMedia(
+        mediaType,
+        favorite.media_id,
+        favorite.poster || '',
+        'w500'
+      );
+      return { ...favorite, poster: preferredPoster || favorite.poster };
+    })
+  );
 }
 
 export default function UserProfilePage() {
@@ -103,7 +119,13 @@ export default function UserProfilePage() {
             ]);
 
             userData = nextUserData;
-            listsData = Array.isArray(nextListsData) ? nextListsData : [];
+            const normalizedLists = Array.isArray(nextListsData) ? nextListsData : [];
+            listsData = await Promise.all(
+              normalizedLists.map(async (list: FavoriteList) => ({
+                ...list,
+                favorites: await enrichFavoritePosters(list.favorites || []),
+              }))
+            );
             break;
           } catch (error) {
             if (attempt === maxAttempts) throw error;
