@@ -51,7 +51,10 @@ function matchesLanguage(candidate: string | null | undefined, target: string): 
   const candidateNorm = normalizeLanguageTag(candidate);
   const targetNorm = normalizeLanguageTag(target);
   if (!candidateNorm || !targetNorm) return false;
-  return candidateNorm === targetNorm || candidateNorm.startsWith(`${targetNorm}-`);
+  if (candidateNorm === targetNorm || candidateNorm.startsWith(`${targetNorm}-`)) return true;
+  const candidateBase = candidateNorm.split('-')[0];
+  const targetBase = targetNorm.split('-')[0];
+  return candidateBase === targetBase;
 }
 
 function pickPreferredPosterPath(data: any): string | undefined {
