@@ -12,7 +12,7 @@ export async function getMovie(id: string): Promise<Movie> {
   const data = await fetchTMDBWithLanguageFallback(
     `${TMDB.baseUrl}/movie/${id}`,
     {
-      include_image_language: 'zh-CN,zh-SG,zh-TW,zh-HK,en,null',
+      include_image_language: 'zh-CN,zh,zh-SG,zh-TW,zh-HK,en,null',
     },
     'credits,release_dates,images'
   );
