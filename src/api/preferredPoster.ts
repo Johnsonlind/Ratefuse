@@ -22,7 +22,10 @@ function matchesLanguage(candidate: string | null | undefined, target: string): 
   const candidateNorm = normalizeLanguageTag(candidate);
   const targetNorm = normalizeLanguageTag(target);
   if (!candidateNorm || !targetNorm) return false;
-  return candidateNorm === targetNorm || candidateNorm.startsWith(`${targetNorm}-`);
+  if (candidateNorm === targetNorm || candidateNorm.startsWith(`${targetNorm}-`)) return true;
+  const candidateBase = candidateNorm.split('-')[0];
+  const targetBase = targetNorm.split('-')[0];
+  return candidateBase === targetBase;
 }
 
 function pickPreferredPosterPath(
@@ -67,7 +70,7 @@ export async function getPreferredPosterUrlForMedia(
         buildTmdbApiUrl(`${mediaType}/${mediaId}`, {
           language: 'zh-CN',
           append_to_response: 'images',
-          include_image_language: 'zh-CN,zh,zh-SG,zh-TW,zh-HK,en,null',
+          include_image_language: 'zh,en,null',
         })
       );
       if (!response.ok) return fallbackUrl;
