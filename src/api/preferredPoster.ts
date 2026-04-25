@@ -11,7 +11,7 @@ type TmdbPoster = {
   iso_639_1?: string | null;
 };
 
-const POSTER_LANGUAGE_PRIORITY = ['zh-CN', 'zh-SG', 'zh-TW', 'zh-HK', 'en'] as const;
+const POSTER_LANGUAGE_PRIORITY = ['zh-CN', 'zh', 'zh-SG', 'zh-TW', 'zh-HK', 'en'] as const;
 const posterPromiseCache = new Map<string, Promise<string>>();
 
 function normalizeLanguageTag(language: string | null | undefined): string {
