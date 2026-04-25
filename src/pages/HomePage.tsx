@@ -22,6 +22,7 @@ import { toast } from 'sonner';
 import { ConfirmDialog } from '../shared/ui/ConfirmDialog';
 import { toSiteTmdbImageUrl } from '../api/image';
 import { buildTmdbApiUrl, TMDB } from '../api/api';
+import { getPreferredPosterUrlForMedia } from '../api/preferredPoster';
 const DOWNSCALE_SIZE = 'w500';
 const HERO_IMAGE_SIZE = 'original';
 const HERO_BG_SIZE = 'w780';
@@ -46,6 +47,17 @@ type AggregateCharts = {
   top_tv?: Array<{ id: number; type: 'movie' | 'tv'; title: string; poster: string }>;
   top_chinese_tv?: Array<{ id: number; type: 'movie' | 'tv'; title: string; poster: string }>;
 };
+
+async function enrichTopEntriesPosters(
+  entries: Array<{ id: number; type: 'movie' | 'tv'; title: string; poster: string }> = []
+) {
+  return await Promise.all(
+    entries.map(async (entry) => ({
+      ...entry,
+      poster: await getPreferredPosterUrlForMedia(entry.type, entry.id, entry.poster || '', DOWNSCALE_SIZE),
+    }))
+  );
+}
 
 type ChartEntry = { id: number; type: 'movie' | 'tv'; title: string; poster: string };
 
@@ -1271,7 +1283,15 @@ export default function HomePage() {
 
   const { data: chartData, isLoading: chartsLoading } = useQuery({
     queryKey: ['aggregate-charts'],
-    queryFn: () => fetch('/api/charts/aggregate').then((r) => r.json()),
+    queryFn: async () => {
+      const raw = await fetch('/api/charts/aggregate').then((r) => r.json());
+      return {
+        ...raw,
+        top_movies: await enrichTopEntriesPosters(raw?.top_movies || []),
+        top_tv: await enrichTopEntriesPosters(raw?.top_tv || []),
+        top_chinese_tv: await enrichTopEntriesPosters(raw?.top_chinese_tv || []),
+      } as AggregateCharts;
+    },
     placeholderData: (previousData) => previousData,
     staleTime: 5 * 60 * 1000,
     gcTime: 15 * 60 * 1000,
