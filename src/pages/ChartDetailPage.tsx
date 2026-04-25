@@ -11,6 +11,7 @@ import { PageShell } from '../modules/layout/PageShell';
 import { usePageMeta } from '../shared/hooks/usePageMeta';
 import { posterPathToSiteUrl } from '../api/image';
 import { TMDB } from '../api/api';
+import { getPreferredPosterUrlForMedia } from '../api/preferredPoster';
 const POSTER_WIDTH = 'w500' as const;
 
 const PLATFORM_LOGOS: Record<string, string> = {
@@ -38,6 +39,19 @@ interface ChartDetail {
   chart_name: string;
   media_type: 'movie' | 'tv' | 'both';
   entries: ChartEntry[];
+}
+
+async function enrichEntriesPosters(
+  entries: ChartEntry[] = [],
+  defaultMediaType: 'movie' | 'tv' | 'both'
+): Promise<ChartEntry[]> {
+  return await Promise.all(
+    entries.map(async (entry) => {
+      const mediaType = (entry.media_type || (defaultMediaType === 'tv' ? 'tv' : 'movie')) as 'movie' | 'tv';
+      const preferredPoster = await getPreferredPosterUrlForMedia(mediaType, entry.tmdb_id, entry.poster || '', POSTER_WIDTH);
+      return { ...entry, poster: preferredPoster || entry.poster };
+    })
+  );
 }
 
 export default function ChartDetailPage() {
@@ -68,7 +82,11 @@ export default function ChartDetailPage() {
       if (!response.ok) {
         throw new Error('获取榜单数据失败');
       }
-      return response.json();
+      const raw = await response.json();
+      return {
+        ...raw,
+        entries: await enrichEntriesPosters(raw?.entries || [], raw?.media_type || 'movie'),
+      } as ChartDetail;
     },
     enabled: !!platform && !!chartName,
     placeholderData: (previousData) => previousData,
