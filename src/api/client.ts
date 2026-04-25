@@ -49,7 +49,7 @@ export async function searchMedia<T>(
   mediaType: 'movie' | 'tv',
   query: string,
   page: number,
-  transformFn: (item: any) => T
+  transformFn: (item: any) => T | Promise<T>
 ) {
   const { searchTerm, year, language } = parseSearchQuery(query);
   
@@ -64,7 +64,7 @@ export async function searchMedia<T>(
   });
 
   return {
-    results: response.data.results.map(transformFn),
+    results: await Promise.all(response.data.results.map(transformFn)),
     totalPages: response.data.total_pages,
     totalResults: response.data.total_results,
   };
