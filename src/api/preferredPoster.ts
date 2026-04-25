@@ -13,6 +13,9 @@ type TmdbPoster = {
 };
 
 const posterPromiseCache = new Map<string, Promise<string>>();
+const TMDB_FETCH_CONCURRENCY = 6;
+let tmdbInFlight = 0;
+const tmdbQueue: Array<() => void> = [];
 
 function normalizeLanguageTag(language: string | null | undefined): string {
   return (language || '').trim().toLowerCase().replace('_', '-');
@@ -30,6 +33,36 @@ function matchesLanguage(candidate: string | null | undefined, target: string): 
 
 function normalizeRegionTag(region: string | null | undefined): string {
   return (region || '').trim().toUpperCase();
+}
+
+async function runWithTmdbFetchQueue<T>(task: () => Promise<T>): Promise<T> {
+  if (tmdbInFlight >= TMDB_FETCH_CONCURRENCY) {
+    await new Promise<void>((resolve) => tmdbQueue.push(resolve));
+  }
+  tmdbInFlight += 1;
+  try {
+    return await task();
+  } finally {
+    tmdbInFlight -= 1;
+    const next = tmdbQueue.shift();
+    if (next) next();
+  }
+}
+
+async function fetchJsonWithRetry(url: string, attempts = 4): Promise<any | null> {
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const response = await runWithTmdbFetchQueue(() => fetch(url));
+      if (response.ok) return await response.json();
+
+      const canRetry = response.status === 429 || response.status >= 500;
+      if (!canRetry || attempt === attempts) return null;
+    } catch {
+      if (attempt === attempts) return null;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 180 * attempt));
+  }
+  return null;
 }
 
 function getPosterPriority(poster: TmdbPoster, originalLanguage: string | null | undefined): number {
@@ -66,29 +99,12 @@ function pickPreferredPosterPath(
 }
 
 async function fetchImagesPayload(mediaType: MediaType, mediaId: string | number): Promise<any | null> {
-  const maxAttempts = 2;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      const response = await fetch(
-        buildTmdbApiUrl(`${mediaType}/${mediaId}/images`, {
-          include_image_language: 'zh-CN,zh-SG,zh-TW,zh-HK,zh,en,null',
-        })
-      );
-      if (response.ok) return await response.json();
-      if (response.status === 429 && attempt < maxAttempts) {
-        await new Promise((resolve) => setTimeout(resolve, 200 * attempt));
-        continue;
-      }
-      return null;
-    } catch {
-      if (attempt < maxAttempts) {
-        await new Promise((resolve) => setTimeout(resolve, 120 * attempt));
-        continue;
-      }
-      return null;
-    }
-  }
-  return null;
+  return await fetchJsonWithRetry(
+    buildTmdbApiUrl(`${mediaType}/${mediaId}/images`, {
+      include_image_language: 'zh-CN,zh-SG,zh-TW,zh-HK,zh,en,null',
+    }),
+    4
+  );
 }
 
 export async function getPreferredPosterUrlForMedia(
@@ -104,9 +120,7 @@ export async function getPreferredPosterUrlForMedia(
 
   const task = (async () => {
     const [detailData, imagesData] = await Promise.all([
-      fetch(buildTmdbApiUrl(`${mediaType}/${mediaId}`, { language: 'zh-CN' }))
-        .then((r) => (r.ok ? r.json() : null))
-        .catch(() => null),
+      fetchJsonWithRetry(buildTmdbApiUrl(`${mediaType}/${mediaId}`, { language: 'zh-CN' }), 3),
       fetchImagesPayload(mediaType, mediaId),
     ]);
 
