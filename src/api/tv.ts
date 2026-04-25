@@ -12,7 +12,7 @@ export async function getTVShow(id: string): Promise<TVShow> {
   const data = await fetchTMDBWithLanguageFallback(
     `${TMDB.baseUrl}/tv/${id}`,
     {
-      include_image_language: 'zh-CN,zh-SG,zh-TW,zh-HK,en,null',
+      include_image_language: 'zh-CN,zh,zh-SG,zh-TW,zh-HK,en,null',
     },
     'credits,external_ids,images'
   );
