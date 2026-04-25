@@ -3,6 +3,7 @@
 // ==========================================
 import { buildTmdbApiUrl } from './api';
 import { posterPathToSiteUrl } from './image';
+import { pickPreferredTmdbImagePath } from './tmdbImagePriority';
 
 type MediaType = 'movie' | 'tv';
 
@@ -16,24 +17,6 @@ const posterPromiseCache = new Map<string, Promise<string>>();
 const TMDB_FETCH_CONCURRENCY = 6;
 let tmdbInFlight = 0;
 const tmdbQueue: Array<() => void> = [];
-
-function normalizeLanguageTag(language: string | null | undefined): string {
-  return (language || '').trim().toLowerCase().replace('_', '-');
-}
-
-function matchesLanguage(candidate: string | null | undefined, target: string): boolean {
-  const candidateNorm = normalizeLanguageTag(candidate);
-  const targetNorm = normalizeLanguageTag(target);
-  if (!candidateNorm || !targetNorm) return false;
-  if (candidateNorm === targetNorm || candidateNorm.startsWith(`${targetNorm}-`)) return true;
-  const candidateBase = candidateNorm.split('-')[0];
-  const targetBase = targetNorm.split('-')[0];
-  return candidateBase === targetBase;
-}
-
-function normalizeRegionTag(region: string | null | undefined): string {
-  return (region || '').trim().toUpperCase();
-}
 
 async function runWithTmdbFetchQueue<T>(task: () => Promise<T>): Promise<T> {
   if (tmdbInFlight >= TMDB_FETCH_CONCURRENCY) {
@@ -65,44 +48,16 @@ async function fetchJsonWithRetry(url: string, attempts = 4): Promise<any | null
   return null;
 }
 
-function getPosterPriority(poster: TmdbPoster, originalLanguage: string | null | undefined): number {
-  const lang = normalizeLanguageTag(poster.iso_639_1);
-  const region = normalizeRegionTag(poster.iso_3166_1);
-  const original = normalizeLanguageTag(originalLanguage);
-
-  if (!poster.file_path) return 999;
-
-  if (matchesLanguage(lang, 'zh')) {
-    if (region === 'CN') return 0;
-    if (region === 'SG') return 1;
-    if (region === 'TW') return 2;
-    if (region === 'HK') return 3;
-    return 4;
-  }
-
-  if (matchesLanguage(lang, 'en')) return 5;
-  if (original && matchesLanguage(lang, original)) return 6;
-  if (poster.iso_639_1 === null) return 7;
-  return 8;
-}
-
 function pickPreferredPosterPath(
   posters: TmdbPoster[],
   originalLanguage: string | null | undefined
 ): string | undefined {
-  if (!Array.isArray(posters) || posters.length === 0) return undefined;
-
-  const sorted = posters
-    .filter((poster) => !!poster.file_path)
-    .sort((a, b) => getPosterPriority(a, originalLanguage) - getPosterPriority(b, originalLanguage));
-  return sorted[0]?.file_path;
+  return pickPreferredTmdbImagePath(posters, originalLanguage);
 }
 
 async function fetchImagesPayload(mediaType: MediaType, mediaId: string | number): Promise<any | null> {
   return await fetchJsonWithRetry(
-    buildTmdbApiUrl(`${mediaType}/${mediaId}/images`, {
-      include_image_language: 'zh-CN,zh-SG,zh-TW,zh-HK,zh,en,null',
-    }),
+    buildTmdbApiUrl(`${mediaType}/${mediaId}/images`),
     4
   );
 }
