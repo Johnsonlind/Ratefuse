@@ -13,6 +13,7 @@ import { posterPathToSiteUrl } from '../api/image';
 import { TMDB } from '../api/api';
 import { getPreferredPosterUrlForMedia } from '../api/preferredPoster';
 const POSTER_WIDTH = 'w500' as const;
+const CHART_POSTER_ENRICH_LIMIT = 40;
 
 const PLATFORM_LOGOS: Record<string, string> = {
   '豆瓣': '/logos/douban.png',
@@ -46,7 +47,8 @@ async function enrichEntriesPosters(
   defaultMediaType: 'movie' | 'tv' | 'both'
 ): Promise<ChartEntry[]> {
   return await Promise.all(
-    entries.map(async (entry) => {
+    entries.map(async (entry, index) => {
+      if (index >= CHART_POSTER_ENRICH_LIMIT) return entry;
       const mediaType = (entry.media_type || (defaultMediaType === 'tv' ? 'tv' : 'movie')) as 'movie' | 'tv';
       const preferredPoster = await getPreferredPosterUrlForMedia(mediaType, entry.tmdb_id, entry.poster || '', POSTER_WIDTH);
       return { ...entry, poster: preferredPoster || entry.poster };
