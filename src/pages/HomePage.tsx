@@ -97,19 +97,31 @@ const toTmdbImagePath = (path: string | null | undefined, size = 'original') => 
 
 const shuffle = <T,>(arr: T[]) => [...arr].sort(() => Math.random() - 0.5);
 
-function pickLogo(logos: Array<{ file_path?: string; iso_639_1?: string | null }> = []) {
-  const normalize = (lang?: string | null) => (lang || '').trim().toLowerCase();
-  const pickBy = (target: string) =>
-    logos.find((x) => {
-      const lang = normalize(x.iso_639_1);
-      if (!lang) return false;
-      return lang === target || lang.startsWith(`${target}-`) || lang.split('-')[0] === target;
-    });
-  const preferred =
-    pickBy('zh') ||
-    pickBy('en') ||
-    logos.find((x) => x.iso_639_1 === null) ||
-    logos[0];
+function pickLogo(
+  logos: Array<{ file_path?: string; iso_639_1?: string | null; iso_3166_1?: string | null }> = []
+) {
+  const normalizeLang = (lang?: string | null) => (lang || '').trim().toLowerCase();
+  const normalizeRegion = (region?: string | null) => (region || '').trim().toUpperCase();
+  const isZh = (lang?: string | null) => normalizeLang(lang).split('-')[0] === 'zh';
+  const isEn = (lang?: string | null) => normalizeLang(lang).split('-')[0] === 'en';
+
+  const score = (logo: { file_path?: string; iso_639_1?: string | null; iso_3166_1?: string | null }) => {
+    const lang = normalizeLang(logo.iso_639_1);
+    const region = normalizeRegion(logo.iso_3166_1);
+    if (!logo.file_path) return 999;
+    if (isZh(lang)) {
+      if (region === 'CN') return 0;
+      if (region === 'SG') return 1;
+      if (region === 'TW') return 2;
+      if (region === 'HK') return 3;
+      return 4;
+    }
+    if (isEn(lang)) return 5;
+    if (logo.iso_639_1 === null) return 6;
+    return 7;
+  };
+
+  const preferred = [...logos].sort((a, b) => score(a) - score(b))[0];
   return toTmdbImagePath(preferred?.file_path, HERO_IMAGE_SIZE);
 }
 
@@ -633,7 +645,7 @@ function HeroCarousel({
           buildTmdbApiUrl(`${item.type}/${item.id}`, {
             language: 'zh-CN',
             append_to_response: 'images',
-            include_image_language: `zh,en,${NO_LANG}`,
+            include_image_language: `zh-CN,zh-SG,zh-TW,zh-HK,zh,en,${NO_LANG}`,
           })
         );
         if (!res.ok) throw new Error('加载轮播详情失败');
