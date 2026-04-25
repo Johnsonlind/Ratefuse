@@ -14,7 +14,6 @@ import { usePageMeta } from '../shared/hooks/usePageMeta';
 import { posterPathToSiteUrl } from '../api/image';
 import { getPreferredPosterUrlForMedia } from '../api/preferredPoster';
 const DOWNSCALE_SIZE = 'w500';
-const CHART_POSTER_ENRICH_LIMIT = 40;
 
 const resolvePosterUrl = (poster: string) => posterPathToSiteUrl(poster, DOWNSCALE_SIZE);
 
@@ -174,8 +173,7 @@ interface ChartSection {
 
 async function enrichChartEntriesPosters(entries: ChartEntry[] = []): Promise<ChartEntry[]> {
   return await Promise.all(
-    entries.map(async (entry, index) => {
-      if (index >= CHART_POSTER_ENRICH_LIMIT) return entry;
+    entries.map(async (entry) => {
       const mediaType = entry.media_type === 'tv' ? 'tv' : 'movie';
       const preferredPoster = await getPreferredPosterUrlForMedia(mediaType, entry.tmdb_id, entry.poster || '', DOWNSCALE_SIZE);
       return { ...entry, poster: preferredPoster || entry.poster };
