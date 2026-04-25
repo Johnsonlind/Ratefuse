@@ -6,6 +6,7 @@ import { fetchTMDBWithLanguageFallback } from './tmdbLanguageHelper';
 import { transformTMDBMovie, transformTMDBTVShow } from './transformers';
 import type { Movie, TVShow } from '../shared/types/media';
 import { posterPathToSiteUrl } from './image';
+import { getPreferredPosterUrlForMedia } from './preferredPoster';
 
 export async function searchByImdbId(imdbId: string): Promise<{ movies: Movie[], tvShows: TVShow[] }> {
   try {
@@ -35,7 +36,15 @@ export async function getMediaDetails(mediaType: string, mediaId: string) {
   
   let posterPath = '';
   if (data.poster_path) {
-    posterPath = posterPathToSiteUrl(data.poster_path, 'w500');
+    posterPath = await getPreferredPosterUrlForMedia(
+      mediaType as 'movie' | 'tv',
+      mediaId,
+      data.poster_path,
+      'w500'
+    );
+    if (!posterPath) {
+      posterPath = posterPathToSiteUrl(data.poster_path, 'w500');
+    }
   }
   
   return {
