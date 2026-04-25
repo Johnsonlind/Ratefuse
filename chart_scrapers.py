@@ -189,6 +189,7 @@ class ChartScraper:
 
     def _replace_chart_snapshot(self, platform: str, chart_name: str, entries: list[dict]) -> int:
         try:
+            logger.info(f"{platform} {chart_name}: 准备替换快照，待写入 entries={len(entries)}")
             locked_rows = (
                 self.db.query(ChartEntry)
                 .filter(
@@ -199,13 +200,17 @@ class ChartScraper:
                 .all()
             )
             locked_keys = {(r.media_type, int(r.rank)) for r in locked_rows if r.rank is not None}
+            logger.info(f"{platform} {chart_name}: 检测到锁定条目 {len(locked_keys)} 条")
 
-            self.db.query(ChartEntry).filter(
+            deleted_count = self.db.query(ChartEntry).filter(
                 ChartEntry.platform == platform,
                 ChartEntry.chart_name == chart_name,
                 ChartEntry.locked == False,
             ).delete(synchronize_session=False)
+            logger.info(f"{platform} {chart_name}: 已删除未锁定旧条目 {deleted_count} 条")
 
+            inserted_count = 0
+            skipped_locked = 0
             for e in entries:
                 try:
                     mt = e["media_type"]
@@ -213,6 +218,7 @@ class ChartScraper:
                 except Exception:
                     continue
                 if (mt, rk) in locked_keys:
+                    skipped_locked += 1
                     continue
                 self.db.add(
                     ChartEntry(
@@ -225,8 +231,12 @@ class ChartScraper:
                         poster=e.get("poster") or "",
                     )
                 )
+                inserted_count += 1
 
             self.db.commit()
+            logger.info(
+                f"{platform} {chart_name}: 快照替换完成，写入 {inserted_count} 条，因锁定跳过 {skipped_locked} 条"
+            )
             return len(entries)
         except Exception:
             try:
@@ -608,6 +618,7 @@ class ChartScraper:
             ctx_to_close = None
             page = await browser.new_page()
             try:
+                logger.info(f"Letterboxd Popular: 开始抓取 {films_url}")
                 letterboxd_cookie = os.environ.get("LETTERBOXD_COOKIE", "").strip()
                 if letterboxd_cookie:
                     cookies = _parse_letterboxd_cookie_string(letterboxd_cookie)
@@ -618,10 +629,15 @@ class ChartScraper:
                 await asyncio.sleep(2)
                 if await _is_cloudflare_challenge(page):
                     logger.warning("Letterboxd Popular: 检测到 Cloudflare 验证，尝试 FlareSolverr…")
+                    if not os.environ.get("FLARESOLVERR_URL", "").strip():
+                        logger.warning("Letterboxd Popular: 未配置 FLARESOLVERR_URL")
                     fs = await _letterboxd_flaresolverr(films_url)
                     if not fs:
                         logger.warning("Letterboxd Popular: 未配置或 FlareSolverr 失败，返回空")
                         return []
+                    logger.info(
+                        f"Letterboxd Popular: FlareSolverr 成功返回 cookies={len(fs.get('cookies', []))} ua_len={len(fs.get('userAgent', ''))}"
+                    )
                     await page.close()
                     ctx_to_close = await browser.new_context(viewport={"width": 1280, "height": 720}, user_agent=fs["userAgent"])
                     await ctx_to_close.add_cookies(fs["cookies"])
@@ -632,6 +648,9 @@ class ChartScraper:
                         logger.warning("Letterboxd Popular: FlareSolverr 后仍为 CF，返回空")
                         return []
                 popular_items = await page.query_selector_all('#popular-films .poster-list li')
+                logger.info(f"Letterboxd Popular: 选择器命中 {len(popular_items)} 项")
+                if not popular_items:
+                    logger.warning("Letterboxd Popular: 未命中榜单节点，可能是页面结构变化或仍被拦截")
                 results = []
                 
                 for i, item in enumerate(popular_items[:10], 1):
@@ -652,6 +671,9 @@ class ChartScraper:
                     except Exception as e:
                         logger.error(f"处理Letterboxd榜单项时出错: {e}")
                         continue
+                logger.info(f"Letterboxd Popular: 抓取解析完成，结果 {len(results)} 条")
+                if results:
+                    logger.info(f"Letterboxd Popular: 示例首条 title={results[0].get('title','')} rank={results[0].get('rank')}")
                         
                 return results
             finally:
@@ -808,12 +830,20 @@ class ChartScraper:
         
         matcher = TMDBMatcher(self.db)
         items = await self.scrape_letterboxd_popular()
+        logger.info(f"{platform} {chart_name}: 抓取阶段返回 {len(items)} 条")
         entries: list[dict] = []
         rank = 1
+        missing_url_count = 0
+        tmdb_id_direct_hit = 0
+        movie_fallback_hit = 0
+        tv_fallback_hit = 0
+        unmatched_count = 0
         for it in items[:10]:
             title = it.get('title') or ''
             url = it.get('url') or ''
             if not url:
+                missing_url_count += 1
+                logger.warning(f"{platform} {chart_name}: 缺少 URL，跳过 title={title}")
                 rank += 1
                 continue
             tmdb_id = await self.get_letterboxd_tmdb_id(url)
@@ -828,6 +858,7 @@ class ChartScraper:
                         'poster': info.get('poster_url', ''),
                         'media_type': 'movie'
                     }
+                    tmdb_id_direct_hit += 1
                 else:
                     info = await matcher.get_tmdb_info(tmdb_id, 'tv')
                     if info:
@@ -838,6 +869,7 @@ class ChartScraper:
                             'media_type': 'tv'
                         }
                         actual_media_type = 'tv'
+                        tmdb_id_direct_hit += 1
             if not match:
                 for attempt in range(3):
                     try:
@@ -853,6 +885,7 @@ class ChartScraper:
                             'poster': info.get('poster_url', ''),
                             'media_type': 'movie'
                         }
+                        movie_fallback_hit += 1
                         break
                     except Exception:
                         if attempt < 2:
@@ -873,11 +906,13 @@ class ChartScraper:
                                 'media_type': 'tv'
                             }
                             actual_media_type = 'tv'
+                            tv_fallback_hit += 1
                             break
                         except Exception:
                             if attempt < 2:
                                 await asyncio.sleep(2 ** attempt)
             if not match:
+                unmatched_count += 1
                 logger.warning(f"Letterboxd未匹配: {title}")
                 rank += 1
                 continue
@@ -893,6 +928,10 @@ class ChartScraper:
             )
             rank += 1
         entries.sort(key=lambda x: x["rank"])
+        logger.info(
+            f"{platform} {chart_name}: 匹配统计 direct={tmdb_id_direct_hit}, movie_fallback={movie_fallback_hit}, "
+            f"tv_fallback={tv_fallback_hit}, unmatched={unmatched_count}, missing_url={missing_url_count}, entries={len(entries)}"
+        )
         saved = self._replace_chart_snapshot(platform, chart_name, entries)
         logger.info(f"{platform} {chart_name} 入库 {saved} 条")
         return saved
