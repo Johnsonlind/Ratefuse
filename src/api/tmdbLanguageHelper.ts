@@ -1,11 +1,11 @@
 // ==========================================
 // 多语言数据回退工具(API侧)
 // ==========================================
-const LANGUAGE_PRIORITY = ['zh-CN', 'zh-SG', 'zh-TW', 'zh-HK', 'en-US'] as const;
+const LANGUAGE_PRIORITY = ['zh-CN', 'zh', 'zh-SG', 'zh-TW', 'zh-HK', 'en'] as const;
 
 type LanguageCode = typeof LANGUAGE_PRIORITY[number];
 
-const POSTER_LANGUAGE_PRIORITY = ['zh-CN', 'zh-SG', 'zh-TW', 'zh-HK', 'en'] as const;
+const POSTER_LANGUAGE_PRIORITY = ['zh-CN', 'zh', 'zh-SG', 'zh-TW', 'zh-HK', 'en'] as const;
 
 type TmdbImageItem = {
   file_path?: string;
@@ -58,13 +58,11 @@ function pickPreferredPosterPath(data: any): string | undefined {
   const posters: TmdbImageItem[] = Array.isArray(data?.images?.posters) ? data.images.posters : [];
   if (posters.length === 0) return undefined;
 
-  // 1) 简中 -> 新加坡中文 -> 台湾中文 -> 香港中文 -> 英文
   for (const lang of POSTER_LANGUAGE_PRIORITY) {
     const match = posters.find((poster) => poster.file_path && matchesLanguage(poster.iso_639_1, lang));
     if (match?.file_path) return match.file_path;
   }
 
-  // 2) 原产地语言
   const originalLanguage = normalizeLanguageTag(data?.original_language);
   if (originalLanguage) {
     const originalMatch = posters.find(
@@ -73,11 +71,9 @@ function pickPreferredPosterPath(data: any): string | undefined {
     if (originalMatch?.file_path) return originalMatch.file_path;
   }
 
-  // 3) 无语言海报
   const noLanguageMatch = posters.find((poster) => poster.file_path && poster.iso_639_1 === null);
   if (noLanguageMatch?.file_path) return noLanguageMatch.file_path;
 
-  // 4) 其他语言
   return posters.find((poster) => poster.file_path)?.file_path;
 }
 
