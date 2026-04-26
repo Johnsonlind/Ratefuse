@@ -14,7 +14,7 @@ type TmdbPoster = {
 };
 
 const posterPromiseCache = new Map<string, Promise<string>>();
-const TMDB_FETCH_CONCURRENCY = 6;
+const TMDB_FETCH_CONCURRENCY = 100;
 let tmdbInFlight = 0;
 const tmdbQueue: Array<() => void> = [];
 
@@ -55,13 +55,6 @@ function pickPreferredPosterPath(
   return pickPreferredTmdbImagePath(posters, originalLanguage);
 }
 
-async function fetchImagesPayload(mediaType: MediaType, mediaId: string | number): Promise<any | null> {
-  return await fetchJsonWithRetry(
-    buildTmdbApiUrl(`${mediaType}/${mediaId}/images`),
-    4
-  );
-}
-
 export async function getPreferredPosterUrlForMedia(
   mediaType: MediaType,
   mediaId: string | number,
@@ -74,17 +67,42 @@ export async function getPreferredPosterUrlForMedia(
   if (cached) return cached;
 
   const task = (async () => {
-    const [detailData, imagesData] = await Promise.all([
-      fetchJsonWithRetry(buildTmdbApiUrl(`${mediaType}/${mediaId}`, { language: 'zh-CN' }), 3),
-      fetchImagesPayload(mediaType, mediaId),
-    ]);
+    const payload = await fetchJsonWithRetry(
+      buildTmdbApiUrl(`${mediaType}/${mediaId}`, {
+        append_to_response: 'images',
+      }),
+      3
+    );
 
-    const posters: TmdbPoster[] = Array.isArray(imagesData?.posters) ? imagesData.posters : [];
-    const preferredPath = pickPreferredPosterPath(posters, detailData?.original_language);
+    const posters: TmdbPoster[] = Array.isArray(payload?.images?.posters) ? payload.images.posters : [];
+    const preferredPath = pickPreferredPosterPath(posters, payload?.original_language);
     if (!preferredPath) return fallbackUrl;
     return posterPathToSiteUrl(preferredPath, size);
   })();
 
   posterPromiseCache.set(key, task);
   return task;
+}
+
+type EntryWithPoster = {
+  tmdb_id: number;
+  poster: string;
+  media_type?: 'movie' | 'tv';
+};
+
+export async function enrichEntriesWithPreferredPosters<T extends EntryWithPoster>(
+  entries: T[],
+  defaultMediaType: 'movie' | 'tv' | 'both',
+  size: string = 'w500'
+): Promise<T[]> {
+  return await Promise.all(
+    entries.map(async (entry) => {
+      const mediaType = (entry.media_type || (defaultMediaType === 'tv' ? 'tv' : 'movie')) as MediaType;
+      const preferredPoster = await getPreferredPosterUrlForMedia(mediaType, entry.tmdb_id, entry.poster || '', size);
+      return {
+        ...entry,
+        poster: preferredPoster || entry.poster,
+      };
+    })
+  );
 }
