@@ -141,6 +141,29 @@ class PublicChartEntry(Base):
         UniqueConstraint('platform', 'chart_name', 'media_type', 'rank', name='uq_public_chart_item'),
     )
 
+class ChartConfig(Base):
+    __tablename__ = "chart_configs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    platform = Column(String(50), index=True, nullable=False)
+    chart_name = Column(String(100), index=True, nullable=False)
+    media_type = Column(String(10), nullable=False, default="movie")
+    sort_order = Column(Integer, nullable=False, default=0, index=True)
+    visible = Column(Boolean, nullable=False, default=True, index=True)
+    input_mode = Column(String(10), nullable=False, default="auto")
+    layout = Column(String(10), nullable=False, default="card")
+    table_rows = Column(Integer, nullable=False, default=10)
+    card_count = Column(Integer, nullable=False, default=10)
+    update_mode = Column(String(10), nullable=False, default="all")
+    exportable = Column(Boolean, nullable=False, default=True)
+    rank_label_mode = Column(String(10), nullable=False, default="number")
+    created_at = Column(DateTime, default=_shanghai_naive_now, index=True)
+    updated_at = Column(DateTime, default=_shanghai_naive_now, onupdate=_shanghai_naive_now, index=True)
+
+    __table_args__ = (
+        UniqueConstraint("platform", "chart_name", name="uq_chart_config_platform_name"),
+    )
+
 class PasswordReset(Base):
     __tablename__ = "password_resets"
     
@@ -209,7 +232,6 @@ class Feedback(Base):
     messages = relationship("FeedbackMessage", back_populates="feedback", cascade="all, delete-orphan")
     images = relationship("FeedbackImage", back_populates="feedback", cascade="all, delete-orphan")
     status_events = relationship("FeedbackStatusEvent", back_populates="feedback", cascade="all, delete-orphan")
-
 
 class TelegramFeedbackMapping(Base):
     __tablename__ = "telegram_feedback_mappings"
@@ -470,9 +492,67 @@ def _ensure_users_table_columns(engine: Engine) -> None:
                 )
             )
 
+def _ensure_chart_configs_columns(engine: Engine) -> None:
+    if engine.dialect.name != "mysql":
+        return
+
+    db_name = engine.url.database
+    if not db_name:
+        return
+
+    def _has_table(conn, table: str) -> bool:
+        exists = conn.execute(
+            text(
+                """
+                SELECT 1
+                FROM information_schema.TABLES
+                WHERE TABLE_SCHEMA = :schema
+                  AND TABLE_NAME = :table
+                LIMIT 1
+                """
+            ),
+            {"schema": db_name, "table": table},
+        ).first()
+        return bool(exists)
+
+    def _has_column(conn, table: str, column: str) -> bool:
+        exists = conn.execute(
+            text(
+                """
+                SELECT 1
+                FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = :schema
+                  AND TABLE_NAME = :table
+                  AND COLUMN_NAME = :column
+                LIMIT 1
+                """
+            ),
+            {"schema": db_name, "table": table, "column": column},
+        ).first()
+        return bool(exists)
+
+    with engine.begin() as conn:
+        if not _has_table(conn, "chart_configs"):
+            return
+        if not _has_column(conn, "chart_configs", "exportable"):
+            conn.execute(
+                text(
+                    "ALTER TABLE chart_configs "
+                    "ADD COLUMN exportable BOOLEAN NOT NULL DEFAULT 1"
+                )
+            )
+        if not _has_column(conn, "chart_configs", "rank_label_mode"):
+            conn.execute(
+                text(
+                    "ALTER TABLE chart_configs "
+                    "ADD COLUMN rank_label_mode VARCHAR(10) NOT NULL DEFAULT 'number'"
+                )
+            )
+
 def init_db():
     Base.metadata.create_all(bind=engine)
     _ensure_users_table_columns(engine)
+    _ensure_chart_configs_columns(engine)
 
 if __name__ == "__main__":
     init_db()
