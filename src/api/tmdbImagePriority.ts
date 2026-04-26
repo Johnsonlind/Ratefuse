@@ -38,15 +38,24 @@ export function getTmdbImageLanguagePriority(
 
   if (!image.file_path) return 999;
 
-  if (mode === 'heroPoster' && image.iso_639_1 === null) return 0;
+  if (mode === 'heroPoster') {
+    if (image.iso_639_1 === null) return 0;
+    if (matchesLanguage(lang, 'zh') && region === 'CN') return 1;
+    if (matchesLanguage(lang, 'zh') && region === 'SG') return 2;
+    if (matchesLanguage(lang, 'zh') && region === 'TW') return 3;
+    if (matchesLanguage(lang, 'zh') && region === 'HK') return 4;
+    if (matchesLanguage(lang, 'en') && region === 'US') return 5;
+    if (original && matchesLanguage(lang, original)) return 6;
+    return 7;
+  }
 
   if (matchesLanguage(lang, 'zh') && region === 'CN') return 0;
   if (matchesLanguage(lang, 'zh') && region === 'SG') return 1;
   if (matchesLanguage(lang, 'zh') && region === 'TW') return 2;
   if (matchesLanguage(lang, 'zh') && region === 'HK') return 3;
   if (matchesLanguage(lang, 'en') && region === 'US') return 4;
-  if (original && matchesLanguage(lang, original)) return mode === 'heroPoster' ? 6 : 5;
-  if (image.iso_639_1 === null) return mode === 'heroPoster' ? 5 : 6;
+  if (original && matchesLanguage(lang, original)) return 5;
+  if (image.iso_639_1 === null) return 6;
   return 7;
 }
 
