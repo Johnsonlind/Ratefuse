@@ -155,6 +155,7 @@ class ChartConfig(Base):
     table_rows = Column(Integer, nullable=False, default=10)
     card_count = Column(Integer, nullable=False, default=10)
     update_mode = Column(String(10), nullable=False, default="all")
+    updater_key = Column(String(100), nullable=True, index=True)
     exportable = Column(Boolean, nullable=False, default=True)
     rank_label_mode = Column(String(10), nullable=False, default="number")
     created_at = Column(DateTime, default=_shanghai_naive_now, index=True)
@@ -546,6 +547,14 @@ def _ensure_chart_configs_columns(engine: Engine) -> None:
                 text(
                     "ALTER TABLE chart_configs "
                     "ADD COLUMN rank_label_mode VARCHAR(10) NOT NULL DEFAULT 'number'"
+                )
+            )
+        if not _has_column(conn, "chart_configs", "updater_key"):
+            conn.execute(
+                text(
+                    "ALTER TABLE chart_configs "
+                    "ADD COLUMN updater_key VARCHAR(100) NULL, "
+                    "ADD INDEX idx_chart_configs_updater_key (updater_key)"
                 )
             )
 
