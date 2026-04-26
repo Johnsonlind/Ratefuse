@@ -39,6 +39,7 @@ type EnumOption = { value: string; label: string };
 type ChartSectionConfig = {
   id: string;
   name: string;
+  updater_key?: string;
   media_type: SectionType;
   visible: boolean;
   input_mode: InputMode;
@@ -226,6 +227,7 @@ export default function AdminChartsPage() {
       const rows = (await res.json()) as Array<{
         platform: string;
         chart_name: string;
+        updater_key?: string;
         media_type: SectionType;
         sort_order: number;
         visible: boolean;
@@ -349,6 +351,7 @@ export default function AdminChartsPage() {
         list.push({
           id: toSectionId(PLATFORM_NAME_MAP[row.platform] || row.platform, CHART_NAME_MAP[row.chart_name] || row.chart_name),
           name: CHART_NAME_MAP[row.chart_name] || row.chart_name,
+          updater_key: row.updater_key,
           media_type: row.media_type,
           visible: row.visible,
           input_mode: row.input_mode,
@@ -382,6 +385,7 @@ export default function AdminChartsPage() {
           table_rows: sec.table_rows,
           card_count: sec.card_count,
           update_mode: sec.update_mode,
+          updater_key: sec.updater_key,
           exportable: sec.exportable,
           rank_label_mode: sec.rank_label_mode,
         })),
@@ -574,7 +578,7 @@ export default function AdminChartsPage() {
     }
   }
 
-  async function handleUpdateSingleChart(platform: string, chartName: string) {
+  async function handleUpdateSingleChart(platform: string, chartName: string, updaterKey?: string) {
     const operationKey = `${platform}_${chartName}_update`;
     setPlatformOperations(prev => ({ ...prev, [operationKey]: true }));
     setUpdateStatus(`正在更新 ${chartName}...`);
@@ -593,6 +597,7 @@ export default function AdminChartsPage() {
         body: JSON.stringify({
           platform: backendPlatform,
           chart_name: backendChartName,
+          updater_key: updaterKey || null,
         }),
       });
       
@@ -1325,6 +1330,7 @@ export default function AdminChartsPage() {
                           section: {
                             id: `${Date.now()}`,
                             name: '',
+                            updater_key: undefined,
                             media_type: 'movie',
                             visible: true,
                             input_mode: 'auto',
@@ -1364,7 +1370,7 @@ export default function AdminChartsPage() {
                                       <>
                                         {sec.input_mode !== 'manual' && (
                                           <button
-                                            onClick={() => handleUpdateSingleChart(platform, sec.name)}
+                                            onClick={() => handleUpdateSingleChart(platform, sec.name, sec.updater_key)}
                                             disabled={platformOperations[`${platform}_${sec.name}_update`]}
                                             className={`text-xs px-2 py-1 rounded transition-colors ${
                                               platformOperations[`${platform}_${sec.name}_update`]
