@@ -23,13 +23,13 @@ import { ConfirmDialog } from '../shared/ui/ConfirmDialog';
 import { toSiteTmdbImageUrl } from '../api/image';
 import { buildTmdbApiUrl, TMDB } from '../api/api';
 import { getPreferredPosterUrlForMedia } from '../api/preferredPoster';
+import { pickPreferredTmdbImagePath } from '../api/tmdbImagePriority';
 const DOWNSCALE_SIZE = 'w500';
 const HERO_IMAGE_SIZE = 'original';
 const HERO_BG_SIZE = 'w780';
 const HERO_POOL_SIZE = 30;
 const SEGMENT_SIZE = 10;
 const HERO_INTERVAL_MS = 5000
-const NO_LANG = 'null';
 
 type TopItem = { id: number; type: 'movie' | 'tv'; title: string; poster: string };
 type HeroDetail = {
@@ -98,43 +98,26 @@ const toTmdbImagePath = (path: string | null | undefined, size = 'original') => 
 const shuffle = <T,>(arr: T[]) => [...arr].sort(() => Math.random() - 0.5);
 
 function pickLogo(
-  logos: Array<{ file_path?: string; iso_639_1?: string | null; iso_3166_1?: string | null }> = []
+  logos: Array<{ file_path?: string; iso_639_1?: string | null; iso_3166_1?: string | null }> = [],
+  originalLanguage?: string | null
 ) {
-  const normalizeLang = (lang?: string | null) => (lang || '').trim().toLowerCase();
-  const normalizeRegion = (region?: string | null) => (region || '').trim().toUpperCase();
-  const isZh = (lang?: string | null) => normalizeLang(lang).split('-')[0] === 'zh';
-  const isEn = (lang?: string | null) => normalizeLang(lang).split('-')[0] === 'en';
-
-  const score = (logo: { file_path?: string; iso_639_1?: string | null; iso_3166_1?: string | null }) => {
-    const lang = normalizeLang(logo.iso_639_1);
-    const region = normalizeRegion(logo.iso_3166_1);
-    if (!logo.file_path) return 999;
-    if (isZh(lang)) {
-      if (region === 'CN') return 0;
-      if (region === 'SG') return 1;
-      if (region === 'TW') return 2;
-      if (region === 'HK') return 3;
-      return 4;
-    }
-    if (isEn(lang)) return 5;
-    if (logo.iso_639_1 === null) return 6;
-    return 7;
-  };
-
-  const preferred = [...logos].sort((a, b) => score(a) - score(b))[0];
-  return toTmdbImagePath(preferred?.file_path, HERO_IMAGE_SIZE);
+  const preferredPath = pickPreferredTmdbImagePath(logos, originalLanguage);
+  return toTmdbImagePath(preferredPath, HERO_IMAGE_SIZE);
 }
 
 function pickHeroPosterImage(
   images: {
-    posters?: Array<{ file_path?: string; iso_639_1?: string | null }>;
+    posters?: Array<{ file_path?: string; iso_639_1?: string | null; iso_3166_1?: string | null }>;
   } = {},
-  fallbackPoster: string
+  fallbackPoster: string,
+  originalLanguage?: string | null
 ) {
-  const noLangPoster = images.posters?.find((p) => p.iso_639_1 === null);
-  const anyPoster = images.posters?.[0];
+  const anyPoster = images.posters?.find((p) => !!p.file_path);
   return (
-    toTmdbImagePath(noLangPoster?.file_path, HERO_IMAGE_SIZE) ||
+    toTmdbImagePath(
+      pickPreferredTmdbImagePath(images.posters || [], originalLanguage, 'heroPoster'),
+      HERO_IMAGE_SIZE
+    ) ||
     toTmdbImagePath(anyPoster?.file_path, HERO_IMAGE_SIZE) ||
     resolvePosterUrl(fallbackPoster, HERO_IMAGE_SIZE)
   );
@@ -645,7 +628,6 @@ function HeroCarousel({
           buildTmdbApiUrl(`${item.type}/${item.id}`, {
             language: 'zh-CN',
             append_to_response: 'images',
-            include_image_language: `zh-CN,zh-SG,zh-TW,zh-HK,zh,en,${NO_LANG}`,
           })
         );
         if (!res.ok) throw new Error('加载轮播详情失败');
@@ -656,8 +638,8 @@ function HeroCarousel({
           type: item.type,
           title: title || item.title,
           genres: (data.genres || []).map((g: { name: string }) => g.name).slice(0, 3),
-          logoUrl: resolveHeroImageUrl(pickLogo(data.images?.logos || [])),
-          imageUrl: resolveHeroImageUrl(pickHeroPosterImage(data.images, item.poster)),
+          logoUrl: resolveHeroImageUrl(pickLogo(data.images?.logos || [], data.original_language)),
+          imageUrl: resolveHeroImageUrl(pickHeroPosterImage(data.images, item.poster, data.original_language)),
           poster: item.poster,
         } as HeroDetail;
       },
