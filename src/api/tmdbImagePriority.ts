@@ -25,10 +25,7 @@ function matchesLanguage(candidate: string | null | undefined, target: string): 
   return candidateBase === targetBase;
 }
 
-export function getTmdbImageLanguagePriority(
-  image: TmdbLocalizedImage,
-  originalLanguage: string | null | undefined
-): number {
+export function getTmdbImageLanguagePriority(image: TmdbLocalizedImage, originalLanguage: string | null | undefined): number {
   const lang = normalizeLanguageTag(image.iso_639_1);
   const region = normalizeRegionTag(image.iso_3166_1);
   const original = normalizeLanguageTag(originalLanguage);
@@ -51,9 +48,15 @@ export function pickPreferredTmdbImagePath<T extends TmdbLocalizedImage>(
 ): string | undefined {
   if (!Array.isArray(images) || images.length === 0) return undefined;
 
-  const sorted = images
-    .filter((image) => !!image.file_path)
-    .sort((a, b) => getTmdbImageLanguagePriority(a, originalLanguage) - getTmdbImageLanguagePriority(b, originalLanguage));
+  const sorted = images.filter((image) => !!image.file_path).sort((a, b) => {
+    const pa = getTmdbImageLanguagePriority(a, originalLanguage);
+    const pb = getTmdbImageLanguagePriority(b, originalLanguage);
+    if (pa !== pb) return pa - pb;
+    const aHasRegion = !!normalizeRegionTag(a.iso_3166_1);
+    const bHasRegion = !!normalizeRegionTag(b.iso_3166_1);
+    if (aHasRegion !== bHasRegion) return aHasRegion ? -1 : 1;
+    return 0;
+  });
 
   return sorted[0]?.file_path;
 }
