@@ -246,7 +246,7 @@ class ChartScraper:
             raise
 
     async def scrape_douban_weekly_movie_chart(self) -> List[Dict]:
-        """豆瓣一周口碑榜"""
+        """豆瓣 一周口碑榜"""
         async def scrape_with_browser(browser):
             page = await browser.new_page()
             try:
@@ -306,10 +306,10 @@ class ChartScraper:
                                         'url': url
                                     })
                         except Exception as e:
-                            logger.error(f"处理豆瓣电影榜单项时出错: {e}")
+                            logger.error(f"处理豆瓣 一周口碑榜 榜单项时出错: {e}")
                             continue
                 
-                logger.info(f"豆瓣一周口碑榜获取到 {len(results)} 个项目")
+                logger.info(f"豆瓣 一周口碑榜获取到 {len(results)} 个项目")
                 return results
             finally:
                 await page.close()
@@ -317,7 +317,7 @@ class ChartScraper:
         return await browser_pool.execute_in_browser(scrape_with_browser)
 
     async def scrape_douban_weekly_global_tv_chart(self) -> List[Dict]:
-        """豆瓣一周全球剧集口碑榜"""
+        """豆瓣 一周全球剧集口碑榜"""
         try:
             import json
 
@@ -336,7 +336,7 @@ class ChartScraper:
             wait_turn()
             resp = requests.get(api_url, headers=headers, timeout=20, verify=True)
             if resp.status_code != 200:
-                logger.error(f"豆瓣全球剧集榜 API 调用失败，状态码: {resp.status_code}")
+                logger.error(f"豆瓣 一周全球剧集口碑榜 API 调用失败，状态码: {resp.status_code}")
                 return []
 
             try:
@@ -349,7 +349,7 @@ class ChartScraper:
             elif isinstance(data, list):
                 items = data
             else:
-                logger.error(f"豆瓣全球剧集榜 API 返回格式异常: {type(data)}")
+                logger.error(f"豆瓣 一周全球剧集口碑榜 API 返回格式异常: {type(data)}")
                 return []
 
             results: List[Dict] = []
@@ -366,12 +366,12 @@ class ChartScraper:
                     'url': f"https://movie.douban.com/subject/{douban_id}/" if douban_id else ''
                 })
 
-            logger.info(f"豆瓣全球剧集榜获取到 {len(results)} 个项目")
+            logger.info(f"豆瓣 一周全球剧集口碑榜 获取到 {len(results)} 个项目")
             if results:
                 logger.debug(f"示例: {results[0]}")
             return results
         except Exception as e:
-            logger.error(f"抓取豆瓣全球剧集榜失败: {e}")
+            logger.error(f"抓取豆瓣 一周全球剧集口碑榜 失败: {e}")
             return []
 
     async def get_douban_imdb_id(self, douban_id: str) -> Optional[str]:
@@ -437,7 +437,7 @@ class ChartScraper:
             return None
 
     async def scrape_douban_weekly_chinese_tv_chart(self) -> List[Dict]:
-        """豆瓣一周华语剧集口碑榜"""
+        """豆瓣 一周华语剧集口碑榜"""
         try:
             import json
 
@@ -456,7 +456,7 @@ class ChartScraper:
             wait_turn()
             resp = requests.get(api_url, headers=headers, timeout=20, verify=True)
             if resp.status_code != 200:
-                logger.error(f"豆瓣华语剧集榜 API 调用失败，状态码: {resp.status_code}")
+                logger.error(f"豆瓣 一周华语剧集口碑榜 API 调用失败，状态码: {resp.status_code}")
                 return []
 
             try:
@@ -469,7 +469,7 @@ class ChartScraper:
             elif isinstance(data, list):
                 items = data
             else:
-                logger.error(f"豆瓣华语剧集榜 API 返回格式异常: {type(data)}")
+                logger.error(f"豆瓣 一周华语剧集口碑榜 API 返回格式异常: {type(data)}")
                 return []
 
             results: List[Dict] = []
@@ -486,18 +486,18 @@ class ChartScraper:
                     'url': f"https://movie.douban.com/subject/{douban_id}/" if douban_id else ''
                 })
 
-            logger.info(f"豆瓣华语剧集榜获取到 {len(results)} 个项目")
+            logger.info(f"豆瓣 一周华语剧集口碑榜 获取到 {len(results)} 个项目")
             if results:
                 logger.debug(f"示例: {results[0]}")
             return results
         except Exception as e:
-            logger.error(f"抓取豆瓣华语剧集榜失败: {e}")
+            logger.error(f"抓取 豆瓣 一周华语剧集口碑榜 失败: {e}")
             return []
 
     async def scrape_imdb_top_10(self) -> List[Dict]:
-        """IMDB Top 10 this week"""
+        """IMDb 本周 Top 10"""
         try:
-            logger.info("开始爬取IMDB Top 10榜单")
+            logger.info("开始爬取 IMDb 本周 Top 10 榜单")
             
             import requests
             import urllib3
@@ -518,7 +518,7 @@ class ChartScraper:
 
             imdb_cookie = (os.getenv("IMDB_GRAPHQL_COOKIE") or "").strip()
             if not imdb_cookie:
-                logger.warning("未配置 IMDB_GRAPHQL_COOKIE，跳过 IMDb Top 10 抓取（请在 .env 中设置浏览器 Cookie）")
+                logger.warning("未配置 IMDB_GRAPHQL_COOKIE，跳过 IMDb 本周 Top 10 抓取（请在 .env 中设置浏览器 Cookie）")
                 return []
 
             imdb_client_rid = (os.getenv("IMDB_CLIENT_RID") or "").strip()
@@ -597,7 +597,7 @@ class ChartScraper:
                 results.sort(key=lambda x: x["rank"])
                 results = results[:10]
 
-                logger.info(f"IMDb Top 10 获取到 {len(results)} 条（GraphQL）")
+                logger.info(f"IMDb 本周 Top 10 获取到 {len(results)} 条（GraphQL）")
                 return results
             else:
                 logger.error(f"IMDB API请求失败: {response.status_code}")
@@ -606,37 +606,37 @@ class ChartScraper:
                 return []
                         
         except Exception as e:
-            logger.error(f"爬取IMDB Top 10榜单失败: {e}")
+            logger.error(f"爬取 IMDb 本周 Top 10 榜单失败: {e}")
             import traceback
             logger.error(traceback.format_exc())
             return []
 
     async def scrape_letterboxd_popular(self) -> List[Dict]:
-        """Letterboxd Popular films this week"""
+        """Letterboxd 本周热门影视"""
         films_url = "https://letterboxd.com/films/"
         async def scrape_with_browser(browser):
             ctx_to_close = None
             page = await browser.new_page()
             try:
-                logger.info(f"Letterboxd Popular: 开始抓取 {films_url}")
+                logger.info(f"Letterboxd 本周热门影视: 开始抓取 {films_url}")
                 letterboxd_cookie = os.environ.get("LETTERBOXD_COOKIE", "").strip()
                 if letterboxd_cookie:
                     cookies = _parse_letterboxd_cookie_string(letterboxd_cookie)
                     if cookies:
                         await page.context.add_cookies(cookies)
-                        logger.info("Letterboxd Popular: 已注入 LETTERBOXD_COOKIE")
+                        logger.info("Letterboxd 本周热门影视: 已注入 LETTERBOXD_COOKIE")
                 await page.goto(films_url, wait_until="domcontentloaded")
                 await asyncio.sleep(2)
                 if await _is_cloudflare_challenge(page):
-                    logger.warning("Letterboxd Popular: 检测到 Cloudflare 验证，尝试 FlareSolverr…")
+                    logger.warning("Letterboxd 本周热门影视: 检测到 Cloudflare 验证，尝试 FlareSolverr…")
                     if not os.environ.get("FLARESOLVERR_URL", "").strip():
-                        logger.warning("Letterboxd Popular: 未配置 FLARESOLVERR_URL")
+                        logger.warning("Letterboxd 本周热门影视: 未配置 FLARESOLVERR_URL")
                     fs = await _letterboxd_flaresolverr(films_url)
                     if not fs:
-                        logger.warning("Letterboxd Popular: 未配置或 FlareSolverr 失败，返回空")
+                        logger.warning("Letterboxd 本周热门影视: 未配置或 FlareSolverr 失败，返回空")
                         return []
                     logger.info(
-                        f"Letterboxd Popular: FlareSolverr 成功返回 cookies={len(fs.get('cookies', []))} ua_len={len(fs.get('userAgent', ''))}"
+                        f"Letterboxd 本周热门影视: FlareSolverr 成功返回 cookies={len(fs.get('cookies', []))} ua_len={len(fs.get('userAgent', ''))}"
                     )
                     await page.close()
                     ctx_to_close = await browser.new_context(viewport={"width": 1280, "height": 720}, user_agent=fs["userAgent"])
@@ -645,12 +645,12 @@ class ChartScraper:
                     await page.goto(films_url, wait_until="domcontentloaded", timeout=15000)
                     await asyncio.sleep(2)
                     if await _is_cloudflare_challenge(page):
-                        logger.warning("Letterboxd Popular: FlareSolverr 后仍为 CF，返回空")
+                        logger.warning("Letterboxd 本周热门影视: FlareSolverr 后仍为 CF，返回空")
                         return []
                 popular_items = await page.query_selector_all('#popular-films .poster-list li')
-                logger.info(f"Letterboxd Popular: 选择器命中 {len(popular_items)} 项")
+                logger.info(f"Letterboxd 本周热门影视: 选择器命中 {len(popular_items)} 项")
                 if not popular_items:
-                    logger.warning("Letterboxd Popular: 未命中榜单节点，可能是页面结构变化或仍被拦截")
+                    logger.warning("Letterboxd 本周热门影视: 未命中榜单节点，可能是页面结构变化或仍被拦截")
                 results = []
                 missing_title_count = 0
                 missing_link_count = 0
@@ -704,15 +704,15 @@ class ChartScraper:
                             if not link:
                                 missing_link_count += 1
                     except Exception as e:
-                        logger.error(f"处理Letterboxd榜单项时出错: {e}")
+                        logger.error(f"处理 Letterboxd 本周热门影视 榜单项时出错: {e}")
                         continue
-                logger.info(f"Letterboxd Popular: 抓取解析完成，结果 {len(results)} 条")
+                logger.info(f"Letterboxd 本周热门影视: 抓取解析完成，结果 {len(results)} 条")
                 logger.info(
-                    f"Letterboxd Popular: 字段缺失统计 missing_title={missing_title_count}, "
+                    f"Letterboxd 本周热门影视: 字段缺失统计 missing_title={missing_title_count}, "
                     f"missing_link={missing_link_count}, missing_film_id={missing_film_id_count}"
                 )
                 if results:
-                    logger.info(f"Letterboxd Popular: 示例首条 title={results[0].get('title','')} rank={results[0].get('rank')}")
+                    logger.info(f"Letterboxd 本周热门影视: 示例首条 title={results[0].get('title','')} rank={results[0].get('rank')}")
                         
                 return results
             finally:
@@ -796,24 +796,24 @@ class ChartScraper:
         return await browser_pool.execute_in_browser(scrape)
 
     async def update_rotten_movies(self) -> int:
-        """烂番茄 Popular Streaming Movies"""
-        platform = '烂番茄'
-        chart_name = 'Popular Streaming Movies'
+        """Rotten Tomatoes 热门流媒体电影"""
+        platform = 'Rotten Tomatoes'
+        chart_name = '热门流媒体电影'
         
         matcher = TMDBMatcher(self.db)
         url = 'https://www.rottentomatoes.com/browse/movies_at_home/sort:popular'
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                logger.info(f"烂番茄电影榜单抓取尝试 {attempt + 1}/{max_retries}")
+                logger.info(f"Rotten Tomatoes 热门流媒体电影 榜单抓取尝试 {attempt + 1}/{max_retries}")
                 items = await self._rt_extract_itemlist(url, 'Movie')
                 if not items:
-                    raise Exception("未获取到榜单数据")
+                    raise Exception("未获取到 Rotten Tomatoes 热门流媒体电影 榜单数据")
                 break
             except Exception as e:
-                logger.warning(f"烂番茄电影榜单抓取失败 (尝试 {attempt + 1}/{max_retries}): {e}")
+                logger.warning(f"Rotten Tomatoes 热门流媒体电影 抓取失败 (尝试 {attempt + 1}/{max_retries}): {e}")
                 if attempt == max_retries - 1:
-                    logger.error("烂番茄电影榜单抓取最终失败")
+                    logger.error("Rotten Tomatoes 热门流媒体电影 抓取最终失败")
                     return 0
                 await asyncio.sleep(5 * (attempt + 1))
         
@@ -842,7 +842,7 @@ class ChartScraper:
                     if attempt < 2:
                         await asyncio.sleep(2 ** attempt)
             if not match:
-                logger.warning(f"烂番茄电影未匹配: {title}")
+                logger.warning(f"Rotten Tomatoes 热门流媒体电影 未匹配: {title}")
                 rank += 1
                 continue
             
@@ -863,9 +863,9 @@ class ChartScraper:
         return saved
 
     async def update_letterboxd_popular(self) -> int:
-        """Letterboxd Popular films this week"""
+        """Letterboxd 本周热门影视"""
         platform = 'Letterboxd'
-        chart_name = 'Popular films this week'
+        chart_name = '本周热门影视'
         
         matcher = TMDBMatcher(self.db)
         items = await self.scrape_letterboxd_popular()
@@ -952,7 +952,7 @@ class ChartScraper:
                                 await asyncio.sleep(2 ** attempt)
             if not match:
                 unmatched_count += 1
-                logger.warning(f"Letterboxd未匹配: {title}")
+                logger.warning(f"Letterboxd 本周热门影视 未匹配: {title}")
                 rank += 1
                 continue
             
@@ -976,6 +976,7 @@ class ChartScraper:
         return saved
 
     async def _extract_imdb_from_metacritic(self, url: str) -> Optional[str]:
+        """从 Metacritic 页面提取 IMDb ID"""
         try:
             import requests, urllib3
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -994,9 +995,9 @@ class ChartScraper:
             return None
 
     async def update_metacritic_movies(self) -> int:
-        """Metacritic Trending Movies This Week"""
-        platform = 'MTC'
-        chart_name = 'Trending Movies This Week'
+        """Metacritic 本周趋势电影"""
+        platform = 'Metacritic'
+        chart_name = '本周趋势电影'
         
         matcher = TMDBMatcher(self.db)
         items = await self.scrape_metacritic_trending_movies()
@@ -1019,7 +1020,7 @@ class ChartScraper:
                     if info:
                         match = {'tmdb_id': mid, 'title': self._safe_get_title(info, title), 'poster': info.get('poster_url',''), 'media_type': 'movie'}
             if not match:
-                logger.warning(f"Metacritic电影未匹配: {title}")
+                logger.warning(f"Metacritic 本周趋势电影 未匹配: {title}")
                 rank += 1
                 continue
             
@@ -1039,9 +1040,9 @@ class ChartScraper:
         return saved
 
     async def update_metacritic_shows(self) -> int:
-        """Metacritic Trending Shows This Week"""
-        platform = 'MTC'
-        chart_name = 'Trending Shows This Week'
+        """Metacritic 本周趋势剧集"""
+        platform = 'Metacritic'
+        chart_name = '本周趋势剧集'
         
         matcher = TMDBMatcher(self.db)
         items = await self.scrape_metacritic_trending_shows()
@@ -1064,7 +1065,7 @@ class ChartScraper:
                     if info:
                         match = {'tmdb_id': mid, 'title': self._safe_get_title(info, title), 'poster': info.get('poster_url',''), 'media_type': 'tv'}
             if not match:
-                logger.warning(f"Metacritic剧集未匹配: {title}")
+                logger.warning(f"Metacritic 本周趋势剧集 未匹配: {title}")
                 rank += 1
                 continue
             
@@ -1084,7 +1085,7 @@ class ChartScraper:
         return saved
 
     async def update_tmdb_trending_all_week(self) -> int:
-        """TMDB 趋势本周"""
+        """TMDB 本周趋势影视"""
         import urllib3, requests, re
         from bs4 import BeautifulSoup
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -1149,11 +1150,11 @@ class ChartScraper:
         if not items:
             items = fetch_from_official_api()
         if not items:
-            logger.error("TMDB 趋势本周：页面与API均无结果")
+            logger.error("TMDB 本周趋势影视 页面与API均无结果")
             return 0
 
         platform = 'TMDB'
-        chart_name = '趋势本周'
+        chart_name = '本周趋势影视'
         entries: list[dict] = []
         matcher = TMDBMatcher(self.db)
         for idx, item in enumerate(items[:10], 1):
@@ -1180,7 +1181,7 @@ class ChartScraper:
 
         entries.sort(key=lambda x: x["rank"])
         saved = self._replace_chart_snapshot(platform, chart_name, entries)
-        logger.info(f"TMDB 趋势本周 入库 {saved} 条（来源：{'remote panel' if items else 'api'}）")
+        logger.info(f"TMDB 本周趋势影视 入库 {saved} 条（来源：{'remote panel' if items else 'api'}）")
         return saved
 
     async def update_tmdb_top250_movies(self) -> int:
@@ -1189,7 +1190,7 @@ class ChartScraper:
         import urllib3
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         platform = 'TMDB'
-        chart_name = 'TMDB Top 250 Movies'
+        chart_name = 'TMDB 高分电影 Top 250'
         headers = {
             'Authorization': f'Bearer {TMDB_TOKEN}',
             'accept': 'application/json'
@@ -1204,7 +1205,7 @@ class ChartScraper:
                 response = requests.get(url, headers=headers, timeout=20, verify=False)
                 
                 if response.status_code != 200:
-                    logger.warning(f"TMDB Top 250 Movies API 调用失败 (page {page}): {response.status_code}")
+                    logger.warning(f"TMDB 高分电影 Top 250 API 调用失败 (page {page}): {response.status_code}")
                     break
                 
                 data = response.json()
@@ -1228,7 +1229,7 @@ class ChartScraper:
                 await asyncio.sleep(0.3)
                 
             except Exception as e:
-                logger.error(f"TMDB Top 250 Movies 获取第 {page} 页失败: {e}")
+                logger.error(f"TMDB 高分电影 Top 250 获取第 {page} 页失败: {e}")
                 continue
         
         all_items = all_items[:250]
@@ -1245,7 +1246,7 @@ class ChartScraper:
                 else:
                     poster = f"https://tmdb.ratefuse.cn/t/p/w500{poster_path}" if poster_path else ""
             except Exception as e:
-                logger.warning(f"TMDB Top 250 Movies 获取详细信息失败 (rank {rank}, tmdb_id {tmdb_id}): {e}")
+                logger.warning(f"TMDB 高分电影 Top 250 获取详细信息失败 (rank {rank}, tmdb_id {tmdb_id}): {e}")
                 poster = f"https://tmdb.ratefuse.cn/t/p/w500{poster_path}" if poster_path else ""
             
             entries.append(
@@ -1269,7 +1270,7 @@ class ChartScraper:
         import urllib3
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         platform = 'TMDB'
-        chart_name = 'TMDB Top 250 TV Shows'
+        chart_name = 'TMDB 高分剧集 Top 250'
         headers = {
             'Authorization': f'Bearer {TMDB_TOKEN}',
             'accept': 'application/json'
@@ -1284,7 +1285,7 @@ class ChartScraper:
                 response = requests.get(url, headers=headers, timeout=20, verify=False)
                 
                 if response.status_code != 200:
-                    logger.warning(f"TMDB Top 250 TV Shows API 调用失败 (page {page}): {response.status_code}")
+                    logger.warning(f"TMDB 高分剧集 Top 250 API 调用失败 (page {page}): {response.status_code}")
                     break
                 
                 data = response.json()
@@ -1308,7 +1309,7 @@ class ChartScraper:
                 await asyncio.sleep(0.3)
                 
             except Exception as e:
-                logger.error(f"TMDB Top 250 TV Shows 获取第 {page} 页失败: {e}")
+                logger.error(f"TMDB 高分剧集 Top 250 获取第 {page} 页失败: {e}")
                 continue
         
         all_items = all_items[:250]
@@ -1325,7 +1326,7 @@ class ChartScraper:
                 else:
                     poster = f"https://tmdb.ratefuse.cn/t/p/w500{poster_path}" if poster_path else ""
             except Exception as e:
-                logger.warning(f"TMDB Top 250 TV Shows 获取详细信息失败 (rank {rank}, tmdb_id {tmdb_id}): {e}")
+                logger.warning(f"TMDB 高分剧集 Top 250 获取详细信息失败 (rank {rank}, tmdb_id {tmdb_id}): {e}")
                 poster = f"https://tmdb.ratefuse.cn/t/p/w500{poster_path}" if poster_path else ""
             
             entries.append(
@@ -1397,7 +1398,7 @@ class ChartScraper:
                 
                 while scroll_attempts < max_scroll_attempts:
                     await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                    await asyncio.sleep(2)  # 等待懒加载
+                    await asyncio.sleep(2)
                     
                     page_content = await page.content()
                     rank_count = len(re.findall(r'"currentRank":\d+', page_content))
@@ -1652,14 +1653,14 @@ class ChartScraper:
             return []
 
     async def update_imdb_top250_movies(self) -> int:
-        """IMDb Top 250 Movies → 'IMDb / IMDb Top 250 Movies'"""
+        """IMDb 电影 Top 250"""
         platform = 'IMDb'
-        chart_name = 'IMDb Top 250 Movies'
+        chart_name = 'IMDb 电影 Top 250'
         matcher = TMDBMatcher(self.db)
         items = await self.scrape_imdb_top250("https://www.imdb.com/chart/top/", "movie")
         
         if not items:
-            logger.error("未能获取到 IMDb Top 250 Movies 数据")
+            logger.error("未能获取到 IMDb 电影 Top 250 数据")
             return 0
         
         entries: list[dict] = []
@@ -1675,13 +1676,13 @@ class ChartScraper:
                 imdb_id = item.get('imdb_id') or ''
 
                 if not imdb_id:
-                    logger.warning(f"IMDb Top 250 Movies rank {rank}: 缺少 IMDb ID")
+                    logger.warning(f"IMDb 电影 Top 250 排名 {rank}: 缺少 IMDb ID")
                     return None
                 
                 try:
                     match = await matcher.match_imdb_with_tmdb(imdb_id, title, 'movie')
                     if not match:
-                        logger.warning(f"IMDb Top 250 Movies rank {rank} ({title}): 未匹配到 TMDB")
+                        logger.warning(f"IMDb 电影 Top 250 排名 {rank} ({title}): 未匹配到 TMDB")
                         return None
                     
                     return {
@@ -1690,7 +1691,7 @@ class ChartScraper:
                         'title': title
                     }
                 except Exception as e:
-                    logger.warning(f"IMDb Top 250 Movies rank {rank} ({title}): 匹配失败: {e}")
+                    logger.warning(f"IMDb 电影 Top 250 排名 {rank} ({title}): 匹配失败: {e}")
                     return None
         
         batch_size = 30
@@ -1719,25 +1720,25 @@ class ChartScraper:
                     }
                 )
             
-            logger.info(f"IMDb Top 250 Movies 收集进度: {min(batch_start + batch_size, total)}/{total} 条已处理")
+            logger.info(f"IMDb 电影 Top 250 收集进度: {min(batch_start + batch_size, total)}/{total} 条已处理")
             
             if batch_start + batch_size < total:
                 await asyncio.sleep(0.3)
 
         entries.sort(key=lambda x: x["rank"])
         saved = self._replace_chart_snapshot(platform, chart_name, entries)
-        logger.info(f"IMDb Top 250 Movies 入库完成，共 {saved}/{total} 条")
+        logger.info(f"IMDb 电影 Top 250 入库完成，共 {saved}/{total} 条")
         return saved
 
     async def update_imdb_top250_tv(self) -> int:
-        """IMDb Top 250 TV Shows → 'IMDb / IMDb Top 250 TV Shows'"""
+        """IMDb 剧集 Top 250"""
         platform = 'IMDb'
-        chart_name = 'IMDb Top 250 TV Shows'
+        chart_name = 'IMDb 剧集 Top 250'
         matcher = TMDBMatcher(self.db)
         items = await self.scrape_imdb_top250("https://www.imdb.com/chart/toptv/", "tv")
         
         if not items:
-            logger.error("未能获取到 IMDb Top 250 TV Shows 数据")
+            logger.error("未能获取到 IMDb 剧集 Top 250 数据")
             return 0
         
         entries: list[dict] = []
@@ -1753,13 +1754,13 @@ class ChartScraper:
                 imdb_id = item.get('imdb_id') or ''
 
                 if not imdb_id:
-                    logger.warning(f"IMDb Top 250 TV Shows rank {rank}: 缺少 IMDb ID")
+                    logger.warning(f"IMDb 剧集 Top 250 排名 {rank}: 缺少 IMDb ID")
                     return None
                 
                 try:
                     match = await matcher.match_imdb_with_tmdb(imdb_id, title, 'tv')
                     if not match:
-                        logger.warning(f"IMDb Top 250 TV Shows rank {rank} ({title}): 未匹配到 TMDB")
+                        logger.warning(f"IMDb 剧集 Top 250 排名 {rank} ({title}): 未匹配到 TMDB")
                         return None
                     
                     return {
@@ -1768,7 +1769,7 @@ class ChartScraper:
                         'title': title
                     }
                 except Exception as e:
-                    logger.warning(f"IMDb Top 250 TV Shows rank {rank} ({title}): 匹配失败: {e}")
+                    logger.warning(f"IMDb 剧集 Top 250 排名 {rank} ({title}): 匹配失败: {e}")
                     return None
         
         batch_size = 30
@@ -1797,14 +1798,14 @@ class ChartScraper:
                     }
                 )
             
-            logger.info(f"IMDb Top 250 TV Shows 收集进度: {min(batch_start + batch_size, total)}/{total} 条已处理")
+            logger.info(f"IMDb 剧集 Top 250 收集进度: {min(batch_start + batch_size, total)}/{total} 条已处理")
             
             if batch_start + batch_size < total:
                 await asyncio.sleep(0.3)
 
         entries.sort(key=lambda x: x["rank"])
         saved = self._replace_chart_snapshot(platform, chart_name, entries)
-        logger.info(f"IMDb Top 250 TV Shows 入库完成，共 {saved}/{total} 条")
+        logger.info(f"IMDb 剧集 Top 250 入库完成，共 {saved}/{total} 条")
         return saved
 
     async def scrape_douban_top250(self, douban_cookie: Optional[str] = None) -> List[Dict]:
@@ -2109,16 +2110,16 @@ class ChartScraper:
                         
                     except Exception as e:
                         if attempt < max_retries:
-                            logger.debug(f"获取豆瓣IMDb ID失败 (douban_id: {douban_id})，将重试: {e}")
+                            logger.debug(f"获取 豆瓣 IMDb ID失败 (douban_id: {douban_id})，将重试: {e}")
                             continue
                         else:
-                            logger.debug(f"获取豆瓣IMDb ID失败 (douban_id: {douban_id}): {e}")
+                            logger.debug(f"获取 豆瓣 IMDb ID失败 (douban_id: {douban_id}): {e}")
                             return None
                 
                 return None
                 
             except Exception as e:
-                logger.debug(f"获取豆瓣IMDb ID失败 (douban_id: {douban_id}): {e}")
+                logger.debug(f"获取 豆瓣 IMDb ID失败 (douban_id: {douban_id}): {e}")
                 return None
             finally:
                 if page:
@@ -2129,17 +2130,17 @@ class ChartScraper:
         try:
             return await browser_pool.execute_in_browser(get_with_browser)
         except Exception as e:
-            logger.debug(f"获取豆瓣IMDb ID失败: {e}")
+            logger.debug(f"获取 豆瓣 IMDb ID失败: {e}")
             return None
 
     async def update_douban_top250(self, douban_cookie: Optional[str] = None, request: Optional['Request'] = None) -> int:
-        """豆瓣 Top 250 → '豆瓣 / 豆瓣 Top 250'"""
+        """豆瓣 电影 Top 250"""
         platform = '豆瓣'
-        chart_name = '豆瓣 Top 250'
+        chart_name = '豆瓣 电影 Top 250'
         movies = await self.scrape_douban_top250(douban_cookie)
         
         if not movies:
-            logger.error("未能获取到豆瓣 Top 250 数据")
+            logger.error("未能获取到 豆瓣 电影 Top 250 数据")
             return 0
         
         matcher = TMDBMatcher(self.db)
@@ -2157,24 +2158,24 @@ class ChartScraper:
                 douban_id = movie.get('douban_id') or ''
 
                 if not douban_id:
-                    logger.warning(f"豆瓣 Top 250 rank {rank}: 缺少豆瓣 ID")
+                    logger.warning(f"豆瓣 电影 Top 250 排名 {rank}: 缺少豆瓣 ID")
                     return None
                 
                 try:
                     imdb_id = await self.get_douban_imdb_id_with_cookie(douban_id, douban_cookie)
                     
                     if not imdb_id:
-                        logger.warning(f"豆瓣 Top 250 rank {rank} ({title}): 未能获取 IMDb ID")
+                        logger.warning(f"豆瓣 电影 Top 250 排名 {rank} ({title}): 未能获取 IMDb ID")
                         return None
                     
                     match = None
                     try:
                         match = await matcher.match_imdb_with_tmdb(imdb_id, title, 'movie')
                     except Exception as e:
-                        logger.warning(f"豆瓣 Top 250 rank {rank} ({title}): 匹配失败: {e}")
+                        logger.warning(f"豆瓣 电影 Top 250 排名 {rank} ({title}): 匹配失败: {e}")
                     
                     if not match:
-                        logger.warning(f"豆瓣 Top 250 rank {rank} ({title}): 未匹配到 TMDB")
+                        logger.warning(f"豆瓣 电影 Top 250 排名 {rank} ({title}): 未匹配到 TMDB")
                         return None
                     
                     return {
@@ -2183,7 +2184,7 @@ class ChartScraper:
                         'title': title
                     }
                 except Exception as e:
-                    logger.error(f"豆瓣 Top 250 rank {rank} ({title}) 处理失败: {e}")
+                    logger.error(f"豆瓣 电影 Top 250 排名 {rank} ({title}) 处理失败: {e}")
                     return None
         
         batch_size = 10
@@ -2212,14 +2213,14 @@ class ChartScraper:
                     }
                 )
             
-            logger.info(f"豆瓣 Top 250 收集进度: {min(batch_start + batch_size, total)}/{total} 条已处理")
+            logger.info(f"豆瓣 电影 Top 250 收集进度: {min(batch_start + batch_size, total)}/{total} 条已处理")
             
             if batch_start + batch_size < total:
                 await asyncio.sleep(0.5)
         
         entries.sort(key=lambda x: x["rank"])
         saved = self._replace_chart_snapshot(platform, chart_name, entries)
-        logger.info(f"豆瓣 Top 250 入库完成，共 {saved}/{total} 条")
+        logger.info(f"豆瓣 电影 Top 250 入库完成，共 {saved}/{total} 条")
         return saved
 
     async def scrape_letterboxd_top250(self) -> List[Dict]:
@@ -2482,13 +2483,13 @@ class ChartScraper:
             return None
 
     async def update_letterboxd_top250(self) -> int:
-        """Letterboxd Top 250 → 'Letterboxd / Letterboxd Official Top 250'"""
+        """Letterboxd 电影 Top 250"""
         platform = 'Letterboxd'
-        chart_name = 'Letterboxd Official Top 250'
+        chart_name = 'Letterboxd 电影 Top 250'
         movies = await self.scrape_letterboxd_top250()
         
         if not movies:
-            logger.error("未能获取到 Letterboxd Top 250 数据")
+            logger.error("未能获取到 Letterboxd 电影 Top 250 数据")
             return 0
         
         matcher = TMDBMatcher(self.db)
@@ -2505,14 +2506,14 @@ class ChartScraper:
                 letterboxd_url = movie.get('url') or ''
 
                 if not letterboxd_url:
-                    logger.warning(f"Letterboxd Top 250 rank {rank}: 缺少链接")
+                    logger.warning(f"Letterboxd 电影 Top 250 排名 {rank}: 缺少链接")
                     return None
                 
                 try:
                     tmdb_id = await self.get_letterboxd_tmdb_id(letterboxd_url)
                     
                     if not tmdb_id:
-                        logger.warning(f"Letterboxd Top 250 rank {rank} ({title}): 未能获取 TMDB ID")
+                        logger.warning(f"Letterboxd 电影 Top 250 排名 {rank} ({title}): 未能获取 TMDB ID")
                         return None
                     
                     info = await matcher.get_tmdb_info(tmdb_id, 'movie')
@@ -2530,7 +2531,7 @@ class ChartScraper:
                         'poster': poster
                     }
                 except Exception as e:
-                    logger.warning(f"Letterboxd Top 250 rank {rank} ({title}): 处理异常: {e}")
+                    logger.warning(f"Letterboxd 电影 Top 250 排名 {rank} ({title}): 处理异常: {e}")
                     return None
         
         batch_size = 20
@@ -2554,7 +2555,7 @@ class ChartScraper:
                     }
                 )
             
-            logger.info(f"Letterboxd Top 250 收集进度: {min(batch_start + batch_size, total)}/{total} 条已处理")
+            logger.info(f"Letterboxd 电影 Top 250 收集进度: {min(batch_start + batch_size, total)}/{total} 条已处理")
             
             if batch_start + batch_size < total:
                 await asyncio.sleep(0.5)
@@ -2810,13 +2811,13 @@ class ChartScraper:
             return []
 
     async def update_metacritic_best_movies(self) -> int:
-        """Metacritic Best Movies of All Time → 'MTC / Metacritic Best Movies of All Time'"""
-        platform = 'MTC'
-        chart_name = 'Metacritic Best Movies of All Time'
+        """Metacritic 史上最佳电影 Top 250"""
+        platform = 'Metacritic'
+        chart_name = 'Metacritic 史上最佳电影 Top 250'
         items = await self.scrape_metacritic_top250('movie')
         
         if not items:
-            logger.error("未能获取到 Metacritic Best Movies of All Time 数据")
+            logger.error("未能获取到 Metacritic 史上最佳电影 Top 250 数据")
             return 0
         
         matcher = TMDBMatcher(self.db)
@@ -2833,13 +2834,13 @@ class ChartScraper:
                 year = item.get('year')
 
                 if not title:
-                    logger.warning(f"Metacritic Best Movies rank {rank}: 缺少标题")
+                    logger.warning(f"Metacritic 史上最佳电影 Top 250 排名 {rank}: 缺少标题")
                     return None
                 
                 try:
                     tmdb_id = await matcher.match_by_title_and_year(title, 'movie', str(year) if year else None)
                     if not tmdb_id:
-                        logger.warning(f"Metacritic Best Movies rank {rank} ({title}): 未匹配到 TMDB")
+                        logger.warning(f"Metacritic 史上最佳电影 Top 250 排名 {rank} ({title}): 未匹配到 TMDB")
                         return None
                     
                     info = await matcher.get_tmdb_info(tmdb_id, 'movie')
@@ -2854,7 +2855,7 @@ class ChartScraper:
                         'media_type': 'movie'
                     }
                 except Exception as e:
-                    logger.warning(f"Metacritic Best Movies rank {rank} ({title}): 匹配失败: {e}")
+                    logger.warning(f"Metacritic 史上最佳电影 Top 250 排名 {rank} ({title}): 匹配失败: {e}")
                     return None
         
         batch_size = 30
@@ -2878,7 +2879,7 @@ class ChartScraper:
                     }
                 )
             
-            logger.info(f"Metacritic Best Movies 收集进度: {min(batch_start + batch_size, total)}/{total} 条已处理")
+            logger.info(f"Metacritic 史上最佳电影 Top 250 收集进度: {min(batch_start + batch_size, total)}/{total} 条已处理")
             
             if batch_start + batch_size < total:
                 await asyncio.sleep(0.3)
@@ -2889,13 +2890,13 @@ class ChartScraper:
         return saved
 
     async def update_metacritic_best_tv(self) -> int:
-        """Metacritic Best TV Shows of All Time → 'MTC / Metacritic Best TV Shows of All Time'"""
-        platform = 'MTC'
-        chart_name = 'Metacritic Best TV Shows of All Time'
+        """Metacritic 史上最佳剧集 Top 250"""
+        platform = 'Metacritic'
+        chart_name = 'Metacritic 史上最佳剧集 Top 250'
         items = await self.scrape_metacritic_top250('tv')
         
         if not items:
-            logger.error("未能获取到 Metacritic Best TV Shows of All Time 数据")
+            logger.error("未能获取到 Metacritic 史上最佳剧集 Top 250 数据")
             return 0
         
         matcher = TMDBMatcher(self.db)
@@ -2912,13 +2913,13 @@ class ChartScraper:
                 year = item.get('year')
 
                 if not title:
-                    logger.warning(f"Metacritic Best TV Shows rank {rank}: 缺少标题")
+                    logger.warning(f"Metacritic 史上最佳剧集 Top 250 排名 {rank}: 缺少标题")
                     return None
                 
                 try:
                     tmdb_id = await matcher.match_by_title_and_year(title, 'tv', str(year) if year else None)
                     if not tmdb_id:
-                        logger.warning(f"Metacritic Best TV Shows rank {rank} ({title}): 未匹配到 TMDB")
+                        logger.warning(f"Metacritic 史上最佳剧集 Top 250 排名 {rank} ({title}): 未匹配到 TMDB")
                         return None
                     
                     info = await matcher.get_tmdb_info(tmdb_id, 'tv')
@@ -2933,7 +2934,7 @@ class ChartScraper:
                         'media_type': 'tv'
                     }
                 except Exception as e:
-                    logger.warning(f"Metacritic Best TV Shows rank {rank} ({title}): 匹配失败: {e}")
+                    logger.warning(f"Metacritic 史上最佳剧集 Top 250 排名 {rank} ({title}): 匹配失败: {e}")
                     return None
         
         batch_size = 30
@@ -2957,7 +2958,7 @@ class ChartScraper:
                     }
                 )
             
-            logger.info(f"Metacritic Best TV 收集进度: {min(batch_start + batch_size, total)}/{total} 条已处理")
+            logger.info(f"Metacritic 史上最佳剧集 Top 250 收集进度: {min(batch_start + batch_size, total)}/{total} 条已处理")
             
             if batch_start + batch_size < total:
                 await asyncio.sleep(0.3)
@@ -2968,9 +2969,9 @@ class ChartScraper:
         return saved
 
     async def update_trakt_movies_weekly(self) -> int:
-        """Trakt Movies most watched weekly → 'Trakt / Top Movies Last Week'"""
+        """Trakt 上周电影 Top 榜"""
         platform = 'Trakt'
-        chart_name = 'Top Movies Last Week'
+        chart_name = '上周电影 Top 榜'
         import urllib3, requests
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         headers = {
@@ -3021,9 +3022,9 @@ class ChartScraper:
         return saved
 
     async def update_trakt_shows_weekly(self) -> int:
-        """Trakt Shows most watched weekly → 'Trakt / Top TV Shows Last Week'"""
+        """Trakt 上周剧集 Top 榜"""
         platform = 'Trakt'
-        chart_name = 'Top TV Shows Last Week'
+        chart_name = '上周剧集 Top 榜'
         import urllib3, requests
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         headers = {
@@ -3074,9 +3075,9 @@ class ChartScraper:
         return saved
 
     async def update_imdb_top10(self) -> int:
-        """IMDb Top 10 this week → 'IMDb / Top 10 on IMDb this week'"""
+        """IMDb 本周 Top 10"""
         platform = 'IMDb'
-        chart_name = 'Top 10 on IMDb this week'
+        chart_name = 'IMDb 本周 Top 10'
         matcher = TMDBMatcher(self.db)
         items = await self.scrape_imdb_top_10()
         entries: list[dict] = []
@@ -3104,7 +3105,7 @@ class ChartScraper:
         return saved
 
     async def update_douban_weekly_movie(self) -> int:
-        """豆瓣一周口碑榜"""
+        """豆瓣 一周口碑榜"""
         platform = '豆瓣'
         chart_name = '一周口碑榜'
         matcher = TMDBMatcher(self.db)
@@ -3163,6 +3164,7 @@ class ChartScraper:
         return saved
 
     async def update_douban_weekly_chinese_tv(self) -> int:
+        """豆瓣 一周华语剧集口碑榜"""
         platform = '豆瓣'
         chart_name = '一周华语剧集口碑榜'
         matcher = TMDBMatcher(self.db)
@@ -3195,6 +3197,7 @@ class ChartScraper:
         return saved
 
     async def update_douban_weekly_global_tv(self) -> int:
+        """豆瓣 一周全球剧集口碑榜"""
         platform = '豆瓣'
         chart_name = '一周全球剧集口碑榜'
         matcher = TMDBMatcher(self.db)
@@ -3206,29 +3209,29 @@ class ChartScraper:
             match = None
             original_title = None
             
-            logger.debug(f"  处理: {title} (豆瓣ID: {douban_id})")
+            logger.debug(f"处理: {title} (豆瓣ID: {douban_id})")
             
             original_title = await matcher.extract_douban_original_title(douban_id)
             if original_title:
-                logger.debug(f"    提取到原名: {original_title}")
+                logger.debug(f"提取到原名: {original_title}")
             
             if original_title:
-                logger.debug(f"    用原名匹配: {original_title}")
+                logger.debug(f"用原名匹配: {original_title}")
                 tmdb_id = await matcher.match_by_title_and_year(original_title, 'tv')
                 if tmdb_id:
                     info = await matcher.get_tmdb_info(tmdb_id, 'tv')
                     if info:
                         match = {'tmdb_id': tmdb_id, 'title': self._safe_get_title(info, original_title), 'poster': info.get('poster_url',''), 'media_type': 'tv'}
-                        logger.info(f"    ✅ 原名匹配成功: {original_title} -> {match['title']}")
+                        logger.info(f"✅ 原名匹配成功: {original_title} -> {match['title']}")
             
             if not match:
-                logger.debug(f"    回退中文名匹配: {title}")
+                logger.debug(f"回退中文名匹配: {title}")
                 tmdb_id = await matcher.match_by_title_and_year(title, 'tv')
                 if tmdb_id:
                     info = await matcher.get_tmdb_info(tmdb_id, 'tv')
                     if info:
                         match = {'tmdb_id': tmdb_id, 'title': self._safe_get_title(info, title), 'poster': info.get('poster_url',''), 'media_type': 'tv'}
-                        logger.info(f"    ✅ 中文名匹配成功: {title} -> {match['title']}")
+                        logger.info(f"✅ 中文名匹配成功: {title} -> {match['title']}")
             if not match:
                 rank += 1; continue
             entries.append(
@@ -3247,24 +3250,24 @@ class ChartScraper:
         return saved
     
     async def update_rotten_tv(self) -> int:
-        """烂番茄 Popular TV"""
-        platform = '烂番茄'
-        chart_name = 'Popular TV'
+        """Rotten Tomatoes 热门剧集"""
+        platform = 'Rotten Tomatoes'
+        chart_name = '热门剧集'
         matcher = TMDBMatcher(self.db)
         url = 'https://www.rottentomatoes.com/browse/tv_series_browse/sort:popular'
         
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                logger.info(f"烂番茄TV榜单抓取尝试 {attempt + 1}/{max_retries}")
+                logger.info(f"Rotten Tomatoes 热门剧集 抓取尝试 {attempt + 1}/{max_retries}")
                 items = await self._rt_extract_itemlist(url, 'TVSeries')
                 if not items:
-                    raise Exception("未获取到榜单数据")
+                    raise Exception("未获取到 Rotten Tomatoes 热门剧集 榜单数据")
                 break
             except Exception as e:
-                logger.warning(f"烂番茄TV榜单抓取失败 (尝试 {attempt + 1}/{max_retries}): {e}")
+                logger.warning(f"Rotten Tomatoes 热门剧集 抓取失败 (尝试 {attempt + 1}/{max_retries}): {e}")
                 if attempt == max_retries - 1:
-                    logger.error("烂番茄TV榜单抓取最终失败")
+                    logger.error("Rotten Tomatoes 热门剧集 抓取最终失败")
                     return 0
                 await asyncio.sleep(5 * (attempt + 1))
         
@@ -3293,7 +3296,7 @@ class ChartScraper:
                     if attempt < 2:
                         await asyncio.sleep(2 ** attempt)
             if not match:
-                logger.warning(f"烂番茄TV未匹配: {title}")
+                logger.warning(f"Rotten Tomatoes 热门剧集 未匹配: {title}")
                 rank += 1
                 continue
             
@@ -3314,7 +3317,7 @@ class ChartScraper:
         return saved
     
     async def scrape_metacritic_trending_movies(self) -> List[Dict]:
-        """Metacritic Trending Shows This Week"""
+        """Metacritic 本周趋势电影"""
         async def scrape_with_browser(browser):
             context = await browser.new_context(
                 user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -3327,12 +3330,12 @@ class ChartScraper:
                 await page.wait_for_selector(section_selector, timeout=30000)
                 section = await page.query_selector(section_selector)
                 if not section:
-                    logger.warning("未找到电影板块")
+                    logger.warning("未找到 Metacritic 本周趋势电影 板块")
                     return []
 
                 await page.wait_for_selector(f'{section_selector} [data-testid="product-card"]', timeout=10000)
                 movie_cards = await section.query_selector_all('[data-testid="product-card"]')
-                logger.info(f"在电影板块内找到 {len(movie_cards)} 个卡片")
+                logger.info(f"在 Metacritic 本周趋势电影 板块内找到 {len(movie_cards)} 个卡片")
 
                 results = []
                 for i, card in enumerate(movie_cards[:10], 1):
@@ -3360,13 +3363,13 @@ class ChartScraper:
                                 'url': url
                             })
                     except Exception as e:
-                        logger.error(f"处理电影卡出错: {e}")
+                        logger.error(f"处理 Metacritic 本周趋势电影 卡出错: {e}")
                         continue
 
-                logger.info(f"电影榜单最终获取到 {len(results)} 个项目")
+                logger.info(f" Metacritic 本周趋势电影 最终获取到 {len(results)} 个项目")
                 return results
             except Exception as e:
-                logger.error(f"抓取电影榜单时发生错误: {e}", exc_info=True)
+                logger.error(f"抓取 Metacritic 本周趋势电影 时发生错误: {e}", exc_info=True)
                 return []
             finally:
                 await page.close()
@@ -3375,7 +3378,7 @@ class ChartScraper:
         return await browser_pool.execute_in_browser(scrape_with_browser)
 
     async def scrape_metacritic_trending_shows(self) -> List[Dict]:
-        """Metacritic Trending Movies This Week"""
+        """Metacritic 本周趋势剧集"""
         async def scrape_with_browser(browser):
             context = await browser.new_context(
                 user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -3388,12 +3391,12 @@ class ChartScraper:
                 await page.wait_for_selector(section_selector, timeout=30000)
                 section = await page.query_selector(section_selector)
                 if not section:
-                    logger.warning("未找到剧集板块")
+                    logger.warning("未找到 Metacritic 本周趋势剧集 板块")
                     return []
 
                 await page.wait_for_selector(f'{section_selector} [data-testid="product-card"]', timeout=10000)
                 show_cards = await section.query_selector_all('[data-testid="product-card"]')
-                logger.info(f"在剧集板块内找到 {len(show_cards)} 个卡片")
+                logger.info(f"在 Metacritic 本周趋势剧集 板块内找到 {len(show_cards)} 个卡片")
 
                 results = []
                 for i, card in enumerate(show_cards[:10], 1):
@@ -3421,13 +3424,13 @@ class ChartScraper:
                                 'url': url
                             })
                     except Exception as e:
-                        logger.error(f"处理剧集卡出错: {e}")
+                        logger.error(f"处理 Metacritic 本周趋势剧集 卡出错: {e}")
                         continue
 
-                logger.info(f"剧集榜单最终获取到 {len(results)} 个项目")
+                logger.info(f" Metacritic 本周趋势剧集 最终获取到 {len(results)} 个项目")
                 return results
             except Exception as e:
-                logger.error(f"抓取剧集榜单时发生错误: {e}", exc_info=True)
+                logger.error(f"抓取 Metacritic 本周趋势剧集 时发生错误: {e}", exc_info=True)
                 return []
             finally:
                 await page.close()
@@ -3567,7 +3570,7 @@ class TMDBMatcher:
                 
                 if attempt < max_retries - 1:
                     logger.warning(f"第 {attempt + 1} 次尝试失败，等待 {2 ** attempt} 秒后重试...")
-                    await asyncio.sleep(2 ** attempt)  # 指数退避
+                    await asyncio.sleep(2 ** attempt)
                 else:
                     logger.error(f"经过 {max_retries} 次尝试后，仍无法匹配: {title}")
                     return None
@@ -4049,7 +4052,7 @@ class AutoUpdateScheduler:
         }
     
     def should_update(self) -> bool:
-        """检查是否应该执行更新 - 每天北京21:30执行（无论之前是否更新过）"""
+        """检查是否应该执行更新"""
         from datetime import datetime, timezone, timedelta
     
         beijing_tz = _TZ_SHANGHAI
@@ -4100,18 +4103,18 @@ class AutoUpdateScheduler:
             scraper = ChartScraper(db)
             
             update_tasks = [
-                ("烂番茄电影", scraper.update_rotten_movies),
-                ("烂番茄TV", scraper.update_rotten_tv),
-                ("Letterboxd", scraper.update_letterboxd_popular),
-                ("Metacritic电影", scraper.update_metacritic_movies),
-                ("Metacritic剧集", scraper.update_metacritic_shows),
-                ("TMDB趋势", scraper.update_tmdb_trending_all_week),
-                ("Trakt电影", scraper.update_trakt_movies_weekly),
-                ("Trakt剧集", scraper.update_trakt_shows_weekly),
-                ("IMDb", scraper.update_imdb_top10),
-                ("豆瓣电影", scraper.update_douban_weekly_movie),
-                ("豆瓣华语剧集", scraper.update_douban_weekly_chinese_tv),
-                ("豆瓣全球剧集", scraper.update_douban_weekly_global_tv)
+                ("Rotten Tomatoes 热门流媒体电影", scraper.update_rotten_movies),
+                ("Rotten Tomatoes 热门剧集 ", scraper.update_rotten_tv),
+                ("Letterboxd 本周热门影视", scraper.update_letterboxd_popular),
+                ("Metacritic 本周趋势电影", scraper.update_metacritic_movies),
+                ("Metacritic 本周趋势剧集", scraper.update_metacritic_shows),
+                ("TMDB 本周趋势影视", scraper.update_tmdb_trending_all_week),
+                ("Trakt 上周电影 Top 榜", scraper.update_trakt_movies_weekly),
+                ("Trakt 上周剧集 Top 榜", scraper.update_trakt_shows_weekly),
+                ("IMDb 本周 Top 10", scraper.update_imdb_top10),
+                ("豆瓣 一周口碑榜", scraper.update_douban_weekly_movie),
+                ("豆瓣 一周华语剧集口碑榜", scraper.update_douban_weekly_chinese_tv),
+                ("豆瓣 一周全球剧集口碑榜", scraper.update_douban_weekly_global_tv)
             ]
             
             for platform_name, update_func in update_tasks:
@@ -4131,7 +4134,7 @@ class AutoUpdateScheduler:
             today_2130 = now_beijing.replace(hour=21, minute=30, second=0, microsecond=0)
             self.last_update = today_2130
             today_2130_naive = today_2130.replace(tzinfo=None)
-            logger.info(f"更新完成，将last_update设置为今天的21:30: {today_2130.strftime('%Y-%m-%d %H:%M:%S')} (北京时间)")
+            logger.info(f"更新完成，将上次更新设置为今天的21:30: {today_2130.strftime('%Y-%m-%d %H:%M:%S')} (北京时间)")
             
             duration = time.time() - start_time
             
@@ -4141,9 +4144,9 @@ class AutoUpdateScheduler:
                 if db_status:
                     db_status.last_update = today_2130_naive
                     db.commit()
-                    logger.info("数据库中的last_update已更新")
+                    logger.info("数据库中的上次更新已更新")
             except Exception as db_error:
-                logger.error(f"更新数据库last_update失败: {db_error}")
+                logger.error(f"更新数据库上次更新失败: {db_error}")
             
             if error_occurred:
                 logger.warning("定时更新任务完成，但部分平台更新失败")
