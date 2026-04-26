@@ -622,12 +622,13 @@ function HeroCarousel({
 
   const detailsQueries = useQueries({
     queries: items.map((item) => ({
-      queryKey: ['hero-detail', item.type, item.id, 'poster-hero'],
+      queryKey: ['hero-detail', item.type, item.id, 'poster-hero-v2'],
       queryFn: async () => {
         const res = await fetch(
           buildTmdbApiUrl(`${item.type}/${item.id}`, {
             language: 'zh-CN',
             append_to_response: 'images',
+            include_image_language: 'null,zh,en',
           })
         );
         if (!res.ok) throw new Error('加载轮播详情失败');
