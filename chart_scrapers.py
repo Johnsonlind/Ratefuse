@@ -796,24 +796,24 @@ class ChartScraper:
         return await browser_pool.execute_in_browser(scrape)
 
     async def update_rotten_movies(self) -> int:
-        """Rotten Tomatoes 热门流媒体电影"""
+        """Rotten Tomatoes 本周热门流媒体电影"""
         platform = 'Rotten Tomatoes'
-        chart_name = '热门流媒体电影'
+        chart_name = '本周热门流媒体电影'
         
         matcher = TMDBMatcher(self.db)
         url = 'https://www.rottentomatoes.com/browse/movies_at_home/sort:popular'
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                logger.info(f"Rotten Tomatoes 热门流媒体电影 榜单抓取尝试 {attempt + 1}/{max_retries}")
+                logger.info(f"Rotten Tomatoes 本周热门流媒体电影 榜单抓取尝试 {attempt + 1}/{max_retries}")
                 items = await self._rt_extract_itemlist(url, 'Movie')
                 if not items:
-                    raise Exception("未获取到 Rotten Tomatoes 热门流媒体电影 榜单数据")
+                    raise Exception("未获取到 Rotten Tomatoes 本周热门流媒体电影 榜单数据")
                 break
             except Exception as e:
-                logger.warning(f"Rotten Tomatoes 热门流媒体电影 抓取失败 (尝试 {attempt + 1}/{max_retries}): {e}")
+                logger.warning(f"Rotten Tomatoes 本周热门流媒体电影 抓取失败 (尝试 {attempt + 1}/{max_retries}): {e}")
                 if attempt == max_retries - 1:
-                    logger.error("Rotten Tomatoes 热门流媒体电影 抓取最终失败")
+                    logger.error("Rotten Tomatoes 本周热门流媒体电影 抓取最终失败")
                     return 0
                 await asyncio.sleep(5 * (attempt + 1))
         
@@ -842,7 +842,7 @@ class ChartScraper:
                     if attempt < 2:
                         await asyncio.sleep(2 ** attempt)
             if not match:
-                logger.warning(f"Rotten Tomatoes 热门流媒体电影 未匹配: {title}")
+                logger.warning(f"Rotten Tomatoes 本周热门流媒体电影 未匹配: {title}")
                 rank += 1
                 continue
             
@@ -3250,24 +3250,24 @@ class ChartScraper:
         return saved
     
     async def update_rotten_tv(self) -> int:
-        """Rotten Tomatoes 热门剧集"""
+        """Rotten Tomatoes 本周热门剧集"""
         platform = 'Rotten Tomatoes'
-        chart_name = '热门剧集'
+        chart_name = '本周热门剧集'
         matcher = TMDBMatcher(self.db)
         url = 'https://www.rottentomatoes.com/browse/tv_series_browse/sort:popular'
         
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                logger.info(f"Rotten Tomatoes 热门剧集 抓取尝试 {attempt + 1}/{max_retries}")
+                logger.info(f"Rotten Tomatoes 本周热门剧集 抓取尝试 {attempt + 1}/{max_retries}")
                 items = await self._rt_extract_itemlist(url, 'TVSeries')
                 if not items:
-                    raise Exception("未获取到 Rotten Tomatoes 热门剧集 榜单数据")
+                    raise Exception("未获取到 Rotten Tomatoes 本周热门剧集 榜单数据")
                 break
             except Exception as e:
-                logger.warning(f"Rotten Tomatoes 热门剧集 抓取失败 (尝试 {attempt + 1}/{max_retries}): {e}")
+                logger.warning(f"Rotten Tomatoes 本周热门剧集 抓取失败 (尝试 {attempt + 1}/{max_retries}): {e}")
                 if attempt == max_retries - 1:
-                    logger.error("Rotten Tomatoes 热门剧集 抓取最终失败")
+                    logger.error("Rotten Tomatoes 本周热门剧集 抓取最终失败")
                     return 0
                 await asyncio.sleep(5 * (attempt + 1))
         
@@ -3296,7 +3296,7 @@ class ChartScraper:
                     if attempt < 2:
                         await asyncio.sleep(2 ** attempt)
             if not match:
-                logger.warning(f"Rotten Tomatoes 热门剧集 未匹配: {title}")
+                logger.warning(f"Rotten Tomatoes 本周热门剧集 未匹配: {title}")
                 rank += 1
                 continue
             
@@ -4103,8 +4103,8 @@ class AutoUpdateScheduler:
             scraper = ChartScraper(db)
             
             update_tasks = [
-                ("Rotten Tomatoes 热门流媒体电影", scraper.update_rotten_movies),
-                ("Rotten Tomatoes 热门剧集 ", scraper.update_rotten_tv),
+                ("Rotten Tomatoes 本周热门流媒体电影", scraper.update_rotten_movies),
+                ("Rotten Tomatoes 本周热门剧集 ", scraper.update_rotten_tv),
                 ("Letterboxd 本周热门影视", scraper.update_letterboxd_popular),
                 ("Metacritic 本周趋势电影", scraper.update_metacritic_movies),
                 ("Metacritic 本周趋势剧集", scraper.update_metacritic_shows),
