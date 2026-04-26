@@ -7049,6 +7049,14 @@ async def get_aggregate_charts(db: Session = Depends(get_db)):
     if cached:
         return cached
 
+    chinese_tv = latest_chart_top_by_rank(
+        db,
+        platform=canonical_platform_name("豆瓣"),
+        chart_name=canonical_chart_name("一周华语剧集口碑榜"),
+        media_type="tv",
+        limit=10,
+    )
+
     movie_include_pairs = [
         (canonical_platform_name("豆瓣"), canonical_chart_name("一周口碑榜")),
         (canonical_platform_name("IMDb"), canonical_chart_name("IMDb 本周 Top 10")),
@@ -7058,6 +7066,7 @@ async def get_aggregate_charts(db: Session = Depends(get_db)):
         (canonical_platform_name("TMDB"), canonical_chart_name("本周趋势影视")),
         (canonical_platform_name("Trakt"), canonical_chart_name("上周电影 Top 榜")),
     ]
+    
     tv_include_pairs = [
         (canonical_platform_name("豆瓣"), canonical_chart_name("一周全球剧集口碑榜")),
         (canonical_platform_name("IMDb"), canonical_chart_name("IMDb 本周 Top 10")),
@@ -7067,30 +7076,10 @@ async def get_aggregate_charts(db: Session = Depends(get_db)):
         (canonical_platform_name("TMDB"), canonical_chart_name("本周趋势影视")),
         (canonical_platform_name("Trakt"), canonical_chart_name("上周剧集 Top 榜")),
     ]
-    movies = aggregate_top(
-        db,
-        media_type="movie",
-        limit=10,
-        chinese_only=False,
-        include_pairs=movie_include_pairs,
-        tie_rank_order="desc",
-    )
-    tv = aggregate_top(
-        db,
-        media_type="tv",
-        limit=10,
-        chinese_only=False,
-        include_pairs=tv_include_pairs,
-        tie_rank_order="desc",
-    )
-    top_chinese_tv = latest_chart_top_by_rank(
-        db,
-        platform=canonical_platform_name("豆瓣"),
-        chart_name=canonical_chart_name("一周华语剧集口碑榜"),
-        media_type="tv",
-        limit=10,
-    )
-    result = {"top_movies": movies, "top_tv": tv, "top_chinese_tv": top_chinese_tv}
+    
+    movies = aggregate_top(db, media_type="movie", limit=10, chinese_only=False, include_pairs=movie_include_pairs)
+    tv = aggregate_top(db, media_type="tv", limit=10, chinese_only=False, include_pairs=tv_include_pairs)
+    result = {"top_movies": movies, "top_tv": tv, "top_chinese_tv": chinese_tv}
     await set_cache(cache_key, result, expire=CHARTS_CACHE_EXPIRE)
     return result
 
@@ -7299,18 +7288,18 @@ async def auto_update_charts(
         
         scraper = ChartScraper(db)
         results = {}
-        results['烂番茄电影'] = await scraper.update_rotten_movies()
-        results['烂番茄TV'] = await scraper.update_rotten_tv()
-        results['Letterboxd'] = await scraper.update_letterboxd_popular()
-        results['Metacritic电影'] = await scraper.update_metacritic_movies()
-        results['Metacritic剧集'] = await scraper.update_metacritic_shows()
-        results['TMDB趋势'] = await scraper.update_tmdb_trending_all_week()
-        results['Trakt电影'] = await scraper.update_trakt_movies_weekly()
-        results['Trakt剧集'] = await scraper.update_trakt_shows_weekly()
-        results['IMDb'] = await scraper.update_imdb_top10()
-        results['豆瓣电影'] = await scraper.update_douban_weekly_movie()
-        results['豆瓣华语剧集'] = await scraper.update_douban_weekly_chinese_tv()
-        results['豆瓣全球剧集'] = await scraper.update_douban_weekly_global_tv()
+        results['Rotten Tomatoes 本周热门流媒体电影'] = await scraper.update_rotten_movies()
+        results['Rotten Tomatoes 本周热门剧集'] = await scraper.update_rotten_tv()
+        results['Letterboxd 本周热门影视'] = await scraper.update_letterboxd_popular()
+        results['Metacritic 本周趋势电影'] = await scraper.update_metacritic_movies()
+        results['Metacritic 本周趋势剧集'] = await scraper.update_metacritic_shows()
+        results['TMDB 本周趋势影视'] = await scraper.update_tmdb_trending_all_week()
+        results['Trakt 上周电影 Top 榜'] = await scraper.update_trakt_movies_weekly()
+        results['Trakt 上周电影 Top 榜'] = await scraper.update_trakt_shows_weekly()
+        results['IMDb 本周 Top 10'] = await scraper.update_imdb_top10()
+        results['豆瓣 一周口碑榜'] = await scraper.update_douban_weekly_movie()
+        results['豆瓣 一周华语剧集口碑榜'] = await scraper.update_douban_weekly_chinese_tv()
+        results['豆瓣 一周全球剧集口碑榜'] = await scraper.update_douban_weekly_global_tv()
         
         update_time = datetime.now(_TZ_SHANGHAI)
         update_time_naive = update_time.replace(tzinfo=None)
