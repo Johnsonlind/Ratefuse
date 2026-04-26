@@ -15,6 +15,7 @@ import re
 import httpx
 import logging
 import mimetypes
+import json
 from html import escape as html_escape, unescape as html_unescape
 
 load_dotenv()
@@ -107,6 +108,7 @@ from models import (
     Follow,
     ChartEntry,
     PublicChartEntry,
+    ChartConfig,
     SchedulerStatus,
     MediaDetailAccessLog,
     Feedback,
@@ -140,7 +142,6 @@ from ratings import (
     metacritic_extract_rating_from_season_urls,
 )
 from redis import asyncio as aioredis
-import json
 import base64
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -472,6 +473,19 @@ async def set_cache(key: str, data: dict, expire: int = CACHE_EXPIRE_TIME):
     expires_at = time.time() + max(1, int(expire))
     async with _local_cache_lock:
         _local_cache[key] = (expires_at, data)
+
+async def delete_cache(*keys: str):
+    valid_keys = [k for k in keys if k]
+    if not valid_keys:
+        return
+    if redis:
+        try:
+            await redis.delete(*valid_keys)
+        except Exception as e:
+            logger.error(f"删除缓存出错: {e}")
+    async with _local_cache_lock:
+        for key in valid_keys:
+            _local_cache.pop(key, None)
 
 def _platform_absent_cache_key(platform: str, media_type: str, tmdb_id: int) -> str:
     p = (platform or "").strip().lower()
@@ -2828,7 +2842,6 @@ def _metacritic_build_season_url(series_url: str, season_number: int) -> Optiona
     if not base:
         return None
     base = base.rstrip("/") + "/"
-    # If series_url already points to a season page, trim it back to series root.
     base = re.sub(r"/season-\d+/?$", "/", base, flags=re.IGNORECASE)
     return f"{base}season-{int(season_number)}/"
 
@@ -2840,11 +2853,6 @@ def _is_empty_mapping_value(v: Any) -> bool:
     return False
 
 def _prune_patch_for_locked_platform(row: Any, patch: dict[str, Any]) -> dict[str, Any]:
-    """
-    Locked platform policy:
-    - Allow filling empty scalar fields (None/empty string) only.
-    - Allow appending missing seasons_json keys (do not overwrite existing keys).
-    """
     if not patch:
         return {}
     out: dict[str, Any] = {}
@@ -2936,13 +2944,6 @@ def _extract_douban_id_from_url(url: str) -> Optional[str]:
     return m.group(1) if m else None
 
 def _normalize_douban_rating_url(url: str) -> str:
-    """
-    Normalize Douban URLs so mapping uses the real destination URL.
-
-    Handles security redirect wrappers like:
-    - https://sec.douban.com/c?r=<urlencoded>&...
-    - https://sec.douban.com/b?r=<urlencoded>&...
-    """
     u = (url or "").strip()
     if not u:
         return u
@@ -2985,7 +2986,6 @@ def _normalize_douban_rating_url(url: str) -> str:
     return u
 
 def _extract_letterboxd_slug_from_url(url: str) -> Optional[str]:
-    # https://letterboxd.com/film/<slug>/
     try:
         p = urlparse(url)
         parts = [x for x in (p.path or "").split("/") if x]
@@ -2996,7 +2996,6 @@ def _extract_letterboxd_slug_from_url(url: str) -> Optional[str]:
     return None
 
 def _extract_rt_slug_from_url(url: str) -> Optional[str]:
-    # https://www.rottentomatoes.com/<slug>
     try:
         p = urlparse(url)
         path = (p.path or "").lstrip("/")
@@ -3005,7 +3004,6 @@ def _extract_rt_slug_from_url(url: str) -> Optional[str]:
         return None
 
 def _extract_metacritic_slug_from_url(url: str) -> Optional[str]:
-    # https://www.metacritic.com/<slug>
     try:
         p = urlparse(url)
         path = (p.path or "").lstrip("/")
@@ -6032,7 +6030,6 @@ async def track_media_detail_view(
 
     return {"ok": True, "id": log.id}
 
-
 @app.patch("/api/track/detail-view/{log_id}")
 async def patch_media_detail_view_statuses(
     log_id: int,
@@ -6072,7 +6069,6 @@ async def patch_media_detail_view_statuses(
         raise HTTPException(status_code=500, detail="更新访问记录失败")
 
     return {"ok": True}
-
 
 @app.get("/api/admin/detail-views")
 async def admin_get_media_detail_views(
@@ -6713,15 +6709,178 @@ async def add_chart_entries_bulk(
         for e in valid:
             db.refresh(e)
         created = [e.id for e in valid]
-        if redis:
-            try:
-                await redis.delete("charts:aggregate", "charts:public")
-            except Exception:
-                pass
+        await delete_cache("charts:aggregate", "charts:public")
         return {"created": created}
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=400, detail=f"批量保存失败: {str(e)}")
+
+class ChartConfigItemPayload(BaseModel):
+    platform: str
+    chart_name: str
+    media_type: str
+    sort_order: int
+    visible: bool
+    input_mode: str
+    layout: str
+    table_rows: int
+    card_count: int
+    update_mode: str
+    exportable: bool
+    rank_label_mode: str
+
+class ChartConfigSavePayload(BaseModel):
+    items: list[ChartConfigItemPayload]
+
+def _build_chart_platform_order(db: Session | None = None) -> list[str]:
+    configured = [str(p) for p in ["豆瓣", "IMDb", "Rotten Tomatoes", "Metacritic", "Letterboxd", "TMDB", "Trakt"] if str(p).strip()]
+    if db is None:
+        return configured
+
+    discovered = set(configured)
+    for p in db.query(ChartConfig.platform).distinct().all():
+        if p and p[0]:
+            discovered.add(str(p[0]))
+    for p in db.query(ChartEntry.platform).distinct().all():
+        if p and p[0]:
+            discovered.add(str(p[0]))
+    ordered = configured + sorted([p for p in discovered if p not in configured])
+    return ordered
+
+def canonical_platform_name(name: str) -> str:
+    return (name or "").strip()
+
+def canonical_chart_name(name: str) -> str:
+    return (name or "").strip()
+
+@app.get("/api/charts/configs")
+async def list_chart_configs(db: Session = Depends(get_db)):
+    rows = (
+        db.query(ChartConfig)
+        .order_by(ChartConfig.platform.asc(), ChartConfig.sort_order.asc(), ChartConfig.id.asc())
+        .all()
+    )
+    if not rows:
+        grouped = (
+            db.query(ChartEntry.platform, ChartEntry.chart_name, ChartEntry.media_type)
+            .distinct()
+            .order_by(ChartEntry.platform.asc(), ChartEntry.chart_name.asc(), ChartEntry.media_type.asc())
+            .all()
+        )
+        fallback_rules = {
+            "table_layout_keywords": [],
+            "single_update_keywords": [],
+            "table_rows_for_table_layout": 10,
+            "card_count_default": 10,
+            "input_mode_default": "both",
+            "layout_default": "card",
+            "update_mode_default": "all",
+            "rank_label_mode_default": "number",
+        }
+        table_keywords = [str(x).lower() for x in (fallback_rules.get("table_layout_keywords") or [])]
+        single_keywords = [str(x).lower() for x in (fallback_rules.get("single_update_keywords") or [])]
+        fallback_items: list[dict] = []
+        platform_orders: dict[str, int] = {}
+        dedup_by_chart: dict[tuple[str, str], dict] = {}
+        for platform, chart_name, media_type in grouped:
+            platform = canonical_platform_name(platform)
+            chart_name = canonical_chart_name(chart_name)
+            key = (platform, chart_name)
+            existing = dedup_by_chart.get(key)
+            if existing:
+                if existing["media_type"] != media_type:
+                    existing["media_type"] = "both"
+                continue
+            order = platform_orders.get(platform, 0)
+            platform_orders[platform] = order + 1
+            chart_name_lc = (chart_name or "").lower()
+            use_table_layout = any(k and k in chart_name_lc for k in table_keywords)
+            use_single_update = any(k and k in chart_name_lc for k in single_keywords)
+            dedup_by_chart[key] = {
+                "platform": platform,
+                "chart_name": chart_name,
+                "media_type": media_type if media_type in ("movie", "tv", "both") else "movie",
+                "sort_order": order,
+                "visible": True,
+                "input_mode": fallback_rules.get("input_mode_default") or "both",
+                "layout": "table" if use_table_layout else (fallback_rules.get("layout_default") or "card"),
+                "table_rows": int(fallback_rules.get("table_rows_for_table_layout") or 10),
+                "card_count": int(fallback_rules.get("card_count_default") or 10),
+                "update_mode": "single" if use_single_update else (fallback_rules.get("update_mode_default") or "all"),
+                "exportable": True,
+                "rank_label_mode": fallback_rules.get("rank_label_mode_default") or "number",
+            }
+        fallback_items = list(dedup_by_chart.values())
+        return fallback_items
+    return [
+        {
+            "platform": r.platform,
+            "chart_name": canonical_chart_name(r.chart_name),
+            "media_type": r.media_type,
+            "sort_order": r.sort_order,
+            "visible": r.visible,
+            "input_mode": r.input_mode,
+            "layout": r.layout,
+            "table_rows": r.table_rows,
+            "card_count": r.card_count,
+            "update_mode": r.update_mode,
+            "exportable": r.exportable,
+            "rank_label_mode": r.rank_label_mode,
+        }
+        for r in rows
+    ]
+
+@app.put("/api/charts/configs")
+async def save_chart_configs(
+    payload: ChartConfigSavePayload,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_admin(current_user)
+    try:
+        db.query(ChartConfig).delete()
+        db.flush()
+        dedup_items: dict[tuple[str, str], ChartConfigItemPayload] = {}
+        dedup_sort_order: dict[str, int] = {}
+        for item in payload.items:
+            platform = canonical_platform_name(item.platform)
+            chart_name = canonical_chart_name(item.chart_name)
+            key = (platform, chart_name)
+            existing = dedup_items.get(key)
+            if existing:
+                if existing.media_type != item.media_type:
+                    existing.media_type = "both"
+                continue
+            dedup_items[key] = item
+
+        for item in dedup_items.values():
+            platform = canonical_platform_name(item.platform)
+            chart_name = canonical_chart_name(item.chart_name)
+            order = dedup_sort_order.get(platform, 0)
+            dedup_sort_order[platform] = order + 1
+            db.add(
+                ChartConfig(
+                    platform=platform,
+                    chart_name=chart_name,
+                    media_type=item.media_type,
+                    sort_order=order,
+                    visible=item.visible,
+                    input_mode=item.input_mode,
+                    layout=item.layout,
+                    table_rows=max(1, int(item.table_rows)),
+                    card_count=max(1, int(item.card_count)),
+                    update_mode=item.update_mode,
+                    exportable=bool(item.exportable),
+                    rank_label_mode=item.rank_label_mode if item.rank_label_mode in ("number", "month") else "number",
+                )
+            )
+        db.commit()
+        await delete_cache("charts:public")
+        return {"ok": True, "count": len(dedup_items)}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"保存榜单配置失败: {e}")
+        raise HTTPException(status_code=400, detail=f"保存榜单配置失败: {str(e)}")
 
 def aggregate_top(
     db: Session,
@@ -6882,37 +7041,18 @@ async def get_aggregate_charts(db: Session = Depends(get_db)):
     if cached:
         return cached
 
-    chinese_tv = latest_chart_top_by_rank(
-        db,
-        platform="豆瓣",
-        chart_name="一周华语剧集口碑榜",
-        media_type="tv",
-        limit=10,
-    )
-
-    movie_include_pairs = [
-        ("豆瓣", "一周口碑榜"),
-        ("IMDb", "Top 10 on IMDb this week"),
-        ("烂番茄", "Popular Streaming Movies"),
-        ("MTC", "Trending Movies This Week"),
-        ("Letterboxd", "Popular films this week"),
-        ("TMDB", "趋势本周"),
-        ("Trakt", "Top Movies Last Week"),
-    ]
-    
-    tv_include_pairs = [
-        ("豆瓣", "一周全球剧集口碑榜"),
-        ("烂番茄", "Popular TV"),
-        ("MTC", "Trending Shows This Week"),
-        ("Letterboxd", "Popular films this week"),
-        ("TMDB", "趋势本周"),
-        ("Trakt", "Top TV Shows Last Week"),
-    ]
-    
-    movies = aggregate_top(db, media_type="movie", limit=10, chinese_only=False, include_pairs=movie_include_pairs)
-    tv_candidates = aggregate_top(db, media_type="tv", limit=50, chinese_only=False, include_pairs=tv_include_pairs)
-    tv = tv_candidates[:10]
-    result = {"top_movies": movies, "top_tv": tv, "top_chinese_tv": chinese_tv}
+    movies = aggregate_top(db, media_type="movie", limit=10, chinese_only=False, include_pairs=None)
+    tv = aggregate_top(db, media_type="tv", limit=10, chinese_only=False, include_pairs=None)
+    top_chinese_tv = aggregate_top(db, media_type="tv", limit=10, chinese_only=True, include_pairs=None)
+    if not top_chinese_tv:
+        top_chinese_tv = latest_chart_top_by_rank(
+            db,
+            platform=canonical_platform_name("豆瓣"),
+            chart_name=canonical_chart_name("一周华语剧集口碑榜"),
+            media_type="tv",
+            limit=10,
+        )
+    result = {"top_movies": movies, "top_tv": tv, "top_chinese_tv": top_chinese_tv}
     await set_cache(cache_key, result, expire=CHARTS_CACHE_EXPIRE)
     return result
 
@@ -6937,6 +7077,8 @@ async def sync_charts(
         synced_at = _shanghai_naive_now()
         
         for platform, chart_name, media_type in distinct_charts:
+            platform = canonical_platform_name(platform)
+            chart_name = canonical_chart_name(chart_name)
             sub = db.query(
                 ChartEntry.rank,
                 func.max(ChartEntry.id).label('max_id')
@@ -6965,11 +7107,7 @@ async def sync_charts(
                 synced_count += 1
         
         db.commit()
-        if redis:
-            try:
-                await redis.delete("charts:aggregate", "charts:public")
-            except Exception:
-                pass
+        await delete_cache("charts:aggregate", "charts:public")
         return {
             "status": "success",
             "message": f"榜单数据已同步，共 {synced_count} 条记录",
@@ -6988,11 +7126,10 @@ async def get_public_charts(db: Session = Depends(get_db)):
     if cached is not None:
         return cached
     try:
-        metacritic_top250_charts = {
-            "Metacritic Best Movies of All Time",
-            "Metacritic Best TV Shows of All Time",
+        config_rows = db.query(ChartConfig).all()
+        config_map = {
+            (canonical_platform_name(c.platform), canonical_chart_name(c.chart_name)): c for c in config_rows
         }
-
         all_entries = db.query(PublicChartEntry).order_by(
             PublicChartEntry.platform.asc(),
             PublicChartEntry.chart_name.asc(),
@@ -7002,10 +7139,9 @@ async def get_public_charts(db: Session = Depends(get_db)):
 
         grouped = {}
         for e in all_entries:
-            if e.chart_name in metacritic_top250_charts:
-                key = (e.platform, e.chart_name)
-            else:
-                key = (e.platform, e.chart_name, e.media_type)
+            platform_name = canonical_platform_name(e.platform)
+            chart_name = canonical_chart_name(e.chart_name)
+            key = (platform_name, chart_name, e.media_type)
             grouped.setdefault(key, []).append(e)
 
         result = []
@@ -7027,26 +7163,23 @@ async def get_public_charts(db: Session = Depends(get_db)):
                     }
                 )
 
-            if len(key) == 2:
-                platform, chart_name = key
-                result.append(
-                    {
-                        "platform": platform,
-                        "chart_name": chart_name,
-                        "media_type": "both",
-                        "entries": chart_entries,
-                    }
-                )
-            else:
-                platform, chart_name, media_type = key
-                result.append(
-                    {
-                        "platform": platform,
-                        "chart_name": chart_name,
-                        "media_type": media_type,
-                        "entries": chart_entries,
-                    }
-                )
+            platform, chart_name, media_type = key
+            cfg = config_map.get((platform, chart_name))
+            result.append(
+                {
+                    "platform": platform,
+                    "chart_name": chart_name,
+                    "media_type": media_type,
+                    "entries": chart_entries,
+                    "visible": True if cfg is None else bool(cfg.visible),
+                    "sort_order": 9999 if cfg is None else int(cfg.sort_order),
+                    "layout": "card" if cfg is None else (cfg.layout or "card"),
+                    "table_rows": 10 if cfg is None else int(cfg.table_rows or 10),
+                    "card_count": 10 if cfg is None else int(cfg.card_count or 10),
+                    "exportable": True if cfg is None else bool(cfg.exportable),
+                    "rank_label_mode": "number" if cfg is None else (cfg.rank_label_mode or "number"),
+                }
+            )
         
         await set_cache(cache_key, result, expire=CHARTS_CACHE_EXPIRE)
         return result
@@ -7061,23 +7194,8 @@ async def get_chart_detail(
     db: Session = Depends(get_db)
 ):
     try:
-        platform_map = {
-            'Rotten Tomatoes': '烂番茄',
-            'Metacritic': 'MTC',
-        }
-        backend_platform = platform_map.get(platform, platform)
-        
-        chart_name_map = {
-            'IMDb 电影 Top 250': 'IMDb Top 250 Movies',
-            'IMDb 剧集 Top 250': 'IMDb Top 250 TV Shows',
-            'Letterboxd 电影 Top 250': 'Letterboxd Official Top 250',
-            '豆瓣 电影 Top 250': '豆瓣 Top 250',
-            'Metacritic 史上最佳电影 Top 250': 'Metacritic Best Movies of All Time',
-            'Metacritic 史上最佳剧集 Top 250': 'Metacritic Best TV Shows of All Time',
-            'TMDB 高分电影 Top 250': 'TMDB Top 250 Movies',
-            'TMDB 高分剧集 Top 250': 'TMDB Top 250 TV Shows',
-        }
-        backend_chart_name = chart_name_map.get(chart_name, chart_name)
+        backend_platform = canonical_platform_name(platform)
+        backend_chart_name = canonical_chart_name(chart_name)
         
         entries = db.query(PublicChartEntry).filter(
             PublicChartEntry.platform == backend_platform,
@@ -7096,12 +7214,6 @@ async def get_chart_detail(
         chart_entries = []
         media_type = None
         
-        metacritic_top250_charts = [
-            'Metacritic Best Movies of All Time',
-            'Metacritic Best TV Shows of All Time',
-        ]
-        is_metacritic_top250 = backend_chart_name in metacritic_top250_charts
-        
         for e in entries:
             poster = normalize_chart_entry_poster(e.poster or "")
             
@@ -7117,16 +7229,19 @@ async def get_chart_detail(
                 "media_type": entry_media_type,
             })
         
-        if is_metacritic_top250:
-            media_type = 'both'
-        elif not media_type:
+        if not media_type:
             media_type = 'movie'
+        cfg = db.query(ChartConfig).filter(
+            ChartConfig.platform == backend_platform,
+            ChartConfig.chart_name == backend_chart_name,
+        ).first()
         
         return {
             "platform": platform,
             "chart_name": chart_name,
             "media_type": media_type,
-            "entries": chart_entries
+            "entries": chart_entries,
+            "rank_label_mode": "number" if cfg is None else (cfg.rank_label_mode or "number"),
         }
     except HTTPException:
         raise
@@ -7207,8 +7322,8 @@ async def auto_update_platform_charts(
             ],
             "IMDb": [scraper.update_imdb_top10],
             "Letterboxd": [scraper.update_letterboxd_popular],
-            "烂番茄": [scraper.update_rotten_movies, scraper.update_rotten_tv],
-            "MTC": [scraper.update_metacritic_movies, scraper.update_metacritic_shows],
+            "Rotten Tomatoes": [scraper.update_rotten_movies, scraper.update_rotten_tv],
+            "Metacritic": [scraper.update_metacritic_movies, scraper.update_metacritic_shows],
             "TMDB": [scraper.update_tmdb_trending_all_week],
             "Trakt": [scraper.update_trakt_movies_weekly, scraper.update_trakt_shows_weekly]
         }
@@ -7233,8 +7348,8 @@ async def auto_update_platform_charts(
         logger.error(f"自动更新 {platform} 榜单失败: {e}")
         raise HTTPException(status_code=500, detail=f"自动更新 {platform} 失败: {str(e)}")
 
-@app.post("/api/charts/update-top250")
-async def update_top250_chart(
+@app.post("/api/charts/update-chart")
+async def update_single_chart(
     request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -7249,43 +7364,9 @@ async def update_top250_chart(
         if not platform or not chart_name:
             raise HTTPException(status_code=400, detail="缺少必要参数：platform 和 chart_name")
         
-        from chart_scrapers import ChartScraper
-        
-        scraper = ChartScraper(db)
-        top250_updaters = {
-            "TMDB": {
-                "TMDB Top 250 Movies": scraper.update_tmdb_top250_movies,
-                "TMDB Top 250 TV Shows": scraper.update_tmdb_top250_tv,
-            },
-            "IMDb": {
-                "IMDb Top 250 Movies": scraper.update_imdb_top250_movies,
-                "IMDb Top 250 TV Shows": scraper.update_imdb_top250_tv,
-            },
-            "Letterboxd": {
-                "Letterboxd Official Top 250": scraper.update_letterboxd_top250,
-            },
-            "豆瓣": {
-                "豆瓣 Top 250": scraper.update_douban_top250,
-            },
-            "MTC": {
-                "Metacritic Best Movies of All Time": scraper.update_metacritic_best_movies,
-                "Metacritic Best TV Shows of All Time": scraper.update_metacritic_best_tv,
-            },
-        }
-        
-        if platform not in top250_updaters:
-            raise HTTPException(status_code=400, detail=f"平台 {platform} 暂不支持 Top 250 榜单更新")
-        
-        if chart_name not in top250_updaters[platform]:
-            raise HTTPException(status_code=400, detail=f"平台 {platform} 不支持榜单: {chart_name}")
-        
-        updater = top250_updaters[platform][chart_name]
-        
-        if platform == "豆瓣" and chart_name == "豆瓣 Top 250":
-            douban_cookie = current_user.douban_cookie if current_user.douban_cookie else None
-            count = await updater(douban_cookie=douban_cookie)
-        else:
-            count = await updater()
+        platform = canonical_platform_name(platform)
+        response = await auto_update_platform_charts(platform=platform, current_user=current_user, db=db)
+        count = sum(response.get("results", {}).values()) if isinstance(response, dict) else 0
         
         return {
             "status": "success",
@@ -7301,7 +7382,7 @@ async def update_top250_chart(
     except Exception as e:
         error_msg = str(e)
         if "ANTI_SCRAPING_DETECTED" in error_msg:
-            logger.warning(f"更新 Top 250 榜单遇到反爬虫机制: {e}")
+            logger.warning(f"更新榜单遇到反爬虫机制: {e}")
             raise HTTPException(
                 status_code=428,
                 detail={
@@ -7311,7 +7392,7 @@ async def update_top250_chart(
                     "chart_name": chart_name
                 }
             )
-        logger.error(f"更新 Top 250 榜单失败: {e}")
+        logger.error(f"更新榜单失败: {e}")
         raise HTTPException(status_code=500, detail=f"更新失败: {str(e)}")
 
 @app.post("/api/charts/clear/{platform}")
@@ -7323,26 +7404,15 @@ async def clear_platform_charts(
     require_admin(current_user)
     
     try:
-        top250_chart_names = [
-            "IMDb Top 250 Movies",
-            "IMDb Top 250 TV Shows",
-            "Letterboxd Official Top 250",
-            "豆瓣 Top 250",
-            "Metacritic Best Movies of All Time",
-            "Metacritic Best TV Shows of All Time",
-            "TMDB Top 250 Movies",
-            "TMDB Top 250 TV Shows",
-        ]
-        
+        platform = canonical_platform_name(platform)
         deleted_count = db.query(ChartEntry).filter(
-            ChartEntry.platform == platform,
-            ~ChartEntry.chart_name.in_(top250_chart_names)
+            ChartEntry.platform == platform
         ).delete()
         db.commit()
         
         return {
             "status": "success",
-            "message": f"已清空 {platform} 平台的所有榜单（Top 250 榜单除外），共删除 {deleted_count} 条记录",
+            "message": f"已清空 {platform} 平台的所有榜单，共删除 {deleted_count} 条记录",
             "deleted_count": deleted_count,
             "timestamp": _iso_now_shanghai()
         }
@@ -7350,8 +7420,8 @@ async def clear_platform_charts(
         logger.error(f"清空 {platform} 平台榜单失败: {e}")
         raise HTTPException(status_code=500, detail=f"清空榜单失败: {str(e)}")
 
-@app.post("/api/charts/clear-top250")
-async def clear_top250_chart(
+@app.post("/api/charts/clear-chart")
+async def clear_single_chart(
     request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -7383,7 +7453,7 @@ async def clear_top250_chart(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"清空 Top 250 榜单失败: {e}")
+        logger.error(f"清空榜单失败: {e}")
         raise HTTPException(status_code=500, detail=f"清空失败: {str(e)}")
 
 @app.post("/api/charts/clear-all")
@@ -7394,25 +7464,12 @@ async def clear_all_charts(
     require_admin(current_user)
     
     try:
-        top250_chart_names = [
-            "IMDb Top 250 Movies",
-            "IMDb Top 250 TV Shows",
-            "Letterboxd Official Top 250",
-            "豆瓣 Top 250",
-            "Metacritic Best Movies of All Time",
-            "Metacritic Best TV Shows of All Time",
-            "TMDB Top 250 Movies",
-            "TMDB Top 250 TV Shows",
-        ]
-        
-        deleted_count = db.query(ChartEntry).filter(
-            ~ChartEntry.chart_name.in_(top250_chart_names)
-        ).delete()
+        deleted_count = db.query(ChartEntry).delete()
         db.commit()
         
         return {
             "status": "success",
-            "message": f"已清空所有平台的所有榜单（Top 250 榜单除外），共删除 {deleted_count} 条记录",
+            "message": f"已清空所有平台的所有榜单，共删除 {deleted_count} 条记录",
             "deleted_count": deleted_count,
             "timestamp": _iso_now_shanghai()
         }
@@ -7449,7 +7506,7 @@ async def test_notification(
 @app.get("/api/charts/status")
 async def get_charts_status(db: Session = Depends(get_db)):
     try:
-        platforms = ["豆瓣", "IMDb", "Letterboxd", "烂番茄", "MTC"]
+        platforms = _build_chart_platform_order(db)
         status = {}
         
         for platform in platforms:
