@@ -8,7 +8,7 @@ import time
 import ssl
 from zoneinfo import ZoneInfo
 from datetime import timezone
-from typing import Optional, Any
+from typing import Optional, Any, Callable, Awaitable
 from pydantic import BaseModel
 import hashlib
 import re
@@ -6726,6 +6726,7 @@ class ChartConfigItemPayload(BaseModel):
     table_rows: int
     card_count: int
     update_mode: str
+    updater_key: Optional[str] = None
     exportable: bool
     rank_label_mode: str
 
@@ -6752,6 +6753,110 @@ def canonical_platform_name(name: str) -> str:
 
 def canonical_chart_name(name: str) -> str:
     return (name or "").strip()
+
+def _build_updater_registry(scraper: Any) -> dict[str, dict[str, Any]]:
+    return {
+        "douban_weekly_movie": {"fn": scraper.update_douban_weekly_movie, "media_type": "movie"},
+        "douban_weekly_chinese_tv": {"fn": scraper.update_douban_weekly_chinese_tv, "media_type": "tv"},
+        "douban_weekly_global_tv": {"fn": scraper.update_douban_weekly_global_tv, "media_type": "tv"},
+        "imdb_top10": {"fn": scraper.update_imdb_top10, "media_type": "both"},
+        "letterboxd_popular": {"fn": scraper.update_letterboxd_popular, "media_type": "movie"},
+        "rotten_movies_weekly": {"fn": scraper.update_rotten_movies, "media_type": "movie"},
+        "rotten_tv_weekly": {"fn": scraper.update_rotten_tv, "media_type": "tv"},
+        "metacritic_movies_weekly": {"fn": scraper.update_metacritic_movies, "media_type": "movie"},
+        "metacritic_shows_weekly": {"fn": scraper.update_metacritic_shows, "media_type": "tv"},
+        "tmdb_trending_all_week": {"fn": scraper.update_tmdb_trending_all_week, "media_type": "both"},
+        "trakt_movies_weekly": {"fn": scraper.update_trakt_movies_weekly, "media_type": "movie"},
+        "trakt_shows_weekly": {"fn": scraper.update_trakt_shows_weekly, "media_type": "tv"},
+    }
+
+def _configured_updater_keys(
+    db: Session,
+    platform: Optional[str] = None,
+) -> list[tuple[str, str, str, int]]:
+    q = db.query(
+        ChartConfig.platform,
+        ChartConfig.chart_name,
+        ChartConfig.updater_key,
+        ChartConfig.sort_order,
+    ).filter(ChartConfig.updater_key.isnot(None))
+    if platform:
+        q = q.filter(ChartConfig.platform == platform)
+    rows = q.order_by(
+        ChartConfig.platform.asc(),
+        ChartConfig.sort_order.asc(),
+        ChartConfig.id.asc(),
+    ).all()
+    result: list[tuple[str, str, str, int]] = []
+    seen: set[tuple[str, str]] = set()
+    for r in rows:
+        key = str(r.updater_key or "").strip()
+        plat = canonical_platform_name(r.platform)
+        if not key or not plat:
+            continue
+        dedup_key = (plat, key)
+        if dedup_key in seen:
+            continue
+        seen.add(dedup_key)
+        result.append((plat, canonical_chart_name(r.chart_name), key, int(r.sort_order or 0)))
+    return result
+
+def _apply_chart_name_renames(
+    db: Session,
+    model: Any,
+    rename_pairs: list[tuple[str, str, str]],
+):
+    valid_pairs: list[tuple[str, str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for platform, old_name, new_name in rename_pairs:
+        old_norm = canonical_chart_name(old_name)
+        new_norm = canonical_chart_name(new_name)
+        platform_norm = canonical_platform_name(platform)
+        if not platform_norm or not old_norm or not new_norm or old_norm == new_norm:
+            continue
+        key = (platform_norm, old_norm, new_norm)
+        if key in seen:
+            continue
+        seen.add(key)
+        valid_pairs.append(key)
+    if not valid_pairs:
+        return
+
+    temp_pairs: list[tuple[str, str, str]] = []
+    suffix = str(int(time.time() * 1000))[-8:]
+    for i, (platform, old_name, new_name) in enumerate(valid_pairs):
+        temp_name = f"__rf_tmp_{suffix}_{i}"
+        db.query(model).filter(
+            model.platform == platform,
+            model.chart_name == old_name,
+        ).update(
+            {model.chart_name: temp_name},
+            synchronize_session=False,
+        )
+        temp_pairs.append((platform, temp_name, new_name))
+
+    for platform, temp_name, new_name in temp_pairs:
+        db.query(model).filter(
+            model.platform == platform,
+            model.chart_name == temp_name,
+        ).update(
+            {model.chart_name: new_name},
+            synchronize_session=False,
+        )
+
+def _resolve_config_updater_key(
+    db: Session,
+    platform: str,
+    chart_name: str,
+) -> Optional[str]:
+    cfg = db.query(ChartConfig).filter(
+        ChartConfig.platform == platform,
+        ChartConfig.chart_name == chart_name,
+    ).first()
+    if not cfg or not cfg.updater_key:
+        return None
+    value = str(cfg.updater_key).strip()
+    return value or None
 
 @app.get("/api/charts/configs")
 async def list_chart_configs(db: Session = Depends(get_db)):
@@ -6807,6 +6912,7 @@ async def list_chart_configs(db: Session = Depends(get_db)):
                 "table_rows": int(fallback_rules.get("table_rows_for_table_layout") or 10),
                 "card_count": int(fallback_rules.get("card_count_default") or 10),
                 "update_mode": "single" if use_single_update else (fallback_rules.get("update_mode_default") or "all"),
+                "updater_key": None,
                 "exportable": True,
                 "rank_label_mode": fallback_rules.get("rank_label_mode_default") or "number",
             }
@@ -6824,6 +6930,7 @@ async def list_chart_configs(db: Session = Depends(get_db)):
             "table_rows": r.table_rows,
             "card_count": r.card_count,
             "update_mode": r.update_mode,
+            "updater_key": r.updater_key,
             "exportable": r.exportable,
             "rank_label_mode": r.rank_label_mode,
         }
@@ -6838,10 +6945,24 @@ async def save_chart_configs(
 ):
     require_admin(current_user)
     try:
+        existing_config_rows = (
+            db.query(ChartConfig.platform, ChartConfig.sort_order, ChartConfig.chart_name, ChartConfig.updater_key)
+            .order_by(ChartConfig.platform.asc(), ChartConfig.sort_order.asc())
+            .all()
+        )
+        existing_name_by_slot: dict[tuple[str, int], str] = {
+            (canonical_platform_name(r.platform), int(r.sort_order or 0)): canonical_chart_name(r.chart_name)
+            for r in existing_config_rows
+        }
+        existing_updater_by_slot: dict[tuple[str, int], Optional[str]] = {
+            (canonical_platform_name(r.platform), int(r.sort_order or 0)): (str(r.updater_key).strip() if r.updater_key else None)
+            for r in existing_config_rows
+        }
         db.query(ChartConfig).delete()
         db.flush()
         dedup_items: dict[tuple[str, str], ChartConfigItemPayload] = {}
         dedup_sort_order: dict[str, int] = {}
+        rename_pairs: list[tuple[str, str, str]] = []
         for item in payload.items:
             platform = canonical_platform_name(item.platform)
             chart_name = canonical_chart_name(item.chart_name)
@@ -6858,6 +6979,9 @@ async def save_chart_configs(
             chart_name = canonical_chart_name(item.chart_name)
             order = dedup_sort_order.get(platform, 0)
             dedup_sort_order[platform] = order + 1
+            old_chart_name = existing_name_by_slot.get((platform, order))
+            if old_chart_name and old_chart_name != chart_name:
+                rename_pairs.append((platform, old_chart_name, chart_name))
             db.add(
                 ChartConfig(
                     platform=platform,
@@ -6870,12 +6994,19 @@ async def save_chart_configs(
                     table_rows=max(1, int(item.table_rows)),
                     card_count=max(1, int(item.card_count)),
                     update_mode=item.update_mode,
+                    updater_key=(
+                        str(item.updater_key).strip()
+                        if item.updater_key
+                        else existing_updater_by_slot.get((platform, order))
+                    ),
                     exportable=bool(item.exportable),
                     rank_label_mode=item.rank_label_mode if item.rank_label_mode in ("number", "month") else "number",
                 )
             )
+        _apply_chart_name_renames(db, ChartEntry, rename_pairs)
+        _apply_chart_name_renames(db, PublicChartEntry, rename_pairs)
         db.commit()
-        await delete_cache("charts:public")
+        await delete_cache("charts:aggregate", "charts:public")
         return {"ok": True, "count": len(dedup_items)}
     except Exception as e:
         db.rollback()
@@ -7287,19 +7418,19 @@ async def auto_update_charts(
         from chart_scrapers import ChartScraper
         
         scraper = ChartScraper(db)
+        updater_registry = _build_updater_registry(scraper)
+        configured_keys = _configured_updater_keys(db)
+        run_items = configured_keys or [("", "", key, idx) for idx, key in enumerate(updater_registry.keys())]
         results = {}
-        results['Rotten Tomatoes 本周热门流媒体电影'] = await scraper.update_rotten_movies()
-        results['Rotten Tomatoes 本周热门剧集'] = await scraper.update_rotten_tv()
-        results['Letterboxd 本周热门影视'] = await scraper.update_letterboxd_popular()
-        results['Metacritic 本周趋势电影'] = await scraper.update_metacritic_movies()
-        results['Metacritic 本周趋势剧集'] = await scraper.update_metacritic_shows()
-        results['TMDB 本周趋势影视'] = await scraper.update_tmdb_trending_all_week()
-        results['Trakt 上周电影 Top 榜'] = await scraper.update_trakt_movies_weekly()
-        results['Trakt 上周电影 Top 榜'] = await scraper.update_trakt_shows_weekly()
-        results['IMDb 本周 Top 10'] = await scraper.update_imdb_top10()
-        results['豆瓣 一周口碑榜'] = await scraper.update_douban_weekly_movie()
-        results['豆瓣 一周华语剧集口碑榜'] = await scraper.update_douban_weekly_chinese_tv()
-        results['豆瓣 一周全球剧集口碑榜'] = await scraper.update_douban_weekly_global_tv()
+        for platform_name, chart_name, updater_key, _ in run_items:
+            spec = updater_registry.get(updater_key)
+            if not spec:
+                logger.warning(f"跳过未知 updater_key: {updater_key}")
+                continue
+            updater: Callable[[], Awaitable[int]] = spec["fn"]
+            count = await updater()
+            result_key = updater_key if not chart_name else f"{platform_name}:{chart_name}"
+            results[result_key] = count
         
         update_time = datetime.now(_TZ_SHANGHAI)
         update_time_naive = update_time.replace(tzinfo=None)
@@ -7336,32 +7467,26 @@ async def auto_update_platform_charts(
     db: Session = Depends(get_db)
 ):
     require_admin(current_user)
+    platform = canonical_platform_name(platform)
     
     try:
         from chart_scrapers import ChartScraper
         
         scraper = ChartScraper(db)
-        platform_updaters = {
-            "豆瓣": [
-                scraper.update_douban_weekly_movie,
-                scraper.update_douban_weekly_chinese_tv,
-                scraper.update_douban_weekly_global_tv
-            ],
-            "IMDb": [scraper.update_imdb_top10],
-            "Letterboxd": [scraper.update_letterboxd_popular],
-            "Rotten Tomatoes": [scraper.update_rotten_movies, scraper.update_rotten_tv],
-            "Metacritic": [scraper.update_metacritic_movies, scraper.update_metacritic_shows],
-            "TMDB": [scraper.update_tmdb_trending_all_week],
-            "Trakt": [scraper.update_trakt_movies_weekly, scraper.update_trakt_shows_weekly]
-        }
-        
-        if platform not in platform_updaters:
-            raise HTTPException(status_code=400, detail=f"不支持的平台: {platform}")
+        updater_registry = _build_updater_registry(scraper)
+        configured_keys = _configured_updater_keys(db, platform=platform)
+        if not configured_keys:
+            raise HTTPException(status_code=400, detail=f"{platform} 平台未配置可执行的 updater_key")
         
         results = {}
-        for i, updater in enumerate(platform_updaters[platform]):
+        for i, (platform_name, chart_name, updater_key, _) in enumerate(configured_keys):
+            spec = updater_registry.get(updater_key)
+            if not spec:
+                logger.warning(f"跳过未知 updater_key: {updater_key}")
+                continue
+            updater: Callable[[], Awaitable[int]] = spec["fn"]
             count = await updater()
-            results[f"{platform}_{i+1}"] = count
+            results[f"{platform_name}:{chart_name or updater_key}:{i+1}"] = count
         
         return {
             "status": "success",
@@ -7371,6 +7496,8 @@ async def auto_update_platform_charts(
             "timestamp": _iso_now_shanghai()
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"自动更新 {platform} 榜单失败: {e}")
         raise HTTPException(status_code=500, detail=f"自动更新 {platform} 失败: {str(e)}")
@@ -7387,19 +7514,39 @@ async def update_single_chart(
         body = await request.json()
         platform = body.get("platform")
         chart_name = body.get("chart_name")
+        updater_key = str(body.get("updater_key") or "").strip()
         
         if not platform or not chart_name:
             raise HTTPException(status_code=400, detail="缺少必要参数：platform 和 chart_name")
         
         platform = canonical_platform_name(platform)
-        response = await auto_update_platform_charts(platform=platform, current_user=current_user, db=db)
-        count = sum(response.get("results", {}).values()) if isinstance(response, dict) else 0
+        chart_name = canonical_chart_name(chart_name)
+
+        from chart_scrapers import ChartScraper
+        scraper = ChartScraper(db)
+        updater_registry = _build_updater_registry(scraper)
+
+        resolved_key: Optional[str] = None
+        if updater_key:
+            resolved_key = updater_key
+        if not resolved_key:
+            resolved_key = _resolve_config_updater_key(db, platform, chart_name)
+        resolved = updater_registry.get(resolved_key or "")
+        if not resolved or not resolved_key:
+            raise HTTPException(
+                status_code=400,
+                detail=f"无法识别榜单更新器：{platform} / {chart_name}。请先为该榜单配置 updater_key。",
+            )
+
+        updater: Callable[[], Awaitable[int]] = resolved["fn"]
+        count = await updater()
         
         return {
             "status": "success",
             "message": f"{platform} - {chart_name} 更新成功",
             "platform": platform,
             "chart_name": chart_name,
+            "updater_key": resolved_key,
             "count": count,
             "timestamp": _iso_now_shanghai()
         }
