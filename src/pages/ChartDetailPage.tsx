@@ -11,6 +11,7 @@ import { PageShell } from '../modules/layout/PageShell';
 import { usePageMeta } from '../shared/hooks/usePageMeta';
 import { posterPathToSiteUrl } from '../api/image';
 import { TMDB } from '../api/api';
+import { enrichEntriesWithPreferredPosters } from '../api/preferredPoster';
 const POSTER_WIDTH = 'w500' as const;
 
 const PLATFORM_LOGOS: Record<string, string> = {
@@ -71,7 +72,7 @@ export default function ChartDetailPage() {
       const raw = await response.json();
       return {
         ...raw,
-        entries: raw?.entries || [],
+        entries: await enrichEntriesWithPreferredPosters(raw?.entries || [], raw?.media_type || 'movie', POSTER_WIDTH),
       } as ChartDetail;
     },
     enabled: !!platform && !!chartName,
