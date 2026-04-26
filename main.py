@@ -7052,7 +7052,7 @@ async def get_aggregate_charts(db: Session = Depends(get_db)):
     movie_include_pairs = [
         (canonical_platform_name("豆瓣"), canonical_chart_name("一周口碑榜")),
         (canonical_platform_name("IMDb"), canonical_chart_name("IMDb 本周 Top 10")),
-        (canonical_platform_name("Rotten Tomatoes"), canonical_chart_name("热门流媒体电影")),
+        (canonical_platform_name("Rotten Tomatoes"), canonical_chart_name("本周热门流媒体电影")),
         (canonical_platform_name("Metacritic"), canonical_chart_name("本周趋势电影")),
         (canonical_platform_name("Letterboxd"), canonical_chart_name("本周热门影视")),
         (canonical_platform_name("TMDB"), canonical_chart_name("本周趋势影视")),
@@ -7061,7 +7061,7 @@ async def get_aggregate_charts(db: Session = Depends(get_db)):
     tv_include_pairs = [
         (canonical_platform_name("豆瓣"), canonical_chart_name("一周全球剧集口碑榜")),
         (canonical_platform_name("IMDb"), canonical_chart_name("IMDb 本周 Top 10")),
-        (canonical_platform_name("Rotten Tomatoes"), canonical_chart_name("热门剧集")),
+        (canonical_platform_name("Rotten Tomatoes"), canonical_chart_name("本周热门剧集")),
         (canonical_platform_name("Metacritic"), canonical_chart_name("本周趋势剧集")),
         (canonical_platform_name("Letterboxd"), canonical_chart_name("本周热门影视")),
         (canonical_platform_name("TMDB"), canonical_chart_name("本周趋势影视")),
