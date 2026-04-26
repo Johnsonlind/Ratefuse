@@ -17,139 +17,12 @@ const DOWNSCALE_SIZE = 'w500';
 
 const resolvePosterUrl = (poster: string) => posterPathToSiteUrl(poster, DOWNSCALE_SIZE);
 
-// 榜单顺序
 const CHART_ORDER = ['豆瓣', 'IMDb', 'Rotten Tomatoes', 'Metacritic', 'Letterboxd', 'TMDB', 'Trakt'];
-
-// 各平台的榜单顺序配置
-const PLATFORM_CHART_ORDER: Record<string, string[]> = {
-  '豆瓣': [
-    '一周口碑榜',
-    '一周华语剧集口碑榜',
-    '一周全球剧集口碑榜',
-    '豆瓣2025评分最高华语电影',
-    '豆瓣2025评分最高外语电影',
-    '豆瓣2025冷门佳片',
-    '豆瓣2025评分最高日本电影',
-    '豆瓣2025评分最高韩国电影',
-    '豆瓣2025评分最高喜剧片',
-    '豆瓣2025评分最高爱情片',
-    '豆瓣2025评分最高恐怖片',
-    '豆瓣2025评分最高动画片',
-    '豆瓣2025评分最高纪录片',
-    '豆瓣2026最值得期待华语电影',
-    '豆瓣2026最值得期待外语电影',
-    '豆瓣2025评分最高华语剧集',
-    '豆瓣2025评分最高英美新剧',
-    '豆瓣2025评分最高英美续订剧',
-    '豆瓣2025评分最高日本剧集',
-    '豆瓣2025评分最高韩国剧集',
-    '豆瓣2025评分最受关注综艺', 
-    '豆瓣2025评分最高动画剧集',
-    '豆瓣2025评分最高大陆微短剧',
-    '豆瓣2025评分最高纪录剧集',
-    '豆瓣2026最值得期待剧集',
-    '豆瓣2025评分月度热搜影视',
-    '豆瓣 电影 Top 250',
-  ],
-  'IMDb': [
-    'IMDb 本周 Top 10',
-    'IMDb 2025最受欢迎电影',
-    'IMDb 2025最受欢迎剧集',
-    'IMDb 工作人员2025最喜爱的电影',
-    'IMDb 工作人员2025最喜爱的剧集',
-    'IMDb 电影 Top 250',
-    'IMDb 剧集 Top 250',
-  ],
-  'Rotten Tomatoes': [
-    '热门流媒体电影',
-    '热门剧集',
-    'Rotten Tomatoes 2025 最佳电影',
-    'Rotten Tomatoes 2025 最佳剧集',
-  ],
-  'Metacritic': [
-    '本周趋势电影',
-    '本周趋势剧集',
-    'Metacritic 2025 最佳电影',
-    'Metacritic 2025 最佳剧集',
-    'Metacritic 史上最佳电影 Top 250',
-    'Metacritic 史上最佳剧集 Top 250',
-  ],
-  'Letterboxd': [
-    '本周热门影视',
-    'Letterboxd 2025 Top 50',
-    'Letterboxd 电影 Top 250',
-  ],
-  'TMDB': [
-    '本周趋势影视',
-    'TMDB 高分电影 Top 250',
-    'TMDB 高分剧集 Top 250',
-  ],
-  'Trakt': [
-    '上周电影 Top 榜',
-    '上周剧集 Top 榜',
-  ],
-};
-
-// 平台名称映射（后端返回的名称 → 前端显示的名称）
-const PLATFORM_NAME_MAP: Record<string, string> = {
-  '烂番茄': 'Rotten Tomatoes',
-  'MTC': 'Metacritic',
-};
-
-// 榜单名称映射（后端返回的名称 → 前端显示的名称）
-const CHART_NAME_MAP: Record<string, string> = {
-  // 豆瓣
-  '豆瓣 Top 250': '豆瓣 电影 Top 250',
-  // IMDb
-  'Top 10 on IMDb this week': 'IMDb 本周 Top 10',
-  'IMDb Top 250 Movies': 'IMDb 电影 Top 250',
-  'IMDb Top 250 TV Shows': 'IMDb 剧集 Top 250',
-  // Rotten Tomatoes
-  'Popular Streaming Movies': '热门流媒体电影',
-  'Popular TV': '热门剧集',
-  // Metacritic
-  'Trending Movies This Week': '本周趋势电影',
-  'Trending Shows This Week': '本周趋势剧集',
-  'Metacritic Best Movies of All Time': 'Metacritic 史上最佳电影 Top 250',
-  'Metacritic Best TV Shows of All Time': 'Metacritic 史上最佳剧集 Top 250',
-  // Letterboxd
-  'Popular films this week': '本周热门影视',
-  'Letterboxd Official Top 250': 'Letterboxd 电影 Top 250',
-  // TMDB
-  '趋势本周': '本周趋势影视',
-  'TMDB Top 250 Movies': 'TMDB 高分电影 Top 250',
-  'TMDB Top 250 TV Shows': 'TMDB 高分剧集 Top 250',
-  // Trakt
-  'Top TV Shows Last Week': '上周剧集 Top 榜',
-  'Top Movies Last Week': '上周电影 Top 榜',
-};
-
-// 不可导出的榜单列表
-const NON_EXPORTABLE_CHARTS = [
-  '豆瓣2025评分月度热搜影视',
-  '豆瓣 电影 Top 250',
-  'IMDb 工作人员2025最喜爱的电影',
-  'IMDb 工作人员2025最喜爱的剧集',
-  'IMDb 电影 Top 250',
-  'IMDb 剧集 Top 250',
-  'Letterboxd 2025 Top 50',
-  'Letterboxd 电影 Top 250',
-  'Metacritic 史上最佳电影 Top 250',
-  'Metacritic 史上最佳剧集 Top 250',
-  'TMDB 高分电影 Top 250',
-  'TMDB 高分剧集 Top 250',
-  'Rotten Tomatoes 2025 最佳电影',
-  'Rotten Tomatoes 2025 最佳剧集',
-  'Metacritic 2025 最佳电影',
-  'Metacritic 2025 最佳剧集',
-];
 
 const PLATFORM_LOGOS: Record<string, string> = {
   '豆瓣': '/logos/douban.png',
   'IMDb': '/logos/imdb.png',
-  '烂番茄': '/logos/rottentomatoes.png',
   'Rotten Tomatoes': '/logos/rottentomatoes.png',
-  'MTC': '/logos/metacritic.png',
   'Metacritic': '/logos/metacritic.png',
   'Letterboxd': '/logos/letterboxd.png',
   'TMDB': '/logos/tmdb.png',
@@ -169,6 +42,13 @@ interface ChartSection {
   chart_name: string;
   media_type: 'movie' | 'tv' | 'both';
   entries: ChartEntry[];
+  visible?: boolean;
+  sort_order?: number;
+  layout?: 'table' | 'card';
+  table_rows?: number;
+  card_count?: number;
+  exportable?: boolean;
+  rank_label_mode?: 'number' | 'month';
 }
 
 export default function ChartsPage() {
@@ -186,8 +66,9 @@ export default function ChartsPage() {
     const ua = navigator.userAgent;
     const isMobile = /iPhone|iPad|iPod/.test(ua) || 
                     (navigator.maxTouchPoints && navigator.maxTouchPoints > 2 && /MacIntel/.test(navigator.platform));
+    const hasMSStream = 'MSStream' in window;
     const isSafari = /^((?!chrome|android).)*safari/i.test(ua) || 
-                     (/iPad|iPhone|iPod/.test(ua) && !(window as any).MSStream);
+                     (/iPad|iPhone|iPod/.test(ua) && !hasMSStream);
     return isMobile && isSafari;
   }, []);
 
@@ -204,20 +85,16 @@ export default function ChartsPage() {
         throw new Error('获取榜单数据失败');
       }
       const data = await response.json() as ChartSection[];
-      const normalizedCharts = data.map((chart) => ({
-        ...chart,
-        platform: PLATFORM_NAME_MAP[chart.platform] || chart.platform,
-        chart_name: CHART_NAME_MAP[chart.chart_name] || chart.chart_name,
-      }));
-      return await Promise.all(
-        normalizedCharts.map(async (chart) => ({
+      const enriched = await Promise.all(
+        data.map(async (chart) => ({
           ...chart,
           entries: await enrichEntriesWithPreferredPosters(chart.entries || [], chart.media_type, DOWNSCALE_SIZE),
         }))
       );
+      return enriched.filter((chart) => chart.visible !== false);
     },
     placeholderData: (previousData) => previousData,
-    staleTime: 60 * 1000,
+    staleTime: 0,
   });
 
   useAggressiveImagePreload(contentRef, false);
@@ -233,65 +110,38 @@ export default function ChartsPage() {
 
   const chartsByPlatform = useMemo(() => {
     const result = sortedCharts.reduce((acc, chart) => {
-    const platformKey = chart.platform;
-    
-    const shouldMerge =
-      chart.platform === 'TMDB' ||
-      chart.platform === 'IMDb' ||
-      chart.chart_name === '豆瓣2025评分月度热搜影视' ||
-      (chart.platform === 'Letterboxd' && chart.chart_name === '本周热门影视');
-    
-    if (shouldMerge) {
-      if (acc[platformKey] && acc[platformKey].length > 0) {
-        const existingChart = acc[platformKey].find(c => c.chart_name === chart.chart_name);
-        if (existingChart) {
-          const existingIds = new Set(existingChart.entries.map(e => `${e.tmdb_id}-${e.rank}`));
-          chart.entries.forEach(entry => {
-            const entryKey = `${entry.tmdb_id}-${entry.rank}`;
-            if (!existingIds.has(entryKey)) {
-              existingChart.entries.push(entry);
-              existingIds.add(entryKey);
-            }
-          });
-          existingChart.entries.sort((a, b) => a.rank - b.rank);
-          existingChart.media_type = 'both';
-          return acc;
-        }
-      }
-      const mergedChart = { ...chart, media_type: 'both' as const };
+      const platformKey = chart.platform;
       if (!acc[platformKey]) {
         acc[platformKey] = [];
       }
-      acc[platformKey].push(mergedChart);
-      return acc;
-    }
-    
-    if (!acc[platformKey]) {
-      acc[platformKey] = [];
-    }
-      acc[platformKey].push(chart);
+      const existingChart = acc[platformKey].find((c) => c.chart_name === chart.chart_name);
+      if (!existingChart) {
+        acc[platformKey].push({ ...chart });
+        return acc;
+      }
+      const existingIds = new Set(existingChart.entries.map((e) => `${e.tmdb_id}-${e.rank}`));
+      chart.entries.forEach((entry) => {
+        const entryKey = `${entry.tmdb_id}-${entry.rank}`;
+        if (!existingIds.has(entryKey)) {
+          existingChart.entries.push(entry);
+          existingIds.add(entryKey);
+        }
+      });
+      existingChart.entries.sort((a, b) => a.rank - b.rank);
+      if (existingChart.media_type !== chart.media_type) {
+        existingChart.media_type = 'both';
+      }
       return acc;
     }, {} as Record<string, ChartSection[]>);
 
     Object.keys(result).forEach(platform => {
       if (result[platform]) {
-        const platformOrder = PLATFORM_CHART_ORDER[platform];
-        
-        if (platformOrder) {
-          result[platform].sort((a, b) => {
-            const indexA = platformOrder.indexOf(a.chart_name);
-            const indexB = platformOrder.indexOf(b.chart_name);
-            
-            if (indexA !== -1 && indexB !== -1) {
-              return indexA - indexB;
-            }
-            if (indexA !== -1) return -1;
-            if (indexB !== -1) return 1;
-            return a.chart_name.localeCompare(b.chart_name);
-          });
-        } else {
-          result[platform].sort((a, b) => a.chart_name.localeCompare(b.chart_name));
-        }
+        result[platform].sort((a, b) => {
+          const sa = a.sort_order ?? Number.MAX_SAFE_INTEGER;
+          const sb = b.sort_order ?? Number.MAX_SAFE_INTEGER;
+          if (sa !== sb) return sa - sb;
+          return a.chart_name.localeCompare(b.chart_name);
+        });
       }
     });
 
@@ -321,6 +171,9 @@ export default function ChartsPage() {
   );
 
   const [exportingChart, setExportingChart] = useState<string | null>(null);
+  const formatRankLabel = useCallback((chart: ChartSection, rank: number) => {
+    return chart.rank_label_mode === 'month' ? `${rank}月` : String(rank);
+  }, []);
   const desktopStripRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const [desktopArrowState, setDesktopArrowState] = useState<
     Record<string, { show: boolean; left: boolean; right: boolean }>
@@ -593,11 +446,9 @@ export default function ChartsPage() {
                         const chartKey = `${chart.platform}-${chart.chart_name}-${idx}`;
                         const sortedEntries = [...chart.entries].sort((a, b) => a.rank - b.rank);
                         
-                        const isNonExportable = NON_EXPORTABLE_CHARTS.includes(chart.chart_name);
-                        const maxDisplayEntries = isSafariMobile ? 10 : Infinity;
-                        const displayEntries = isNonExportable 
-                          ? sortedEntries.slice(0, 10) 
-                          : sortedEntries.slice(0, maxDisplayEntries);
+                        const isNonExportable = chart.exportable === false;
+                        const hasMore = sortedEntries.length > 10;
+                        const displayEntries = sortedEntries.slice(0, 10);
                         
                   return (
                         <div key={chartKey}>
@@ -605,7 +456,7 @@ export default function ChartsPage() {
                             <h3 className="text-base sm:text-lg font-semibold text-gray-700 dark:text-gray-300">
                               {chart.chart_name}
                             </h3>
-                            {isNonExportable ? (
+                            {(isNonExportable || hasMore) ? (
                               <Link
                                 to={`/charts/${encodeURIComponent(chart.platform)}/${encodeURIComponent(chart.chart_name)}`}
                                 target="_blank"
@@ -714,11 +565,7 @@ export default function ChartsPage() {
                                                 filter: 'drop-shadow(2px 0px 8.1px rgba(0,0,0,0.5))',
                                               }}
                                             >
-                                              {chart.chart_name === '豆瓣2025评分月度热搜影视' &&
-                                              entry.rank >= 1 &&
-                                              entry.rank <= 12
-                                                ? `${entry.rank}月`
-                                                : entry.rank}
+                                              {formatRankLabel(chart, entry.rank)}
                                             </span>
                                           </div>
                                           <div className="mt-1 text-xs text-center text-gray-700 dark:text-gray-300 line-clamp-2">
@@ -824,11 +671,7 @@ export default function ChartsPage() {
                                                 filter: 'drop-shadow(2px 0px 8.1px rgba(0,0,0,0.5))',
                                               }}
                                             >
-                                              {chart.chart_name === '豆瓣2025评分月度热搜影视' &&
-                                              entry.rank >= 1 &&
-                                              entry.rank <= 12
-                                                ? `${entry.rank}月`
-                                                : entry.rank}
+                                              {formatRankLabel(chart, entry.rank)}
                                             </span>
                                           </div>
                                           <div className="mt-1 text-xs text-center text-gray-700 dark:text-gray-300 line-clamp-2">
