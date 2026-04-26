@@ -17,9 +17,7 @@ const POSTER_WIDTH = 'w500' as const;
 const PLATFORM_LOGOS: Record<string, string> = {
   '豆瓣': '/logos/douban.png',
   'IMDb': '/logos/imdb.png',
-  '烂番茄': '/logos/rottentomatoes.png',
   'Rotten Tomatoes': '/logos/rottentomatoes.png',
-  'MTC': '/logos/metacritic.png',
   'Metacritic': '/logos/metacritic.png',
   'Letterboxd': '/logos/letterboxd.png',
   'TMDB': '/logos/tmdb.png',
@@ -39,6 +37,7 @@ interface ChartDetail {
   chart_name: string;
   media_type: 'movie' | 'tv' | 'both';
   entries: ChartEntry[];
+  rank_label_mode?: 'number' | 'month';
 }
 
 export default function ChartDetailPage() {
@@ -222,9 +221,7 @@ export default function ChartDetailPage() {
                               filter: 'drop-shadow(0 0 2px rgba(0,0,0,0.95)) drop-shadow(0 0 4px rgba(0,0,0,0.85)) drop-shadow(2px 0px 8.1px rgba(0,0,0,0.5))',
                             }}
                           >
-                            {chartName === '豆瓣2025评分月度热搜影视' && entry.rank >= 1 && entry.rank <= 12
-                              ? `${entry.rank}月`
-                              : entry.rank}
+                            {data?.rank_label_mode === 'month' ? `${entry.rank}月` : entry.rank}
                           </span>
                         </div>
                         <div className="mt-1 text-xs text-center text-gray-700 dark:text-gray-300 line-clamp-2">
