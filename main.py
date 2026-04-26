@@ -6888,6 +6888,7 @@ def aggregate_top(
     limit: int = 10,
     chinese_only: bool = False,
     include_pairs: list[tuple[str, str]] | None = None,
+    tie_rank_order: str = "asc",
 ):
     sub = db.query(
         ChartEntry.platform,
@@ -6911,17 +6912,24 @@ def aggregate_top(
             entries = entries.filter(or_(*conditions))
     entries = entries.all()
     freq: dict[int, int] = {}
-    best_rank: dict[int, int] = {}
+    tie_rank: dict[int, int] = {}
     latest_id: dict[int, int] = {}
     sample: dict[int, ChartEntry] = {}
     for e in entries:
         key = int(e.tmdb_id)
         freq[key] = freq.get(key, 0) + 1
-        best_rank[key] = min(best_rank.get(key, 9999), int(e.rank) if e.rank is not None else 9999)
+        rank_value = int(e.rank) if e.rank is not None else 0
+        if tie_rank_order == "desc":
+            tie_rank[key] = max(tie_rank.get(key, 0), rank_value)
+        else:
+            tie_rank[key] = min(tie_rank.get(key, 9999), rank_value)
         latest_id[key] = max(latest_id.get(key, 0), int(e.id))
         if key not in sample:
             sample[key] = e
-    ranked_keys = sorted(freq.keys(), key=lambda k: (-freq[k], best_rank[k], -latest_id[k], k))
+    if tie_rank_order == "desc":
+        ranked_keys = sorted(freq.keys(), key=lambda k: (-freq[k], -tie_rank[k], -latest_id[k], k))
+    else:
+        ranked_keys = sorted(freq.keys(), key=lambda k: (-freq[k], tie_rank[k], -latest_id[k], k))
     result = []
     for tmdb_id in ranked_keys[:limit]:
         e = sample[int(tmdb_id)]
@@ -7041,17 +7049,47 @@ async def get_aggregate_charts(db: Session = Depends(get_db)):
     if cached:
         return cached
 
-    movies = aggregate_top(db, media_type="movie", limit=10, chinese_only=False, include_pairs=None)
-    tv = aggregate_top(db, media_type="tv", limit=10, chinese_only=False, include_pairs=None)
-    top_chinese_tv = aggregate_top(db, media_type="tv", limit=10, chinese_only=True, include_pairs=None)
-    if not top_chinese_tv:
-        top_chinese_tv = latest_chart_top_by_rank(
-            db,
-            platform=canonical_platform_name("豆瓣"),
-            chart_name=canonical_chart_name("一周华语剧集口碑榜"),
-            media_type="tv",
-            limit=10,
-        )
+    movie_include_pairs = [
+        (canonical_platform_name("豆瓣"), canonical_chart_name("一周口碑榜")),
+        (canonical_platform_name("IMDb"), canonical_chart_name("IMDb 本周 Top 10")),
+        (canonical_platform_name("Rotten Tomatoes"), canonical_chart_name("热门流媒体电影")),
+        (canonical_platform_name("Metacritic"), canonical_chart_name("本周趋势电影")),
+        (canonical_platform_name("Letterboxd"), canonical_chart_name("本周热门影视")),
+        (canonical_platform_name("TMDB"), canonical_chart_name("本周趋势影视")),
+        (canonical_platform_name("Trakt"), canonical_chart_name("上周电影 Top 榜")),
+    ]
+    tv_include_pairs = [
+        (canonical_platform_name("豆瓣"), canonical_chart_name("一周全球剧集口碑榜")),
+        (canonical_platform_name("IMDb"), canonical_chart_name("IMDb 本周 Top 10")),
+        (canonical_platform_name("Rotten Tomatoes"), canonical_chart_name("热门剧集")),
+        (canonical_platform_name("Metacritic"), canonical_chart_name("本周趋势剧集")),
+        (canonical_platform_name("Letterboxd"), canonical_chart_name("本周热门影视")),
+        (canonical_platform_name("TMDB"), canonical_chart_name("本周趋势影视")),
+        (canonical_platform_name("Trakt"), canonical_chart_name("上周剧集 Top 榜")),
+    ]
+    movies = aggregate_top(
+        db,
+        media_type="movie",
+        limit=10,
+        chinese_only=False,
+        include_pairs=movie_include_pairs,
+        tie_rank_order="desc",
+    )
+    tv = aggregate_top(
+        db,
+        media_type="tv",
+        limit=10,
+        chinese_only=False,
+        include_pairs=tv_include_pairs,
+        tie_rank_order="desc",
+    )
+    top_chinese_tv = latest_chart_top_by_rank(
+        db,
+        platform=canonical_platform_name("豆瓣"),
+        chart_name=canonical_chart_name("一周华语剧集口碑榜"),
+        media_type="tv",
+        limit=10,
+    )
     result = {"top_movies": movies, "top_tv": tv, "top_chinese_tv": top_chinese_tv}
     await set_cache(cache_key, result, expire=CHARTS_CACHE_EXPIRE)
     return result
