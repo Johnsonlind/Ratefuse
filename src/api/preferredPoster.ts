@@ -14,7 +14,7 @@ type TmdbPoster = {
 };
 
 const posterPromiseCache = new Map<string, Promise<string>>();
-const TMDB_FETCH_CONCURRENCY = 100;
+const TMDB_FETCH_CONCURRENCY = 50;
 let tmdbInFlight = 0;
 const tmdbQueue: Array<() => void> = [];
 
@@ -32,7 +32,7 @@ async function runWithTmdbFetchQueue<T>(task: () => Promise<T>): Promise<T> {
   }
 }
 
-async function fetchJsonWithRetry(url: string, attempts = 4): Promise<any | null> {
+async function fetchJsonWithRetry(url: string, attempts = 5): Promise<any | null> {
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
       const response = await runWithTmdbFetchQueue(() => fetch(url));
@@ -43,7 +43,7 @@ async function fetchJsonWithRetry(url: string, attempts = 4): Promise<any | null
     } catch {
       if (attempt === attempts) return null;
     }
-    await new Promise((resolve) => setTimeout(resolve, 180 * attempt));
+    await new Promise((resolve) => setTimeout(resolve, 250 * attempt));
   }
   return null;
 }
