@@ -12,6 +12,7 @@ import { useAggressiveImagePreload } from '../shared/hooks/useAggressiveImagePre
 import { PageShell } from '../modules/layout/PageShell';
 import { usePageMeta } from '../shared/hooks/usePageMeta';
 import { posterPathToSiteUrl } from '../api/image';
+import { enrichEntriesWithPreferredPosters } from '../api/preferredPoster';
 const DOWNSCALE_SIZE = 'w500';
 
 const resolvePosterUrl = (poster: string) => posterPathToSiteUrl(poster, DOWNSCALE_SIZE);
@@ -203,12 +204,17 @@ export default function ChartsPage() {
         throw new Error('获取榜单数据失败');
       }
       const data = await response.json() as ChartSection[];
-      return data.map((chart) => ({
+      const normalizedCharts = data.map((chart) => ({
         ...chart,
         platform: PLATFORM_NAME_MAP[chart.platform] || chart.platform,
         chart_name: CHART_NAME_MAP[chart.chart_name] || chart.chart_name,
-        entries: chart.entries || [],
       }));
+      return await Promise.all(
+        normalizedCharts.map(async (chart) => ({
+          ...chart,
+          entries: await enrichEntriesWithPreferredPosters(chart.entries || [], chart.media_type, DOWNSCALE_SIZE),
+        }))
+      );
     },
     placeholderData: (previousData) => previousData,
     staleTime: 60 * 1000,
