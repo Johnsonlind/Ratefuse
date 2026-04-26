@@ -14,7 +14,7 @@ type TmdbPoster = {
 };
 
 const posterPromiseCache = new Map<string, Promise<string>>();
-const TMDB_FETCH_CONCURRENCY = 50;
+const TMDB_FETCH_CONCURRENCY = 250;
 let tmdbInFlight = 0;
 const tmdbQueue: Array<() => void> = [];
 
