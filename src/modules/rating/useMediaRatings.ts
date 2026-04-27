@@ -28,6 +28,9 @@ interface UseMediaRatingsReturn {
   traktRating: TraktRating | null;
   retryCount: Record<string, number>;
   handleRetry: (platform: string) => Promise<void>;
+  doubanLimitDialogOpen: boolean;
+  doubanLimitDialogMessage: string;
+  closeDoubanLimitDialog: () => void;
 }
 
 const BACKEND_PLATFORMS = ['douban', 'imdb', 'letterboxd', 'rottentomatoes', 'metacritic'] as const;
@@ -91,8 +94,13 @@ export function useMediaRatings({ mediaId, mediaType }: UseMediaRatingsOptions):
   const [tmdbRating, setTmdbRating] = useState<TMDBRating | null>(null);
   const [traktRating, setTraktRating] = useState<TraktRating | null>(null);
   const [retryCount, setRetryCount] = useState<Record<string, number>>({});
+  const [doubanLimitDialogOpen, setDoubanLimitDialogOpen] = useState(false);
+  const [doubanLimitDialogMessage, setDoubanLimitDialogMessage] = useState('');
   
   const abortControllerRef = useRef<AbortController | null>(null);
+  const lastPopupRef = useRef<Record<string, string>>({});
+  
+  const closeDoubanLimitDialog = () => setDoubanLimitDialogOpen(false);
 
   useEffect(() => {
     if (!mediaId) return;
@@ -139,6 +147,19 @@ export function useMediaRatings({ mediaId, mediaType }: UseMediaRatingsOptions):
                 data
               }
             }));
+            try {
+              if (String(data?.status || '') === 'RateLimit') {
+                const message = String(data?.popup_message || data?.status_reason || '').trim();
+                if (message && lastPopupRef.current[platform] !== message) {
+                  lastPopupRef.current[platform] = message;
+                  if (platform === 'douban') {
+                    setDoubanLimitDialogMessage(message);
+                    setDoubanLimitDialogOpen(true);
+                  }
+                }
+              }
+            } catch {
+            }
 
             return { platform, status: 'successful', data };
           } catch (error) {
@@ -316,6 +337,19 @@ export function useMediaRatings({ mediaId, mediaType }: UseMediaRatingsOptions):
           ...prev,
           [platform]: { status: frontendStatus, data }
         }));
+        try {
+          if (String(data?.status || '') === 'RateLimit') {
+            const message = String(data?.popup_message || data?.status_reason || '').trim();
+            if (message && lastPopupRef.current[platform] !== message) {
+              lastPopupRef.current[platform] = message;
+              if (platform === 'douban') {
+                setDoubanLimitDialogMessage(message);
+                setDoubanLimitDialogOpen(true);
+              }
+            }
+          }
+        } catch {
+        }
       } catch (error) {
         setPlatformStatuses(prev => ({
           ...prev,
@@ -332,6 +366,9 @@ export function useMediaRatings({ mediaId, mediaType }: UseMediaRatingsOptions):
     tmdbRating,
     traktRating,
     retryCount,
-    handleRetry
+    handleRetry,
+    doubanLimitDialogOpen,
+    doubanLimitDialogMessage,
+    closeDoubanLimitDialog,
   };
 }
