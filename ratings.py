@@ -24,8 +24,10 @@ from browser_pool import (
     browser_pool,
     douban_playwright_session_semaphore,
     wait_before_douban_playwright_async,
+    wait_before_douban_request_async,
     douban_is_blocked,
     mark_douban_rate_limited,
+    report_douban_result,
 )
 from anthology_handler import anthology_handler
 
@@ -1184,6 +1186,25 @@ async def _is_cloudflare_challenge(page) -> bool:
     except Exception:
         return False
 
+def _looks_like_douban_access_limited(content: str, page_url: str = "", page_title: str = "") -> bool:
+    c = (content or "").lower()
+    t = (page_title or "").lower()
+    u = (page_url or "").lower()
+    signals = (
+        "error code: 008",
+        "你访问豆瓣的方式有点像机器人程序",
+        "点击证明",
+        "有异常请求从你的ip发出",
+        "请求过于频繁",
+        "访问受限",
+        "访问太频繁",
+        "forbidden",
+        "403",
+        "禁止访问",
+        "sec.douban.com",
+    )
+    return any(s.lower() in c for s in signals) or any(s.lower() in t for s in signals) or "sec.douban.com" in u
+
 def _parse_letterboxd_cookie_string(s: str):
     """解析 .env 中的 LETTERBOXD_COOKIE 字符串"""
     if not s or not s.strip():
@@ -1934,6 +1955,8 @@ async def douban_search_and_extract_rating(
                     st = results["status"]
                     if st == RATING_STATUS["RATE_LIMIT"]:
                         reason = results.get("status_reason") or "访问频率限制"
+                        mark_douban_rate_limited(None, cookie=douban_cookie)
+                        report_douban_result(douban_cookie, "rate_limit")
                         return create_rating_data(RATING_STATUS["RATE_LIMIT"], reason)
                     if st == RATING_STATUS["TIMEOUT"]:
                         return create_rating_data(
@@ -1984,6 +2007,8 @@ async def douban_search_and_extract_rating(
                 if isinstance(results, dict) and "status" in results:
                     st = results["status"]
                     if st == RATING_STATUS["RATE_LIMIT"]:
+                        mark_douban_rate_limited(None, cookie=douban_cookie)
+                        report_douban_result(douban_cookie, "rate_limit")
                         return create_rating_data(
                             RATING_STATUS["RATE_LIMIT"],
                             results.get("status_reason") or "访问频率限制",
@@ -2058,6 +2083,7 @@ async def douban_search_and_extract_rating(
             print(f"豆瓣访问详情页: {detail_url}")
 
             await check_req()
+            await wait_before_douban_request_async(douban_cookie, "detail")
             await page.goto(detail_url, wait_until="domcontentloaded", timeout=(5000 if fast_mode else 15000))
             if not fast_mode:
                 await douban_human_wait("after_detail_dom")
@@ -2065,6 +2091,8 @@ async def douban_search_and_extract_rating(
 
             rl_detail = await check_rate_limit(page, "douban")
             if rl_detail:
+                mark_douban_rate_limited(None, cookie=douban_cookie)
+                report_douban_result(douban_cookie, "rate_limit")
                 return create_rating_data(
                     RATING_STATUS["RATE_LIMIT"],
                     rl_detail.get("status_reason") or "访问频率限制",
@@ -2103,6 +2131,11 @@ async def douban_search_and_extract_rating(
                     rating_data["_match_score"] = float(best_match.get("match_score") or 0)
                 except Exception:
                     rating_data["_match_score"] = None
+                if status == RATING_STATUS["SUCCESSFUL"]:
+                    report_douban_result(douban_cookie, "success")
+                elif status == RATING_STATUS["RATE_LIMIT"]:
+                    mark_douban_rate_limited(None, cookie=douban_cookie)
+                    report_douban_result(douban_cookie, "rate_limit")
             else:
                 rating_data = create_empty_rating_data(
                     "douban", media_type, RATING_STATUS["NO_RATING"]
@@ -2140,6 +2173,7 @@ async def handle_douban_search(page, search_url, fast_mode: bool = False):
     try:
         if not fast_mode:
             await douban_human_wait("before_search_nav")
+        await wait_before_douban_request_async(None, "search")
         print(f"访问豆瓣搜索页面: {search_url}")
         await page.goto(
             search_url,
@@ -2220,6 +2254,16 @@ async def handle_douban_search(page, search_url, fast_mode: bool = False):
 
             if not results:
                 raw = await page.content()
+                current_url = ""
+                title = ""
+                try:
+                    current_url = str(getattr(page, "url", "") or "")
+                except Exception:
+                    current_url = ""
+                try:
+                    title = await page.title()
+                except Exception:
+                    title = ""
                 if (
                     "你访问豆瓣的方式有点像机器人程序" in raw
                     or "点击证明" in raw
@@ -2227,6 +2271,11 @@ async def handle_douban_search(page, search_url, fast_mode: bool = False):
                     return {
                         "status": RATING_STATUS["RATE_LIMIT"],
                         "status_reason": "豆瓣人机验证：请在本地浏览器打开 douban.com 完成验证后，更新账号中的豆瓣 Cookie 再试",
+                    }
+                if _looks_like_douban_access_limited(raw, current_url, title):
+                    return {
+                        "status": RATING_STATUS["RATE_LIMIT"],
+                        "status_reason": "豆瓣访问限制或安全验证拦截",
                     }
                 fallback = []
                 for pat in (
@@ -2260,6 +2309,14 @@ async def handle_douban_search(page, search_url, fast_mode: bool = False):
                 results = fallback
 
             if not results:
+                raw2 = await page.content()
+                title2 = ""
+                try:
+                    title2 = await page.title()
+                except Exception:
+                    title2 = ""
+                if _looks_like_douban_access_limited(raw2, str(getattr(page, "url", "") or ""), title2):
+                    return {"status": RATING_STATUS["RATE_LIMIT"], "status_reason": "豆瓣访问限制或安全验证拦截"}
                 return {"status": RATING_STATUS["NO_FOUND"], "status_reason": "平台未收录"}
 
             return results if results else {"status": RATING_STATUS["NO_FOUND"]}
@@ -5666,7 +5723,7 @@ async def parallel_extract_ratings(tmdb_info, media_type, request=None, douban_c
                 rating_data = None
 
             if platform == "douban" and not used_mapping:
-                blocked, remain = douban_is_blocked()
+                blocked, remain = douban_is_blocked(cookie)
                 if blocked:
                     return platform, create_error_rating_data(
                         "douban",
@@ -5694,8 +5751,12 @@ async def parallel_extract_ratings(tmdb_info, media_type, request=None, douban_c
             if status == RATING_STATUS["SUCCESSFUL"]:
                 rating = rating_data.get('rating') or rating_data.get('series', {}).get('tomatometer', '?')
                 print(log.success(f"{platform}: {rating} ({elapsed:.1f}s)"))
+                if platform == "douban":
+                    report_douban_result(cookie, "success")
             else:
                 print(log.warning(f"{platform}: {status} ({elapsed:.1f}s)"))
+                if platform == "douban" and status == RATING_STATUS["RATE_LIMIT"]:
+                    report_douban_result(cookie, "rate_limit")
             
             return platform, rating_data
             
@@ -5706,7 +5767,8 @@ async def parallel_extract_ratings(tmdb_info, media_type, request=None, douban_c
             error_str = str(e).lower()
             if "rate limit" in error_str or "频率限制" in error_str:
                 if platform == "douban":
-                    mark_douban_rate_limited(600.0)
+                    mark_douban_rate_limited(None, cookie=cookie)
+                    report_douban_result(cookie, "rate_limit")
                 return platform, create_error_rating_data(platform, media_type, RATING_STATUS["RATE_LIMIT"], "访问频率限制")
             elif "timeout" in error_str or "超时" in error_str:
                 return platform, create_error_rating_data(platform, media_type, RATING_STATUS["TIMEOUT"], "请求超时")
@@ -5732,7 +5794,7 @@ async def parallel_extract_ratings(tmdb_info, media_type, request=None, douban_c
                 elapsed = time.time() - start_time
                 print(log.error(f"{platform}: overall timeout after {timeout:.1f}s (elapsed {elapsed:.1f}s)"))
                 if platform == "douban":
-                    mark_douban_rate_limited(600.0)
+                    mark_douban_rate_limited(None, cookie=douban_cookie)
                 return platform, create_error_rating_data(
                     platform,
                     media_type,
@@ -5772,7 +5834,7 @@ async def parallel_extract_ratings(tmdb_info, media_type, request=None, douban_c
                     f"全局超时 {GLOBAL_DEADLINE_SEC:.0f} 秒",
                 )
                 if p == "douban":
-                    mark_douban_rate_limited(600.0)
+                    mark_douban_rate_limited(None, cookie=douban_cookie)
 
         return results
 
