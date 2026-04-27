@@ -4,6 +4,7 @@
 import asyncio
 import hashlib
 import logging
+import random
 import threading
 import time
 from typing import List, Optional
@@ -17,23 +18,89 @@ _douban_throttle_last: float = 0.0
 
 _DOUBAN_BLOCKED_UNTIL: float = 0.0
 _douban_block_lock = threading.Lock()
+_douban_backoff_level: int = 0
 
-def douban_is_blocked() -> tuple[bool, float]:
+def _douban_backoff_cooldown(level: int) -> float:
+    ladder = [90.0, 180.0, 360.0, 720.0, 1200.0, 1800.0]
+    idx = max(0, min(level, len(ladder) - 1))
+    return ladder[idx]
+
+def _sample_human_delay(request_type: str) -> float:
+    if request_type == "detail":
+        base = random.triangular(7.0, 18.0, 10.0)
+    elif request_type == "search":
+        base = random.triangular(5.0, 12.0, 7.5)
+    elif request_type == "list":
+        base = random.triangular(4.0, 10.0, 6.0)
+    else:
+        base = random.triangular(4.0, 9.0, 5.5)
+    r = random.random()
+    if r < 0.10:
+        base += random.uniform(10.0, 30.0)
+    elif r < 0.12:
+        base += random.uniform(40.0, 95.0)
+    return float(base)
+
+def douban_is_blocked(cookie: Optional[str] = None) -> tuple[bool, float]:
     """返回(是否处于冷却期, 剩余秒数)"""
+    now = time.monotonic()
     with _douban_block_lock:
-        now = time.monotonic()
-        remain = _DOUBAN_BLOCKED_UNTIL - now
-        return (remain > 0), max(remain, 0.0)
+        remain_global = _DOUBAN_BLOCKED_UNTIL - now
+    key = _douban_cookie_key(cookie)
+    with _cookie_playwright_lock:
+        remain_cookie = _douban_cookie_blocked_until.get(key, 0.0) - now
+    remain = max(remain_global, remain_cookie, 0.0)
+    return (remain > 0), remain
 
-def mark_douban_rate_limited(cooldown_sec: float = 600.0) -> None:
-    """标记豆瓣进入冷却期（默认 10 分钟）。"""
-    global _DOUBAN_BLOCKED_UNTIL
+def mark_douban_rate_limited(
+    cooldown_sec: Optional[float] = None,
+    cookie: Optional[str] = None,
+) -> None:
+    """标记豆瓣进入冷却期（支持账号级指数退避）。"""
+    global _DOUBAN_BLOCKED_UNTIL, _douban_backoff_level
+    now = time.monotonic()
+    key = _douban_cookie_key(cookie)
     with _douban_block_lock:
-        _DOUBAN_BLOCKED_UNTIL = max(_DOUBAN_BLOCKED_UNTIL, time.monotonic() + float(cooldown_sec))
+        if cooldown_sec is None:
+            _douban_backoff_level = min(_douban_backoff_level + 1, 5)
+            global_cd = _douban_backoff_cooldown(_douban_backoff_level)
+        else:
+            global_cd = float(cooldown_sec)
+        _DOUBAN_BLOCKED_UNTIL = max(_DOUBAN_BLOCKED_UNTIL, now + global_cd)
+    with _cookie_playwright_lock:
+        lv = _douban_cookie_backoff_level.get(key, 0)
+        if cooldown_sec is None:
+            lv = min(lv + 1, 5)
+            ck_cd = _douban_backoff_cooldown(lv)
+        else:
+            ck_cd = float(cooldown_sec)
+        _douban_cookie_backoff_level[key] = lv
+        _douban_cookie_blocked_until[key] = max(
+            _douban_cookie_blocked_until.get(key, 0.0),
+            now + ck_cd,
+        )
+
+def report_douban_result(cookie: Optional[str], status: str) -> None:
+    """反馈抓取结果用于动态节奏调整"""
+    global _douban_backoff_level
+    key = _douban_cookie_key(cookie)
+    st = (status or "").strip().lower()
+    if st == "success":
+        with _douban_block_lock:
+            _douban_backoff_level = max(_douban_backoff_level - 1, 0)
+        with _cookie_playwright_lock:
+            lv = _douban_cookie_backoff_level.get(key, 0)
+            if lv > 0:
+                _douban_cookie_backoff_level[key] = lv - 1
+    elif st == "rate_limit":
+        mark_douban_rate_limited(None, cookie=cookie)
 
 _DOUBAN_SAME_COOKIE_MIN_GAP_SEC = 10.0
 _cookie_playwright_lock = threading.Lock()
 _douban_cookie_last_playwright_start: dict[str, float] = {}
+_douban_cookie_blocked_until: dict[str, float] = {}
+_douban_cookie_backoff_level: dict[str, int] = {}
+_douban_cookie_last_detail_at: dict[str, float] = {}
 
 douban_playwright_session_semaphore = asyncio.Semaphore(3)
 
@@ -63,6 +130,11 @@ def _douban_cookie_key(cookie: Optional[str]) -> str:
 
 def wait_before_douban_playwright(cookie: Optional[str]) -> None:
     global _douban_throttle_last
+    blocked, remain = douban_is_blocked(cookie)
+    if blocked and remain > 0:
+        logger.info("豆瓣会话启动前冷却 %.1fs", remain)
+        time.sleep(remain)
+
     with _douban_throttle_lock:
         now = time.monotonic()
         delay = _DOUBAN_MIN_INTERVAL_SEC - (now - _douban_throttle_last)
@@ -78,7 +150,15 @@ def wait_before_douban_playwright(cookie: Optional[str]) -> None:
         if gap > 0:
             logger.info("豆瓣同账号冷却 %.1fs（降低风控概率）", gap)
             time.sleep(gap)
+        last_detail = _douban_cookie_last_detail_at.get(key, 0.0)
+        if last_detail > 0 and (now - last_detail) < 45.0:
+            extra = random.uniform(6.0, 18.0)
+            logger.info("详情页访问过密，附加 %.1fs 间隔", extra)
+            time.sleep(extra)
         _douban_cookie_last_playwright_start[key] = time.monotonic()
+        _douban_cookie_last_detail_at[key] = time.monotonic()
+
+    time.sleep(_sample_human_delay("detail"))
 
 async def wait_before_douban_playwright_async(cookie: Optional[str]) -> None:
     global _douban_start_segment_tokens, _douban_start_segment_last_refill
@@ -100,6 +180,16 @@ async def wait_before_douban_playwright_async(cookie: Optional[str]) -> None:
         await asyncio.sleep(max(sleep_for, 0.05))
 
     await asyncio.to_thread(wait_before_douban_playwright, cookie)
+
+def wait_before_douban_request(cookie: Optional[str], request_type: str) -> None:
+    blocked, remain = douban_is_blocked(cookie)
+    if blocked and remain > 0:
+        logger.info("豆瓣请求(%s)冷却 %.1fs", request_type, remain)
+        time.sleep(remain)
+    time.sleep(_sample_human_delay(request_type))
+
+async def wait_before_douban_request_async(cookie: Optional[str], request_type: str) -> None:
+    await asyncio.to_thread(wait_before_douban_request, cookie, request_type)
 
 class BrowserPool:
     def __init__(self, max_browsers=5, max_contexts_per_browser=3, max_pages_per_context=5):
