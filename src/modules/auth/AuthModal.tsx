@@ -10,10 +10,11 @@ import { toast } from 'sonner';
 interface AuthModalProps {
   isOpen: boolean;
   onClose: () => void;
+  initialMode?: 'login' | 'register';
 }
 
-export function AuthModal({ isOpen, onClose }: AuthModalProps) {
-  const [isLogin, setIsLogin] = useState(true);
+export function AuthModal({ isOpen, onClose, initialMode = 'login' }: AuthModalProps) {
+  const [isLogin, setIsLogin] = useState(initialMode !== 'register');
   const [email, setEmail] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -24,6 +25,11 @@ export function AuthModal({ isOpen, onClose }: AuthModalProps) {
   
   const { login, register, sendPasswordResetEmail } = useAuth();
   const submitLock = useRef(false);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setIsLogin(initialMode !== 'register');
+  }, [isOpen, initialMode]);
 
   useEffect(() => {
     const theme = document.documentElement.getAttribute('data-theme');
