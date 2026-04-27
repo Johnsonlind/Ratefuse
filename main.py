@@ -235,6 +235,8 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_ADMIN_CHAT_IDS = [
     int(x) for x in (os.getenv("TELEGRAM_ADMIN_CHAT_IDS") or "").split(",") if x.strip()
 ]
+_douban_rate_limit_notify_lock = asyncio.Lock()
+_douban_rate_limit_notified_until: dict[str, float] = {}
 
 app = FastAPI()
 
@@ -2995,6 +2997,76 @@ def _extract_letterboxd_slug_from_url(url: str) -> Optional[str]:
         return None
     return None
 
+def _get_admin_default_douban_cookie(db: Session) -> Optional[str]:
+    rows = (
+        db.query(User)
+        .filter(User.is_admin == True)
+        .order_by(User.id.asc())
+        .all()
+    )
+    for u in rows:
+        ck = str(getattr(u, "douban_cookie", "") or "").strip()
+        if ck:
+            return ck
+    return None
+
+def _resolve_douban_cookie(
+    db: Session,
+    current_user: Optional[User],
+) -> tuple[Optional[str], str]:
+    if current_user and current_user.douban_cookie:
+        return current_user.douban_cookie, "user"
+    default_cookie = _get_admin_default_douban_cookie(db)
+    if default_cookie:
+        return default_cookie, "admin_user"
+    return None, "none"
+
+async def _notify_douban_rate_limit_for_admin(cookie_source: str, reason: str) -> None:
+    if cookie_source != "admin_user":
+        return
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_ADMIN_CHAT_IDS:
+        return
+    now = time.time()
+    async with _douban_rate_limit_notify_lock:
+        until = _douban_rate_limit_notified_until.get("admin_user", 0.0)
+        if until > now:
+            return
+        _douban_rate_limit_notified_until["admin_user"] = now + 600.0
+    text = (
+        "⚠️ 未登录模式豆瓣抓取触发风控\n\n"
+        "请管理员访问豆瓣完成人机验证，或更新默认 Cookie。\n"
+        f"原因：{reason or '访问频率限制'}"
+    )
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            for chat_id in TELEGRAM_ADMIN_CHAT_IDS:
+                await client.post(
+                    f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                    json={"chat_id": chat_id, "text": text},
+                )
+    except Exception as e:
+        logger.warning(f"发送豆瓣风控 Telegram 通知失败: {e}")
+
+def _decorate_rate_limit_popup(
+    rating_info: dict,
+    *,
+    platform: str,
+    cookie_source: str,
+) -> dict:
+    if platform != "douban" or not isinstance(rating_info, dict):
+        return rating_info
+    status = str(rating_info.get("status") or "")
+    if status != RATING_STATUS["RATE_LIMIT"]:
+        return rating_info
+    if cookie_source == "user":
+        popup = "豆瓣触发访问限制，请先访问 douban.com 完成人机验证，或更新你的豆瓣 Cookie 后重试。"
+    else:
+        popup = "豆瓣触发访问限制，请稍后重试。管理员可访问 douban.com 完成人机验证或更新系统默认 Cookie。"
+    rating_info["popup_message"] = popup
+    if not rating_info.get("status_reason"):
+        rating_info["status_reason"] = popup
+    return rating_info
+
 def _extract_rt_slug_from_url(url: str) -> Optional[str]:
     try:
         p = urlparse(url)
@@ -3289,15 +3361,18 @@ async def get_batch_ratings(
         
         logger.info(f"\n{'='*60}\n  批量获取评分 | 数量: {len(items)} | 并发: {max_concurrent}\n{'='*60}")
         
-        douban_cookie = None
-        if current_user:
-            if current_user.douban_cookie:
-                douban_cookie = current_user.douban_cookie
-                print(f"✅ 已获取用户 {current_user.id} 的豆瓣Cookie（长度: {len(douban_cookie)}）")
-            else:
-                print(f"⚠️ 用户 {current_user.id} 未设置豆瓣Cookie")
+        douban_cookie, douban_cookie_source = _resolve_douban_cookie(db, current_user)
+        if douban_cookie_source == "user":
+            print(f"✅ 已获取用户 {current_user.id} 的豆瓣Cookie（长度: {len(douban_cookie or '')}）")
+        elif douban_cookie_source == "admin_user":
+            print("✅ 未登录/未配置用户 Cookie，使用管理员账号豆瓣 Cookie")
         else:
-            print("⚠️ 未登录用户，无法使用豆瓣Cookie")
+            print("⚠️ 当前请求未命中可用豆瓣 Cookie")
+        if douban_cookie_source != "user":
+            try:
+                max_concurrent = min(int(max_concurrent), 3)
+            except Exception:
+                max_concurrent = 3
         
         async def get_item_info(item):
             media_id = item['id']
@@ -3352,6 +3427,15 @@ async def get_batch_ratings(
                         parallel_extract_ratings(tmdb_info, media_type, request, douban_cookie),
                         timeout=30.0
                     )
+                    if isinstance(ratings, dict):
+                        db_rating = ratings.get("douban")
+                        if isinstance(db_rating, dict):
+                            _decorate_rate_limit_popup(db_rating, platform="douban", cookie_source=douban_cookie_source)
+                            if str(db_rating.get("status") or "") == RATING_STATUS["RATE_LIMIT"]:
+                                await _notify_douban_rate_limit_for_admin(
+                                    douban_cookie_source,
+                                    str(db_rating.get("status_reason") or ""),
+                                )
                     
                     cache_key = f"ratings:all:{media_type}:{media_id}"
                     if ratings:
@@ -3440,15 +3524,13 @@ async def get_all_platform_ratings(
             print("请求已在开始时被取消")
             return None
 
-        douban_cookie = None
-        if current_user:
-            if current_user.douban_cookie:
-                douban_cookie = current_user.douban_cookie
-                print(f"✅ 已获取用户 {current_user.id} 的豆瓣Cookie（长度: {len(douban_cookie)}）")
-            else:
-                print(f"⚠️ 用户 {current_user.id} 未设置豆瓣Cookie")
+        douban_cookie, douban_cookie_source = _resolve_douban_cookie(db, current_user)
+        if douban_cookie_source == "user":
+            print(f"✅ 已获取用户 {current_user.id} 的豆瓣Cookie（长度: {len(douban_cookie or '')}）")
+        elif douban_cookie_source == "admin_user":
+            print("✅ 未登录/未配置用户 Cookie，使用管理员账号豆瓣 Cookie")
         else:
-            print("⚠️ 未登录用户，无法使用豆瓣Cookie")
+            print("⚠️ 当前请求未命中可用豆瓣 Cookie")
         
         cache_key = f"ratings:all:{type}:{id}"
         cached_data = await get_cache(cache_key)
@@ -3481,6 +3563,15 @@ async def get_all_platform_ratings(
                 parallel_extract_ratings(tmdb_info, tmdb_info["type"], request, douban_cookie, mapping=mapping_dict),
                 timeout=30.0
             )
+            if isinstance(all_ratings, dict):
+                db_rating = all_ratings.get("douban")
+                if isinstance(db_rating, dict):
+                    _decorate_rate_limit_popup(db_rating, platform="douban", cookie_source=douban_cookie_source)
+                    if str(db_rating.get("status") or "") == RATING_STATUS["RATE_LIMIT"]:
+                        await _notify_douban_rate_limit_for_admin(
+                            douban_cookie_source,
+                            str(db_rating.get("status_reason") or ""),
+                        )
         except asyncio.TimeoutError:
             logger.error("获取评分超时（>30秒）")
             raise HTTPException(status_code=504, detail="获取评分超时")
@@ -3646,21 +3737,31 @@ async def get_platform_rating(
     db: Session = Depends(get_db)
 ):
     start_time = time.time()
+    async def _finalize_platform_response(data: Any):
+        if platform == "douban" and isinstance(data, dict):
+            _decorate_rate_limit_popup(data, platform=platform, cookie_source=douban_cookie_source)
+            if str(data.get("status") or "") == RATING_STATUS["RATE_LIMIT"]:
+                await _notify_douban_rate_limit_for_admin(
+                    douban_cookie_source,
+                    str(data.get("status_reason") or ""),
+                )
+        return data
+
     try:
         if await request.is_disconnected():
             print(f"{platform} 请求已在开始时被取消")
             return None
         
         douban_cookie = None
+        douban_cookie_source = "none"
         if platform == "douban":
-            if current_user:
-                if current_user.douban_cookie:
-                    douban_cookie = current_user.douban_cookie
-                    print(f"✅ 已获取用户 {current_user.id} 的豆瓣Cookie（长度: {len(douban_cookie)}）")
-                else:
-                    print(f"⚠️ 用户 {current_user.id} 未设置豆瓣Cookie")
+            douban_cookie, douban_cookie_source = _resolve_douban_cookie(db, current_user)
+            if douban_cookie_source == "user":
+                print(f"✅ 已获取用户 {current_user.id} 的豆瓣Cookie（长度: {len(douban_cookie or '')}）")
+            elif douban_cookie_source == "admin_user":
+                print("✅ 未登录/未配置用户 Cookie，使用管理员账号豆瓣 Cookie")
             else:
-                print("⚠️ 未登录用户，无法使用豆瓣Cookie")
+                print("⚠️ 当前请求未命中可用豆瓣 Cookie")
         
         media_type = type
         tmdb_id: Optional[int] = None
@@ -3679,7 +3780,7 @@ async def get_platform_rating(
                 status = None
                 status_reason = None
             logger.info(f"从缓存获取 {platform} 评分: key={cache_key}，耗时: {time.time() - start_time:.2f}秒")
-            return cached_data
+            return await _finalize_platform_response(cached_data)
 
         tmdb_info = await get_tmdb_info_cached(id, type, request)
         if not tmdb_info:
@@ -3714,7 +3815,7 @@ async def get_platform_rating(
                     "cached": False,
                     "absent_cooldown": True,
                 }
-                return rating_info
+                return await _finalize_platform_response(rating_info)
 
         mapping_row = None
         mapping_dict = None
@@ -3779,7 +3880,7 @@ async def get_platform_rating(
                         "extract_time": 0,
                         "cached": False,
                     }
-                    return rating_info
+                    return await _finalize_platform_response(rating_info)
 
                 logger.info(
                     f"平台未收录锁冷却已到，允许本次再探测: platform={platform} media_type={media_type} tmdb_id={tmdb_id} elapsed={int(elapsed)}s"
@@ -3827,7 +3928,7 @@ async def get_platform_rating(
                     "extract_time": 0,
                     "cached": False,
                 }
-                return rating_info
+                return await _finalize_platform_response(rating_info)
             logger.info(
                 f"平台已锁定但映射不完整，允许本次按需探测补全: platform={platform} media_type={media_type} tmdb_id={tmdb_id}"
             )
@@ -3889,7 +3990,7 @@ async def get_platform_rating(
                                 db.commit()
                             if rating_info.get("status") == RATING_STATUS["SUCCESSFUL"]:
                                 await set_cache(cache_key, rating_info, expire=CACHE_EXPIRE_TIME)
-                                return rating_info
+                                return await _finalize_platform_response(rating_info)
                             mapping_failed = True
                             logger.info(
                                 f"该剧集在豆瓣存在映射但未通过映射抓取: tmdb_id={tmdb_id} status={status} reason={status_reason}"
@@ -3963,7 +4064,7 @@ async def get_platform_rating(
                                     db.commit()
                                 if rating_info.get("status") == RATING_STATUS["SUCCESSFUL"]:
                                     await set_cache(cache_key, rating_info, expire=CACHE_EXPIRE_TIME)
-                                    return rating_info
+                                    return await _finalize_platform_response(rating_info)
                             mapping_failed = True
                             logger.info(
                                 f"该剧集在rottentomatoes存在映射但未通过映射抓取: tmdb_id={tmdb_id} status={status} reason={status_reason}"
@@ -4026,7 +4127,7 @@ async def get_platform_rating(
                                     db.commit()
                                 if rating_info.get("status") == RATING_STATUS["SUCCESSFUL"]:
                                     await set_cache(cache_key, rating_info, expire=CACHE_EXPIRE_TIME)
-                                    return rating_info
+                                    return await _finalize_platform_response(rating_info)
                             mapping_failed = True
                             logger.info(
                                 f"该剧集通过metacritic映射获取评分 {status} tmdb_id={tmdb_id} reason={status_reason}"
@@ -4077,7 +4178,7 @@ async def get_platform_rating(
                             db.commit()
                         if rating_info.get("status") == RATING_STATUS["SUCCESSFUL"]:
                             await set_cache(cache_key, rating_info, expire=CACHE_EXPIRE_TIME)
-                            return rating_info
+                            return await _finalize_platform_response(rating_info)
                     mapping_failed = True
                     logger.info(
                         f"该 {media_type} 在 {platform} 存在映射但未通过映射抓取 tmdb_id={tmdb_id} status={status} reason={status_reason}"
@@ -4165,7 +4266,7 @@ async def get_platform_rating(
                             status_reason=rating_info.get("status_reason"),
                         )
                         db.commit()
-                    return rating_info
+                    return await _finalize_platform_response(rating_info)
 
                 if await request.is_disconnected():
                     print(f"{platform} 请求在搜索平台后被取消")
@@ -4213,7 +4314,7 @@ async def get_platform_rating(
                         status_reason=rating_info.get("status_reason"),
                     )
                     db.commit()
-                return rating_info
+                return await _finalize_platform_response(rating_info)
 
         try:
             if mapping_failed and isinstance(rating_info, dict) and not skip_search_no_rating:
@@ -4318,7 +4419,7 @@ async def get_platform_rating(
                     },
                 )
 
-        return rating_info
+        return await _finalize_platform_response(rating_info)
 
     except HTTPException:
         raise
