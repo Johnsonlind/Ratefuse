@@ -28,6 +28,9 @@ import { OverallRatingCard } from '../modules/rating/OverallRatingCard';
 import { PageShell } from '../modules/layout/PageShell';
 import { usePageMeta } from '../shared/hooks/usePageMeta';
 import { ResourceSection } from '../modules/resources/ResourceSection';
+import { ConfirmDialog } from '../shared/ui/ConfirmDialog';
+import { useAuth } from '../modules/auth/AuthContext';
+import { AuthModal } from '../modules/auth/AuthModal';
 
 const PRELOAD_IMAGES = [
   '/logos/douban.png',
@@ -50,6 +53,8 @@ const formatQueryError = (error: unknown): { status: FetchStatus; detail: string
 export default function MoviePage() {
   const { id } = useParams();
   const [isExporting, setIsExporting] = useState(false);
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const { user } = useAuth();
   const {
     platformStatuses,
     tmdbStatus,
@@ -57,7 +62,10 @@ export default function MoviePage() {
     tmdbRating,
     traktRating,
     retryCount,
-    handleRetry
+    handleRetry,
+    doubanLimitDialogOpen,
+    doubanLimitDialogMessage,
+    closeDoubanLimitDialog,
   } = useMediaRatings({ mediaId: id, mediaType: 'movie' });
 
   const { data: movie, isLoading, error: queryError } = useQuery({
@@ -382,6 +390,32 @@ export default function MoviePage() {
             retryCount={retryCount[backendPlatforms.find(p => p.status === 'error')?.platform || 'unknown'] || 0}
           />
         )}
+      <ConfirmDialog
+        open={doubanLimitDialogOpen}
+        title="提示"
+        message={
+          user
+            ? (doubanLimitDialogMessage || '豆瓣触发访问限制，请前往豆瓣解除限制或更新 Cookie。')
+            : '豆瓣触发访问限制，建议注册并写入豆瓣 Cookie。'
+        }
+        cancelText="确定"
+        confirmText={user ? '去豆瓣' : '注册'}
+        onCancel={closeDoubanLimitDialog}
+        onConfirm={() => {
+          if (!user) {
+            setShowAuthModal(true);
+            closeDoubanLimitDialog();
+            return;
+          }
+          window.open('https://movie.douban.com/', '_blank', 'noopener,noreferrer');
+          closeDoubanLimitDialog();
+        }}
+      />
+      <AuthModal
+        isOpen={showAuthModal}
+        onClose={() => setShowAuthModal(false)}
+        initialMode="register"
+      />
     </PageShell>
   );
 }
