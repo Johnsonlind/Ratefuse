@@ -870,7 +870,7 @@ export default function ProfilePage() {
               {list.original_list_id && list.original_creator ? (
                 <>
                   <img
-                    src={list.original_creator?.avatar || ''}
+                    src={list.original_creator?.avatar || '/default-avatar.png'}
                     alt={list.original_creator?.username}
                     className="w-6 h-6 rounded-full object-cover cursor-pointer"
                     onClick={() => navigate(`/profile/${list.original_creator?.id}`)}
@@ -880,17 +880,16 @@ export default function ProfilePage() {
                       const img = e.currentTarget;
                       try {
                         const raw = list.original_creator?.avatar;
-                        if (!raw) {
-                          img.style.visibility = 'hidden';
+                        if (!raw) return;
+                        const tries = Number(img.dataset.retryAvatar || '0');
+                        if (tries >= 3) {
+                          img.src = '/default-avatar.png';
+                          img.dataset.retryAvatar = '';
                           return;
                         }
-                        if (img.dataset.retryAvatar === '3') {
-                          img.style.visibility = 'hidden';
-                          return;
-                        }
-                        img.dataset.retryAvatar = '3';
+                        img.dataset.retryAvatar = String(tries + 1);
                         const hasQuery = raw.includes('?');
-                        img.src = `${raw}${hasQuery ? '&' : '?'}cb=${Date.now()}`;
+                        img.src = `${raw}${hasQuery ? '&' : '?'}cb=${Date.now()}_${tries + 1}`;
                       } catch {
                       }
                     }}
@@ -908,7 +907,7 @@ export default function ProfilePage() {
               ) : (
                 <>
                   <img
-                    src={user?.avatar || ''}
+                    src={user?.avatar || '/default-avatar.png'}
                     alt={user?.username}
                     className="w-6 h-6 rounded-full object-cover"
                     loading="lazy"
@@ -917,17 +916,16 @@ export default function ProfilePage() {
                       const img = e.currentTarget;
                       try {
                         const raw = user?.avatar;
-                        if (!raw) {
-                          img.style.visibility = 'hidden';
+                        if (!raw) return;
+                        const tries = Number(img.dataset.retryAvatar || '0');
+                        if (tries >= 3) {
+                          img.src = '/default-avatar.png';
+                          img.dataset.retryAvatar = '';
                           return;
                         }
-                        if (img.dataset.retryAvatar === '1') {
-                          img.style.visibility = 'hidden';
-                          return;
-                        }
-                        img.dataset.retryAvatar = '1';
+                        img.dataset.retryAvatar = String(tries + 1);
                         const hasQuery = raw.includes('?');
-                        img.src = `${raw}${hasQuery ? '&' : '?'}cb=${Date.now()}`;
+                        img.src = `${raw}${hasQuery ? '&' : '?'}cb=${Date.now()}_${tries + 1}`;
                       } catch {
                       }
                     }}
@@ -1314,7 +1312,7 @@ export default function ProfilePage() {
                       <div key={follow.id} className="glass-card rounded-2xl p-5 shadow-sm hover:shadow-md transition-shadow">
                         <div className="flex items-center gap-4">
                           <img
-                            src={follow.avatar || ''}
+                            src={follow.avatar || '/default-avatar.png'}
                             alt={follow.username}
                             className="w-12 h-12 rounded-full object-cover cursor-pointer"
                             onClick={() => navigate(`/profile/${follow.id}`)}
@@ -1324,17 +1322,16 @@ export default function ProfilePage() {
                               const img = e.currentTarget;
                               try {
                                 const raw = follow.avatar;
-                                if (!raw) {
-                                  img.style.visibility = 'hidden';
+                                if (!raw) return;
+                                const tries = Number(img.dataset.retryAvatar || '0');
+                                if (tries >= 3) {
+                                  img.src = '/default-avatar.png';
+                                  img.dataset.retryAvatar = '';
                                   return;
                                 }
-                                if (img.dataset.retryAvatar === '1') {
-                                  img.style.visibility = 'hidden';
-                                  return;
-                                }
-                                img.dataset.retryAvatar = '1';
+                                img.dataset.retryAvatar = String(tries + 1);
                                 const hasQuery = raw.includes('?');
-                                img.src = `${raw}${hasQuery ? '&' : '?'}cb=${Date.now()}`;
+                                img.src = `${raw}${hasQuery ? '&' : '?'}cb=${Date.now()}_${tries + 1}`;
                               } catch {
                               }
                             }}
