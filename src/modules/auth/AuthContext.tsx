@@ -155,6 +155,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       });
       const cacheData = { data: userData, timestamp: Date.now() };
       localStorage.setItem('cachedUserInfo', JSON.stringify(cacheData));
+      await fetchUser(true);
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
         throw new Error('登录超时，请稍后重试');
