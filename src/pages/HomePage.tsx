@@ -884,7 +884,12 @@ function HeroCarousel({
     } else {
       const prevRoundFlat = flatSegments(prevRoundSegmentsRef.current);
       if (prevRoundFlat.length > 0) {
-        prevGlobal = prevRoundFlat[prevRoundFlat.length - 1];
+        for (let i = prevRoundFlat.length - 1; i >= 0; i--) {
+          if (prevRoundFlat[i] !== activeGlobal) {
+            prevGlobal = prevRoundFlat[i];
+            break;
+          }
+        }
       }
     }
 
@@ -898,8 +903,19 @@ function HeroCarousel({
     } else {
       const nextRoundFlat = flatSegments(nextRoundSegmentsRef.current);
       if (nextRoundFlat.length > 0) {
-        nextGlobal = nextRoundFlat[0];
+        for (let i = 0; i < nextRoundFlat.length; i++) {
+          if (nextRoundFlat[i] !== activeGlobal) {
+            nextGlobal = nextRoundFlat[i];
+            break;
+          }
+        }
       }
+    }
+
+    if (prevGlobal === activeGlobal) prevGlobal = -1;
+    if (nextGlobal === activeGlobal) nextGlobal = -1;
+    if (prevGlobal >= 0 && nextGlobal >= 0 && prevGlobal === nextGlobal) {
+      nextGlobal = -1;
     }
 
     return { prev: prevGlobal, active: activeGlobal, next: nextGlobal };
@@ -1451,13 +1467,15 @@ export default function HomePage() {
                                   try {
                                     const raw = u.avatar;
                                     if (!raw) return;
-                                    if (img.dataset.retryAvatar === '3') {
-                                      img.style.visibility = 'hidden';
+                                    const tries = Number(img.dataset.retryAvatar || '0');
+                                    if (tries >= 3) {
+                                      img.src = '/default-avatar.png';
+                                      img.dataset.retryAvatar = '';
                                       return;
                                     }
-                                    img.dataset.retryAvatar = '3';
+                                    img.dataset.retryAvatar = String(tries + 1);
                                     const hasQuery = raw.includes('?');
-                                    img.src = `${raw}${hasQuery ? '&' : '?'}cb=${Date.now()}`;
+                                    img.src = `${raw}${hasQuery ? '&' : '?'}cb=${Date.now()}_${tries + 1}`;
                                   } catch {
                                   }
                                 }}
