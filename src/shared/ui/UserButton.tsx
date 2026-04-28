@@ -29,6 +29,14 @@ export function UserButton() {
   const navigate = useNavigate();
   const buttonRef = useRef<HTMLButtonElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const avatarImgRef = useRef<HTMLImageElement | null>(null);
+
+  useEffect(() => {
+    const img = avatarImgRef.current;
+    if (!img) return;
+    img.style.visibility = 'visible';
+    img.dataset.retryAvatar = '0';
+  }, [user?.id, user?.avatar]);
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -214,6 +222,8 @@ export function UserButton() {
           aria-controls={user ? 'user-menu' : undefined}
         >
         <img 
+          ref={avatarImgRef}
+          key={`${user?.id ?? 0}:${user?.avatar ?? 'default'}`}
           src={user?.avatar || '/Profile.png'} 
           alt="用户头像"
           className="w-5 h-5 rounded-full"
