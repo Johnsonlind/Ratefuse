@@ -217,6 +217,29 @@ export function UserButton() {
           src={user?.avatar || '/Profile.png'} 
           alt="用户头像"
           className="w-5 h-5 rounded-full"
+          loading="eager"
+          decoding="async"
+          fetchPriority="high"
+          style={{ backgroundColor: 'rgba(255,255,255,0.08)' }}
+          onError={(e) => {
+            const img = e.currentTarget;
+            try {
+              if (img.dataset.retryAvatar === '3') {
+                img.style.visibility = 'hidden';
+                return;
+              }
+              img.dataset.retryAvatar = '3';
+              const raw = user?.avatar;
+              if (!raw) return;
+              const hasQuery = raw.includes('?');
+              img.src = `${raw}${hasQuery ? '&' : '?'}cb=${Date.now()}`;
+            } catch {
+            }
+          }}
+          onLoad={(e) => {
+            const img = e.currentTarget;
+            img.style.visibility = 'visible';
+          }}
         />
         </button>
       </div>
