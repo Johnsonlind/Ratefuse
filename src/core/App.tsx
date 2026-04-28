@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AuthProvider } from '../modules/auth/AuthContext';
 import { Toaster } from 'sonner';
 import { useLenis } from '../shared/hooks/useLenis';
+import HomePage from '../pages/HomePage';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -24,7 +25,6 @@ const routerOptions = {
   }
 };
 
-const HomePage = lazy(() => import('../pages/HomePage'));
 const MoviePage = lazy(() => import('../pages/MoviePage'));
 const TVShowPage = lazy(() => import('../pages/TVShowPage'));
 const ProfilePage = lazy(() => import('../pages/ProfilePage'));
