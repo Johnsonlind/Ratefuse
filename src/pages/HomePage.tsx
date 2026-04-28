@@ -130,19 +130,18 @@ function TopChartCard({
 }) {
   const {
     data: preferredPosterUrl,
-    isSuccess: preferredPosterReady,
+    isFetched: preferredPosterFetched,
   } = useQuery({
     queryKey: ['preferred-poster', item.type, item.id, item.poster, DOWNSCALE_SIZE],
     queryFn: async () =>
-      await getPreferredPosterUrlForMedia(item.type, item.id, item.poster || '', DOWNSCALE_SIZE),
+      await getPreferredPosterUrlForMedia(item.type, item.id, item.poster || '', DOWNSCALE_SIZE, {
+        strictPreferred: true,
+      }),
     enabled: !!item.poster,
     staleTime: 24 * 60 * 60 * 1000,
     gcTime: 7 * 24 * 60 * 60 * 1000,
   });
-  const effectivePosterUrl =
-    preferredPosterReady && preferredPosterUrl
-      ? toSiteTmdbImageUrl(preferredPosterUrl)
-      : '';
+  const effectivePosterUrl = preferredPosterUrl ? toSiteTmdbImageUrl(preferredPosterUrl) : '';
   const linkPath = item.type === 'movie' ? `/movie/${item.id}` : `/tv/${item.id}`;
   return (
     <div
@@ -178,7 +177,7 @@ function TopChartCard({
             <div className="relative flex h-full w-full items-center justify-center bg-gray-200 dark:bg-gray-800 overflow-hidden">
               <div className="absolute inset-0 opacity-60 bg-gradient-to-br from-gray-100 via-gray-200 to-gray-300 dark:from-gray-800 dark:via-gray-850 dark:to-gray-900" />
               <div className="relative text-xs text-gray-400 dark:text-gray-600">
-                {item.poster ? '加载中...' : '无海报'}
+                {item.poster ? (preferredPosterFetched ? '无可用海报' : '加载中...') : '无海报'}
               </div>
             </div>
           )}
@@ -660,7 +659,7 @@ function HeroCarousel({
     title: items[idx].title,
     genres: [],
     logoUrl: '',
-    imageUrl: resolveHeroImageUrl(items[idx].poster),
+    imageUrl: '',
     poster: items[idx].poster,
   });
 
