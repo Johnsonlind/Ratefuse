@@ -764,7 +764,7 @@ function HeroCarousel({
     setSegments(newSegments);
     setCurrentSegment(0);
     setCurrentIndexInSegment(0);
-    prevRoundSegmentsRef.current = generateSegments();
+    prevRoundSegmentsRef.current = [];
     nextRoundSegmentsRef.current = generateSegments();
   }, [slides.length, generateSegments]);
 
