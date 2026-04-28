@@ -520,7 +520,7 @@ export default function UserProfilePage() {
         <div className="flex items-center gap-4 contain-none">
           <div className="w-24 h-24 rounded-full overflow-hidden border-4 border-white dark:border-gray-700">
             <img
-              src={userInfo.avatar || ''}
+              src={userInfo.avatar || '/default-avatar.png'}
               alt={userInfo.username}
               className="w-full h-full object-cover"
               loading="lazy"
@@ -529,17 +529,16 @@ export default function UserProfilePage() {
                 const img = e.currentTarget;
                 try {
                   const raw = userInfo.avatar;
-                  if (!raw) {
-                    img.style.visibility = 'hidden';
+                  if (!raw) return;
+                  const tries = Number(img.dataset.retryAvatar || '0');
+                  if (tries >= 3) {
+                    img.src = '/default-avatar.png';
+                    img.dataset.retryAvatar = '';
                     return;
                   }
-                  if (img.dataset.retryAvatar === '3') {
-                    img.style.visibility = 'hidden';
-                    return;
-                  }
-                  img.dataset.retryAvatar = '3';
+                  img.dataset.retryAvatar = String(tries + 1);
                   const hasQuery = raw.includes('?');
-                  img.src = `${raw}${hasQuery ? '&' : '?'}cb=${Date.now()}`;
+                  img.src = `${raw}${hasQuery ? '&' : '?'}cb=${Date.now()}_${tries + 1}`;
                 } catch {
                 }
               }}
