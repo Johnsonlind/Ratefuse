@@ -224,15 +224,17 @@ export function UserButton() {
           onError={(e) => {
             const img = e.currentTarget;
             try {
-              if (img.dataset.retryAvatar === '3') {
-                img.style.visibility = 'hidden';
-                return;
-              }
-              img.dataset.retryAvatar = '3';
               const raw = user?.avatar;
               if (!raw) return;
+              const tries = Number(img.dataset.retryAvatar || '0');
+              if (tries >= 3) {
+                img.src = '/Profile.png';
+                img.dataset.retryAvatar = '';
+                return;
+              }
+              img.dataset.retryAvatar = String(tries + 1);
               const hasQuery = raw.includes('?');
-              img.src = `${raw}${hasQuery ? '&' : '?'}cb=${Date.now()}`;
+              img.src = `${raw}${hasQuery ? '&' : '?'}cb=${Date.now()}_${tries + 1}`;
             } catch {
             }
           }}
