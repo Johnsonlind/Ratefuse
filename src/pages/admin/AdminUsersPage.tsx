@@ -459,7 +459,7 @@ export default function AdminUsersPage() {
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-3">
                       <img
-                        src={user.avatar || ''}
+                        src={user.avatar || '/Profile.png'}
                         alt={user.username}
                         className="w-9 h-9 rounded-full object-cover bg-gray-100 dark:bg-gray-800 flex-shrink-0"
                         loading="lazy"
@@ -468,17 +468,16 @@ export default function AdminUsersPage() {
                           const img = e.currentTarget;
                           try {
                             const raw = user.avatar;
-                            if (!raw) {
-                              img.style.visibility = 'hidden';
+                            if (!raw) return;
+                            const tries = Number(img.dataset.retryAvatar || '0');
+                            if (tries >= 3) {
+                              img.src = '/Profile.png';
+                              img.dataset.retryAvatar = '';
                               return;
                             }
-                            if (img.dataset.retryAvatar === '3') {
-                              img.style.visibility = 'hidden';
-                              return;
-                            }
-                            img.dataset.retryAvatar = '3';
+                            img.dataset.retryAvatar = String(tries + 1);
                             const hasQuery = raw.includes('?');
-                            img.src = `${raw}${hasQuery ? '&' : '?'}cb=${Date.now()}`;
+                            img.src = `${raw}${hasQuery ? '&' : '?'}cb=${Date.now()}_${tries + 1}`;
                           } catch {
                           }
                         }}
