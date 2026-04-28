@@ -676,7 +676,11 @@ def _avatar_url_or_none(user: Optional[User]) -> Optional[str]:
     avatar = getattr(user, "avatar", None)
     if not avatar:
         return None
-    return f"/api/users/{user.id}/avatar"
+    try:
+        avatar_ver = hashlib.md5(str(avatar).encode("utf-8")).hexdigest()[:10]
+    except Exception:
+        avatar_ver = "0"
+    return f"/api/users/{user.id}/avatar?v={avatar_ver}"
 
 @app.get("/api/users/{user_id}/avatar")
 async def get_user_avatar(user_id: int, db: Session = Depends(get_db)):
@@ -696,7 +700,7 @@ async def get_user_avatar(user_id: int, db: Session = Depends(get_db)):
     return Response(
         content=img_bytes,
         media_type=media_type,
-        headers={"Cache-Control": "public, max-age=86400"},
+        headers={"Cache-Control": "public, max-age=2592000, immutable"},
     )
 
 # ==========================================
