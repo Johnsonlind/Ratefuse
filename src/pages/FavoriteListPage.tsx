@@ -680,7 +680,7 @@ export default function FavoriteListPage() {
                       onClick={() => navigate(`/profile/${list.original_list_id ? list.original_creator?.id : list.creator.id}`)}
                     >
                       <img 
-                        src={(list.original_list_id ? list.original_creator?.avatar : list.creator.avatar) || ''} 
+                        src={(list.original_list_id ? list.original_creator?.avatar : list.creator.avatar) || '/default-avatar.png'} 
                         alt={(list.original_list_id ? list.original_creator?.username : list.creator.username)}
                         className="w-full h-full object-cover"
                         loading="lazy"
@@ -689,17 +689,16 @@ export default function FavoriteListPage() {
                           const img = e.currentTarget;
                           const raw = (list.original_list_id ? list.original_creator?.avatar : list.creator.avatar) || '';
                           try {
-                            if (!raw) {
-                              img.style.visibility = 'hidden';
+                            if (!raw) return;
+                            const tries = Number(img.dataset.retryAvatar || '0');
+                            if (tries >= 3) {
+                              img.src = '/default-avatar.png';
+                              img.dataset.retryAvatar = '';
                               return;
                             }
-                            if (img.dataset.retryAvatar === '3') {
-                              img.style.visibility = 'hidden';
-                              return;
-                            }
-                            img.dataset.retryAvatar = '3';
+                            img.dataset.retryAvatar = String(tries + 1);
                             const hasQuery = raw.includes('?');
-                            img.src = `${raw}${hasQuery ? '&' : '?'}cb=${Date.now()}`;
+                            img.src = `${raw}${hasQuery ? '&' : '?'}cb=${Date.now()}_${tries + 1}`;
                           } catch {
                           }
                         }}
