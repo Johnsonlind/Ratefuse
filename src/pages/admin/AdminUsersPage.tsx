@@ -459,11 +459,32 @@ export default function AdminUsersPage() {
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-3">
                       <img
-                        src={user.avatar || '/Profile.png'}
+                        src={user.avatar || ''}
                         alt={user.username}
                         className="w-9 h-9 rounded-full object-cover bg-gray-100 dark:bg-gray-800 flex-shrink-0"
                         loading="lazy"
                         decoding="async"
+                        onError={(e) => {
+                          const img = e.currentTarget;
+                          try {
+                            const raw = user.avatar;
+                            if (!raw) {
+                              img.style.visibility = 'hidden';
+                              return;
+                            }
+                            if (img.dataset.retryAvatar === '3') {
+                              img.style.visibility = 'hidden';
+                              return;
+                            }
+                            img.dataset.retryAvatar = '3';
+                            const hasQuery = raw.includes('?');
+                            img.src = `${raw}${hasQuery ? '&' : '?'}cb=${Date.now()}`;
+                          } catch {
+                          }
+                        }}
+                        onLoad={(e) => {
+                          e.currentTarget.style.visibility = 'visible';
+                        }}
                       />
                       <div className="min-w-0">
                         <div className="font-medium text-gray-900 dark:text-white truncate">
