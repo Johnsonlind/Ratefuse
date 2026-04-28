@@ -870,10 +870,33 @@ export default function ProfilePage() {
               {list.original_list_id && list.original_creator ? (
                 <>
                   <img
-                    src={list.original_creator?.avatar || '/default-avatar.png'}
+                    src={list.original_creator?.avatar || ''}
                     alt={list.original_creator?.username}
                     className="w-6 h-6 rounded-full object-cover cursor-pointer"
                     onClick={() => navigate(`/profile/${list.original_creator?.id}`)}
+                    loading="lazy"
+                    decoding="async"
+                    onError={(e) => {
+                      const img = e.currentTarget;
+                      try {
+                        const raw = list.original_creator?.avatar;
+                        if (!raw) {
+                          img.style.visibility = 'hidden';
+                          return;
+                        }
+                        if (img.dataset.retryAvatar === '3') {
+                          img.style.visibility = 'hidden';
+                          return;
+                        }
+                        img.dataset.retryAvatar = '3';
+                        const hasQuery = raw.includes('?');
+                        img.src = `${raw}${hasQuery ? '&' : '?'}cb=${Date.now()}`;
+                      } catch {
+                      }
+                    }}
+                    onLoad={(e) => {
+                      e.currentTarget.style.visibility = 'visible';
+                    }}
                   />
                     <span 
                     className="text-sm text-gray-700 dark:text-gray-300 cursor-pointer hover:text-blue-500"
@@ -885,9 +908,32 @@ export default function ProfilePage() {
               ) : (
                 <>
                   <img
-                    src={user?.avatar || '/default-avatar.png'}
+                    src={user?.avatar || ''}
                     alt={user?.username}
                     className="w-6 h-6 rounded-full object-cover"
+                    loading="lazy"
+                    decoding="async"
+                    onError={(e) => {
+                      const img = e.currentTarget;
+                      try {
+                        const raw = user?.avatar;
+                        if (!raw) {
+                          img.style.visibility = 'hidden';
+                          return;
+                        }
+                        if (img.dataset.retryAvatar === '1') {
+                          img.style.visibility = 'hidden';
+                          return;
+                        }
+                        img.dataset.retryAvatar = '1';
+                        const hasQuery = raw.includes('?');
+                        img.src = `${raw}${hasQuery ? '&' : '?'}cb=${Date.now()}`;
+                      } catch {
+                      }
+                    }}
+                    onLoad={(e) => {
+                      e.currentTarget.style.visibility = 'visible';
+                    }}
                   />
                   <span className="text-sm text-gray-700 dark:text-gray-300">
                     {user?.username}
@@ -1012,6 +1058,25 @@ export default function ProfilePage() {
                     alt="用户头像"
                     className="w-24 h-24 rounded-full object-cover border-4 border-white"
                     loading="lazy"
+                    decoding="async"
+                    onError={(e) => {
+                      const img = e.currentTarget;
+                      try {
+                        const raw = previewAvatar || user?.avatar;
+                        if (!raw || raw.startsWith('data:image/')) return;
+                        if (img.dataset.retryAvatar === '1') {
+                          img.style.visibility = 'hidden';
+                          return;
+                        }
+                        img.dataset.retryAvatar = '1';
+                        const hasQuery = raw.includes('?');
+                        img.src = `${raw}${hasQuery ? '&' : '?'}cb=${Date.now()}`;
+                      } catch {
+                      }
+                    }}
+                    onLoad={(e) => {
+                      e.currentTarget.style.visibility = 'visible';
+                    }}
                   />
                   <input
                     type="file"
@@ -1249,11 +1314,33 @@ export default function ProfilePage() {
                       <div key={follow.id} className="glass-card rounded-2xl p-5 shadow-sm hover:shadow-md transition-shadow">
                         <div className="flex items-center gap-4">
                           <img
-                            src={follow.avatar || '/default-avatar.png'}
+                            src={follow.avatar || ''}
                             alt={follow.username}
                             className="w-12 h-12 rounded-full object-cover cursor-pointer"
                             onClick={() => navigate(`/profile/${follow.id}`)}
                             loading="lazy"
+                            decoding="async"
+                            onError={(e) => {
+                              const img = e.currentTarget;
+                              try {
+                                const raw = follow.avatar;
+                                if (!raw) {
+                                  img.style.visibility = 'hidden';
+                                  return;
+                                }
+                                if (img.dataset.retryAvatar === '1') {
+                                  img.style.visibility = 'hidden';
+                                  return;
+                                }
+                                img.dataset.retryAvatar = '1';
+                                const hasQuery = raw.includes('?');
+                                img.src = `${raw}${hasQuery ? '&' : '?'}cb=${Date.now()}`;
+                              } catch {
+                              }
+                            }}
+                            onLoad={(e) => {
+                              e.currentTarget.style.visibility = 'visible';
+                            }}
                           />
                           <div className="flex-1">
                             <h3 
