@@ -680,9 +680,32 @@ export default function FavoriteListPage() {
                       onClick={() => navigate(`/profile/${list.original_list_id ? list.original_creator?.id : list.creator.id}`)}
                     >
                       <img 
-                        src={(list.original_list_id ? list.original_creator?.avatar : list.creator.avatar) || '/default-avatar.png'} 
+                        src={(list.original_list_id ? list.original_creator?.avatar : list.creator.avatar) || ''} 
                         alt={(list.original_list_id ? list.original_creator?.username : list.creator.username)}
                         className="w-full h-full object-cover"
+                        loading="lazy"
+                        decoding="async"
+                        onError={(e) => {
+                          const img = e.currentTarget;
+                          const raw = (list.original_list_id ? list.original_creator?.avatar : list.creator.avatar) || '';
+                          try {
+                            if (!raw) {
+                              img.style.visibility = 'hidden';
+                              return;
+                            }
+                            if (img.dataset.retryAvatar === '3') {
+                              img.style.visibility = 'hidden';
+                              return;
+                            }
+                            img.dataset.retryAvatar = '3';
+                            const hasQuery = raw.includes('?');
+                            img.src = `${raw}${hasQuery ? '&' : '?'}cb=${Date.now()}`;
+                          } catch {
+                          }
+                        }}
+                        onLoad={(e) => {
+                          e.currentTarget.style.visibility = 'visible';
+                        }}
                       />
                     </div>
                     {/* 创建者昵称 */}
