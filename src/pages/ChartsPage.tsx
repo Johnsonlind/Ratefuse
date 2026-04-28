@@ -11,11 +11,8 @@ import { ExportChartCard } from '../modules/export/ExportChartCard';
 import { useAggressiveImagePreload } from '../shared/hooks/useAggressiveImagePreload';
 import { PageShell } from '../modules/layout/PageShell';
 import { usePageMeta } from '../shared/hooks/usePageMeta';
-import { posterPathToSiteUrl } from '../api/image';
-import { enrichEntriesWithPreferredPosters } from '../api/preferredPoster';
+import { getPreferredPosterUrlForMedia } from '../api/preferredPoster';
 const DOWNSCALE_SIZE = 'w500';
-
-const resolvePosterUrl = (poster: string) => posterPathToSiteUrl(poster, DOWNSCALE_SIZE);
 
 const CHART_ORDER = ['豆瓣', 'IMDb', 'Rotten Tomatoes', 'Metacritic', 'Letterboxd', 'TMDB', 'Trakt'];
 
@@ -49,6 +46,56 @@ interface ChartSection {
   card_count?: number;
   exportable?: boolean;
   rank_label_mode?: 'number' | 'month';
+}
+
+function ChartPosterImage({
+  entry,
+  mediaType,
+  shouldUseEager,
+  fetchPriorityValue,
+  sizes,
+}: {
+  entry: ChartEntry;
+  mediaType: 'movie' | 'tv';
+  shouldUseEager: boolean;
+  fetchPriorityValue: 'high' | 'auto' | 'low';
+  sizes: string;
+}) {
+  const { data: preferredPosterUrl, isFetched } = useQuery({
+    queryKey: ['chart-preferred-poster', mediaType, entry.tmdb_id, entry.poster, DOWNSCALE_SIZE],
+    queryFn: async () =>
+      await getPreferredPosterUrlForMedia(mediaType, entry.tmdb_id, entry.poster || '', DOWNSCALE_SIZE, {
+        strictPreferred: true,
+      }),
+    enabled: !!entry.poster,
+    staleTime: 24 * 60 * 60 * 1000,
+    gcTime: 7 * 24 * 60 * 60 * 1000,
+  });
+
+  if (preferredPosterUrl) {
+    return (
+      <img
+        src={preferredPosterUrl}
+        alt={entry.title}
+        className="w-full h-full object-cover transition-all duration-200 group-hover:scale-105"
+        loading={shouldUseEager ? 'eager' : 'lazy'}
+        fetchPriority={fetchPriorityValue}
+        decoding="async"
+        sizes={sizes}
+        style={{ minHeight: '100%', display: 'block' }}
+        onError={(e) => {
+          const target = e.target as HTMLImageElement;
+          if (target) target.style.opacity = '0';
+        }}
+      />
+    );
+  }
+
+  return (
+    <div className="w-full h-full flex items-center justify-center bg-gray-200 dark:bg-gray-800">
+      <div className="text-gray-400 dark:text-gray-600 text-xs">{entry.poster ? (isFetched ? '无海报' : '加载中...') : '无海报'}</div>
+    </div>
+  );
 }
 
 export default function ChartsPage() {
@@ -85,16 +132,10 @@ export default function ChartsPage() {
         throw new Error('获取榜单数据失败');
       }
       const data = await response.json() as ChartSection[];
-      const enriched = await Promise.all(
-        data.map(async (chart) => ({
-          ...chart,
-          entries: await enrichEntriesWithPreferredPosters(chart.entries || [], chart.media_type, DOWNSCALE_SIZE),
-        }))
-      );
-      return enriched.filter((chart) => chart.visible !== false);
+      return data.filter((chart) => chart.visible !== false);
     },
     placeholderData: (previousData) => previousData,
-    staleTime: 0,
+    staleTime: 5 * 60 * 1000,
   });
 
   useAggressiveImagePreload(contentRef, false);
@@ -530,31 +571,13 @@ export default function ChartsPage() {
                                             className="aspect-[2/3] rounded-lg overflow-hidden relative bg-gray-200 dark:bg-gray-800 transition-all duration-200 group-hover:shadow-lg"
                                             style={{ transform: 'translateZ(0)' }}
                                           >
-                                            {entry.poster ? (
-                                              <img
-                                                src={resolvePosterUrl(entry.poster)}
-                                                alt={entry.title}
-                                                className="w-full h-full object-cover transition-all duration-200 group-hover:scale-105"
-                                                loading={shouldUseEager ? 'eager' : 'lazy'}
-                                                fetchPriority={fetchPriorityValue}
-                                                decoding="async"
-                                                sizes="(max-width:639px) 33vw, 120px"
-                                                style={{
-                                                  minHeight: '100%',
-                                                  display: 'block',
-                                                }}
-                                                onError={(e) => {
-                                                  const target = e.target as HTMLImageElement;
-                                                  if (target) {
-                                                    target.style.opacity = '0';
-                                                  }
-                                                }}
-                                              />
-                                            ) : (
-                                              <div className="w-full h-full flex items-center justify-center bg-gray-200 dark:bg-gray-800">
-                                                <div className="text-gray-400 dark:text-gray-600 text-xs">无海报</div>
-                                              </div>
-                                            )}
+                                            <ChartPosterImage
+                                              entry={entry}
+                                              mediaType={mediaType as 'movie' | 'tv'}
+                                              shouldUseEager={shouldUseEager}
+                                              fetchPriorityValue={fetchPriorityValue}
+                                              sizes="(max-width:639px) 33vw, 120px"
+                                            />
                                             {/* 排名数字 */}
                                             <span
                                               className={`absolute top-0 left-0 pointer-events-none z-10 font-extrabold leading-none whitespace-nowrap ${entry.rank === 1 ? 'chart-rank-num-1' : 'chart-rank-num-other'}`}
@@ -636,31 +659,13 @@ export default function ChartsPage() {
                                             className="aspect-[2/3] rounded-lg overflow-hidden relative bg-gray-200 dark:bg-gray-800 transition-all duration-200 group-hover:shadow-lg"
                                             style={{ transform: 'translateZ(0)' }}
                                           >
-                                            {entry.poster ? (
-                                              <img
-                                                src={resolvePosterUrl(entry.poster)}
-                                                alt={entry.title}
-                                                className="w-full h-full object-cover transition-all duration-200 group-hover:scale-105"
-                                                loading={shouldUseEager ? 'eager' : 'lazy'}
-                                                fetchPriority={fetchPriorityValue}
-                                                decoding="async"
-                                                sizes="(min-width:1280px) 120px, (min-width:640px) 12vw, 96px"
-                                                style={{
-                                                  minHeight: '100%',
-                                                  display: 'block',
-                                                }}
-                                                onError={(e) => {
-                                                  const target = e.target as HTMLImageElement;
-                                                  if (target) {
-                                                    target.style.opacity = '0';
-                                                  }
-                                                }}
-                                              />
-                                            ) : (
-                                              <div className="w-full h-full flex items-center justify-center bg-gray-200 dark:bg-gray-800">
-                                                <div className="text-gray-400 dark:text-gray-600 text-xs">无海报</div>
-                                              </div>
-                                            )}
+                                            <ChartPosterImage
+                                              entry={entry}
+                                              mediaType={mediaType as 'movie' | 'tv'}
+                                              shouldUseEager={shouldUseEager}
+                                              fetchPriorityValue={fetchPriorityValue}
+                                              sizes="(min-width:1280px) 120px, (min-width:640px) 12vw, 96px"
+                                            />
                                             {/* 排名数字 */}
                                             <span
                                               className={`absolute top-0 left-0 pointer-events-none z-10 font-extrabold leading-none whitespace-nowrap ${entry.rank === 1 ? 'chart-rank-num-1' : 'chart-rank-num-other'}`}
