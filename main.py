@@ -3856,9 +3856,40 @@ async def get_platform_rating(
             remark = str(getattr(ps, "remark", "") or "")
             if any(k in remark for k in ("未收录", "不再尝试", "do not retry", "unlisted")):
                 try:
-                    recheck_sec = int(os.environ.get("UNLISTED_LOCK_RECHECK_SEC", str(7 * 24 * 60 * 60)))
+                    recheck_sec = int(os.environ.get("UNLISTED_LOCK_RECHECK_SEC", str(30 * 24 * 60 * 60)))
                 except Exception:
-                    recheck_sec = 7 * 24 * 60 * 60
+                    recheck_sec = 30 * 24 * 60 * 60
+
+                try:
+                    now_year = datetime.now(_TZ_SHANGHAI).year
+                except Exception:
+                    now_year = datetime.utcnow().year
+                media_year = None
+                try:
+                    if (media_type or "").lower() == "movie":
+                        dt_str = (tmdb_info or {}).get("release_date") or ""
+                    else:
+                        dt_str = (tmdb_info or {}).get("first_air_date") or (tmdb_info or {}).get("release_date") or ""
+                    if isinstance(dt_str, str) and len(dt_str) >= 4 and dt_str[:4].isdigit():
+                        media_year = int(dt_str[:4])
+                except Exception:
+                    media_year = None
+                if isinstance(media_year, int) and media_year < now_year:
+                    rating_info = create_rating_data(
+                        RATING_STATUS["LOCKED"],
+                        f"平台已锁定（往年未收录，永久锁定；如需修改请联系管理员）",
+                    )
+                    logger.info(
+                        f"跳过抓取（往年未收录永久锁定）: platform={platform} media_type={media_type} tmdb_id={tmdb_id} media_year={media_year}"
+                    )
+                    rating_info["_performance"] = {
+                        "total_time": round(time.time() - start_time, 2),
+                        "search_time": 0,
+                        "extract_time": 0,
+                        "cached": False,
+                        "absent_cooldown": True,
+                    }
+                    return await _finalize_platform_response(rating_info)
                 try:
                     last_changed_at = getattr(ps, "last_status_changed_at", None)
                     elapsed = (_shanghai_naive_now() - last_changed_at).total_seconds() if last_changed_at else None
