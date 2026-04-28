@@ -59,25 +59,43 @@ export async function getPreferredPosterUrlForMedia(
   mediaType: MediaType,
   mediaId: string | number,
   fallbackPoster: string,
-  size: string = 'w500'
+  size: string = 'w500',
+  options?: { strictPreferred?: boolean }
 ): Promise<string> {
+  const strictPreferred = !!options?.strictPreferred;
   const fallbackUrl = fallbackPoster ? posterPathToSiteUrl(fallbackPoster, size) : '';
-  const key = `${mediaType}:${mediaId}:${size}:${fallbackUrl}`;
+  const key = `${mediaType}:${mediaId}:${size}:${fallbackUrl}:strict=${strictPreferred ? 1 : 0}`;
   const cached = posterPromiseCache.get(key);
   if (cached) return cached;
 
   const task = (async () => {
+    if (typeof window !== 'undefined') {
+      const lsKey = `preferred_poster:${key}`;
+      const fromLs = localStorage.getItem(lsKey);
+      if (fromLs) return fromLs;
+    }
+
     const payload = await fetchJsonWithRetry(
       buildTmdbApiUrl(`${mediaType}/${mediaId}`, {
         append_to_response: 'images',
       }),
-      3
+      2
     );
 
     const posters: TmdbPoster[] = Array.isArray(payload?.images?.posters) ? payload.images.posters : [];
     const preferredPath = pickPreferredPosterPath(posters, payload?.original_language);
-    if (!preferredPath) return fallbackUrl;
-    return posterPathToSiteUrl(preferredPath, size);
+    const resolved = preferredPath
+      ? posterPathToSiteUrl(preferredPath, size)
+      : (strictPreferred ? '' : fallbackUrl);
+
+    if (typeof window !== 'undefined' && resolved) {
+      const lsKey = `preferred_poster:${key}`;
+      try {
+        localStorage.setItem(lsKey, resolved);
+      } catch {
+      }
+    }
+    return resolved;
   })();
 
   posterPromiseCache.set(key, task);
