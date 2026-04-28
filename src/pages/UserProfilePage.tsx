@@ -520,10 +520,32 @@ export default function UserProfilePage() {
         <div className="flex items-center gap-4 contain-none">
           <div className="w-24 h-24 rounded-full overflow-hidden border-4 border-white dark:border-gray-700">
             <img
-              src={userInfo.avatar || '/default-avatar.png'}
+              src={userInfo.avatar || ''}
               alt={userInfo.username}
               className="w-full h-full object-cover"
               loading="lazy"
+              decoding="async"
+              onError={(e) => {
+                const img = e.currentTarget;
+                try {
+                  const raw = userInfo.avatar;
+                  if (!raw) {
+                    img.style.visibility = 'hidden';
+                    return;
+                  }
+                  if (img.dataset.retryAvatar === '3') {
+                    img.style.visibility = 'hidden';
+                    return;
+                  }
+                  img.dataset.retryAvatar = '3';
+                  const hasQuery = raw.includes('?');
+                  img.src = `${raw}${hasQuery ? '&' : '?'}cb=${Date.now()}`;
+                } catch {
+                }
+              }}
+              onLoad={(e) => {
+                e.currentTarget.style.visibility = 'visible';
+              }}
             />
           </div>
           <div className="flex-1 min-w-0">
