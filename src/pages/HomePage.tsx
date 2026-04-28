@@ -48,17 +48,6 @@ type AggregateCharts = {
   top_chinese_tv?: Array<{ id: number; type: 'movie' | 'tv'; title: string; poster: string }>;
 };
 
-async function enrichTopEntriesPosters(
-  entries: Array<{ id: number; type: 'movie' | 'tv'; title: string; poster: string }> = []
-) {
-  return await Promise.all(
-    entries.map(async (entry) => ({
-      ...entry,
-      poster: await getPreferredPosterUrlForMedia(entry.type, entry.id, entry.poster || '', DOWNSCALE_SIZE),
-    }))
-  );
-}
-
 type ChartEntry = { id: number; type: 'movie' | 'tv'; title: string; poster: string };
 
 const downscaleTmdb = (url: string, size = DOWNSCALE_SIZE) => {
@@ -139,7 +128,21 @@ function TopChartCard({
   eager?: boolean;
   compact?: boolean;
 }) {
-  const posterUrl = item.poster ? resolvePosterUrl(item.poster) : '';
+  const {
+    data: preferredPosterUrl,
+    isSuccess: preferredPosterReady,
+  } = useQuery({
+    queryKey: ['preferred-poster', item.type, item.id, item.poster, DOWNSCALE_SIZE],
+    queryFn: async () =>
+      await getPreferredPosterUrlForMedia(item.type, item.id, item.poster || '', DOWNSCALE_SIZE),
+    enabled: !!item.poster,
+    staleTime: 24 * 60 * 60 * 1000,
+    gcTime: 7 * 24 * 60 * 60 * 1000,
+  });
+  const effectivePosterUrl =
+    preferredPosterReady && preferredPosterUrl
+      ? toSiteTmdbImageUrl(preferredPosterUrl)
+      : '';
   const linkPath = item.type === 'movie' ? `/movie/${item.id}` : `/tv/${item.id}`;
   return (
     <div
@@ -157,9 +160,9 @@ function TopChartCard({
           }`}
           style={{ transform: 'translateZ(0)' }}
         >
-          {item.poster ? (
+          {item.poster && effectivePosterUrl ? (
             <img
-              src={posterUrl}
+              src={effectivePosterUrl}
               alt={item.title}
               className="h-full w-full object-cover transition-all duration-200 group-hover:scale-105"
               loading={eager ? 'eager' : 'lazy'}
@@ -172,8 +175,11 @@ function TopChartCard({
               }}
             />
           ) : (
-            <div className="flex h-full w-full items-center justify-center bg-gray-200 dark:bg-gray-800">
-              <div className="text-xs text-gray-400 dark:text-gray-600">无海报</div>
+            <div className="relative flex h-full w-full items-center justify-center bg-gray-200 dark:bg-gray-800 overflow-hidden">
+              <div className="absolute inset-0 opacity-60 bg-gradient-to-br from-gray-100 via-gray-200 to-gray-300 dark:from-gray-800 dark:via-gray-850 dark:to-gray-900" />
+              <div className="relative text-xs text-gray-400 dark:text-gray-600">
+                {item.poster ? '加载中...' : '无海报'}
+              </div>
             </div>
           )}
         </div>
@@ -677,7 +683,9 @@ function HeroCarousel({
   const [dragOffsetX, setDragOffsetX] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
 
-  const playbackIndices = useMemo(() => segments.flat(), [segments]);
+  const prevRoundSegmentsRef = useRef<number[][]>([]);
+  const nextRoundSegmentsRef = useRef<number[][]>([]);
+
   const activePos = useMemo(() => {
     let prefix = 0;
     for (let i = 0; i < currentSegment; i++) prefix += segments[i]?.length || 0;
@@ -720,12 +728,44 @@ function HeroCarousel({
     return segs;
   }, [slides.length]);
 
+  const playbackIndices = useMemo(() => segments.flat(), [segments]);
+
+  useEffect(() => {
+    if (segments.length === 0) return;
+    nextRoundSegmentsRef.current = generateSegments();
+  }, [segments, generateSegments]);
+
+  const flatSegments = (segs: number[][]) => segs.flat();
+
+  const switchToNextRound = useCallback(() => {
+    const next = nextRoundSegmentsRef.current?.length ? nextRoundSegmentsRef.current : generateSegments();
+    prevRoundSegmentsRef.current = segments;
+    setSegments(next);
+    setCurrentSegment(0);
+    setCurrentIndexInSegment(0);
+  }, [segments, generateSegments]);
+
+  const switchToPrevRound = useCallback(() => {
+    const prev = prevRoundSegmentsRef.current;
+    if (!prev || prev.length === 0) return false;
+    nextRoundSegmentsRef.current = segments;
+    setSegments(prev);
+    const lastSegIdx = Math.max(0, prev.length - 1);
+    const lastIdx = Math.max(0, (prev[lastSegIdx]?.length || 1) - 1);
+    setCurrentSegment(lastSegIdx);
+    setCurrentIndexInSegment(lastIdx);
+    prevRoundSegmentsRef.current = [];
+    return true;
+  }, [segments]);
+
   useEffect(() => {
     if (slides.length === 0) return;
     const newSegments = generateSegments();
     setSegments(newSegments);
     setCurrentSegment(0);
     setCurrentIndexInSegment(0);
+    prevRoundSegmentsRef.current = generateSegments();
+    nextRoundSegmentsRef.current = generateSegments();
   }, [slides.length, generateSegments]);
 
   useEffect(() => {
@@ -783,10 +823,7 @@ function HeroCarousel({
         const nextActivePos = activePos + 1;
 
         if (nextActivePos >= playbackIndices.length) {
-          const newSegments = generateSegments();
-          setSegments(newSegments);
-          setCurrentSegment(0);
-          setCurrentIndexInSegment(0);
+          switchToNextRound();
           return;
         }
 
@@ -844,6 +881,11 @@ function HeroCarousel({
       if (prevSegment && prevSegment.length > 0) {
         prevGlobal = prevSegment[prevSegment.length - 1];
       }
+    } else {
+      const prevRoundFlat = flatSegments(prevRoundSegmentsRef.current);
+      if (prevRoundFlat.length > 0) {
+        prevGlobal = prevRoundFlat[prevRoundFlat.length - 1];
+      }
     }
 
     if (currentIndexInSegment < segment.length - 1) {
@@ -852,6 +894,11 @@ function HeroCarousel({
       const nextSegment = segments[currentSegment + 1];
       if (nextSegment && nextSegment.length > 0) {
         nextGlobal = nextSegment[0];
+      }
+    } else {
+      const nextRoundFlat = flatSegments(nextRoundSegmentsRef.current);
+      if (nextRoundFlat.length > 0) {
+        nextGlobal = nextRoundFlat[0];
       }
     }
 
@@ -930,15 +977,13 @@ function HeroCarousel({
     const targetPos = activePos + dir;
 
     if (dir > 0 && targetPos >= playbackLen) {
-      const newSegments = generateSegments();
-      setSegments(newSegments);
-      setCurrentSegment(0);
-      setCurrentIndexInSegment(0);
+      switchToNextRound();
       setCarouselPaused(false);
       return;
     }
 
     if (dir < 0 && targetPos < 0) {
+      switchToPrevRound();
       setCarouselPaused(false);
       return;
     }
@@ -1288,9 +1333,9 @@ export default function HomePage() {
       const raw = await fetch('/api/charts/aggregate').then((r) => r.json());
       return {
         ...raw,
-        top_movies: await enrichTopEntriesPosters(raw?.top_movies || []),
-        top_tv: await enrichTopEntriesPosters(raw?.top_tv || []),
-        top_chinese_tv: await enrichTopEntriesPosters(raw?.top_chinese_tv || []),
+        top_movies: raw?.top_movies || [],
+        top_tv: raw?.top_tv || [],
+        top_chinese_tv: raw?.top_chinese_tv || [],
       } as AggregateCharts;
     },
     placeholderData: (previousData) => previousData,
@@ -1400,6 +1445,26 @@ export default function HomePage() {
                                 alt={u.username}
                                 className="w-10 h-10 rounded-full object-cover"
                                 loading="lazy"
+                                decoding="async"
+                                onError={(e) => {
+                                  const img = e.currentTarget;
+                                  try {
+                                    const raw = u.avatar;
+                                    if (!raw) return;
+                                    if (img.dataset.retryAvatar === '3') {
+                                      img.style.visibility = 'hidden';
+                                      return;
+                                    }
+                                    img.dataset.retryAvatar = '3';
+                                    const hasQuery = raw.includes('?');
+                                    img.src = `${raw}${hasQuery ? '&' : '?'}cb=${Date.now()}`;
+                                  } catch {
+                                  }
+                                }}
+                                onLoad={(e) => {
+                                  const img = e.currentTarget;
+                                  img.style.visibility = 'visible';
+                                }}
                               />
                               <div className="min-w-0">
                                 <Link
