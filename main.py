@@ -26,6 +26,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 _update_cancel_events: dict[str, asyncio.Event] = {}
 _update_running_tasks: dict[str, asyncio.Task[int]] = {}
+_update_operation_status: dict[str, dict[str, Any]] = {}
 
 class _UvicornAccessPathFilter(logging.Filter):
     def __init__(self, deny_substrings: list[str]):
@@ -7643,6 +7644,7 @@ async def auto_update_charts(
     if operation_key:
         logger.info(f"接收到全量更新请求 operation_key={operation_key}")
         _update_cancel_events[operation_key] = asyncio.Event()
+        _update_operation_status[operation_key] = {"state": "running", "message": "全量更新进行中"}
     
     try:
         from chart_scrapers import ChartScraper
@@ -7690,12 +7692,23 @@ async def auto_update_charts(
             "timestamp": update_time.isoformat()
         }
         
+    except HTTPException as e:
+        if operation_key:
+            if e.status_code == 499:
+                _update_operation_status[operation_key] = {"state": "cancelled", "message": str(e.detail or "已取消")}
+            else:
+                _update_operation_status[operation_key] = {"state": "failed", "message": str(e.detail or "更新失败")}
+        raise
     except Exception as e:
         logger.error(f"自动更新榜单失败: {e}")
+        if operation_key:
+            _update_operation_status[operation_key] = {"state": "failed", "message": f"自动更新失败: {str(e)}"}
         raise HTTPException(status_code=500, detail=f"自动更新失败: {str(e)}")
     finally:
         if operation_key:
             _update_cancel_events.pop(operation_key, None)
+            if operation_key in _update_operation_status and _update_operation_status[operation_key].get("state") == "running":
+                _update_operation_status[operation_key] = {"state": "success", "message": "全量更新成功"}
 
 @app.post("/api/charts/auto-update/{platform}")
 async def auto_update_platform_charts(
@@ -7710,6 +7723,7 @@ async def auto_update_platform_charts(
     if operation_key:
         logger.info(f"接收到平台更新请求 operation_key={operation_key}, platform={platform}")
         _update_cancel_events[operation_key] = asyncio.Event()
+        _update_operation_status[operation_key] = {"state": "running", "message": f"{platform} 平台更新进行中"}
     
     try:
         from chart_scrapers import ChartScraper
@@ -7742,14 +7756,23 @@ async def auto_update_platform_charts(
             "timestamp": _iso_now_shanghai()
         }
         
-    except HTTPException:
+    except HTTPException as e:
+        if operation_key:
+            if e.status_code == 499:
+                _update_operation_status[operation_key] = {"state": "cancelled", "message": str(e.detail or "已取消")}
+            else:
+                _update_operation_status[operation_key] = {"state": "failed", "message": str(e.detail or "更新失败")}
         raise
     except Exception as e:
         logger.error(f"自动更新 {platform} 榜单失败: {e}")
+        if operation_key:
+            _update_operation_status[operation_key] = {"state": "failed", "message": f"自动更新 {platform} 失败: {str(e)}"}
         raise HTTPException(status_code=500, detail=f"自动更新 {platform} 失败: {str(e)}")
     finally:
         if operation_key:
             _update_cancel_events.pop(operation_key, None)
+            if operation_key in _update_operation_status and _update_operation_status[operation_key].get("state") == "running":
+                _update_operation_status[operation_key] = {"state": "success", "message": f"{platform} 平台更新成功"}
 
 @app.post("/api/charts/update-chart")
 async def update_single_chart(
@@ -7762,6 +7785,7 @@ async def update_single_chart(
     if operation_key:
         logger.info(f"接收到单榜更新请求 operation_key={operation_key}")
         _update_cancel_events[operation_key] = asyncio.Event()
+        _update_operation_status[operation_key] = {"state": "running", "message": "更新进行中"}
     
     try:
         body = await request.json()
@@ -7812,7 +7836,12 @@ async def update_single_chart(
             "timestamp": _iso_now_shanghai()
         }
         
-    except HTTPException:
+    except HTTPException as e:
+        if operation_key:
+            if e.status_code == 499:
+                _update_operation_status[operation_key] = {"state": "cancelled", "message": str(e.detail or "已取消")}
+            else:
+                _update_operation_status[operation_key] = {"state": "failed", "message": str(e.detail or "更新失败")}
         raise
     except Exception as e:
         error_msg = str(e)
@@ -7828,10 +7857,14 @@ async def update_single_chart(
                 }
             )
         logger.error(f"更新榜单失败: {e}")
+        if operation_key:
+            _update_operation_status[operation_key] = {"state": "failed", "message": f"更新失败: {str(e)}"}
         raise HTTPException(status_code=500, detail=f"更新失败: {str(e)}")
     finally:
         if operation_key:
             _update_cancel_events.pop(operation_key, None)
+            if operation_key in _update_operation_status and _update_operation_status[operation_key].get("state") == "running":
+                _update_operation_status[operation_key] = {"state": "success", "message": "更新成功"}
 
 @app.post("/api/charts/cancel-update")
 async def cancel_chart_update(
@@ -7849,12 +7882,28 @@ async def cancel_chart_update(
     if not event:
         if running_task and not running_task.done():
             running_task.cancel()
+            _update_operation_status[operation_key] = {"state": "cancelled", "message": "已取消更新"}
             return {"status": "success", "message": "已直接取消运行任务", "operation_key": operation_key}
         return {"status": "noop", "message": "未找到可取消的更新任务", "operation_key": operation_key}
     event.set()
     if running_task and not running_task.done():
         running_task.cancel()
+    _update_operation_status[operation_key] = {"state": "cancelled", "message": "已取消更新"}
     return {"status": "success", "message": "已发送取消信号", "operation_key": operation_key}
+
+@app.get("/api/charts/update-status/{operation_key}")
+async def get_chart_update_status(
+    operation_key: str,
+    current_user: User = Depends(get_current_user),
+):
+    require_admin(current_user)
+    key = str(operation_key or "").strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="缺少 operation_key")
+    data = _update_operation_status.get(key)
+    if not data:
+        return {"operation_key": key, "state": "unknown", "message": "任务状态未知"}
+    return {"operation_key": key, **data}
 
 @app.post("/api/charts/clear/{platform}")
 async def clear_platform_charts(
