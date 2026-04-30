@@ -8517,6 +8517,8 @@ async def startup_event():
                 deny_substrings=[
                     'GET /api/notifications/unread-count ',
                     'GET /api/scheduler/status',
+                    'GET /api/charts/update-status/',
+                    '/api/charts/update-status/',
                 ]
             )
         )
