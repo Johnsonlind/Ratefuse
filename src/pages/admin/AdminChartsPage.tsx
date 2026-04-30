@@ -236,6 +236,35 @@ export default function AdminChartsPage() {
     return `op_${Date.now()}_${safeRandom}_${operationKey.length}`;
   }
 
+  async function parseResponsePayload(response: Response) {
+    const text = await response.text();
+    try {
+      return text ? JSON.parse(text) : {};
+    } catch {
+      return { detail: text || `HTTP ${response.status}` };
+    }
+  }
+
+  async function waitForUpdateOperation(operationId: string, timeoutMs = 8 * 60 * 1000) {
+    const token = localStorage.getItem('token');
+    const started = Date.now();
+    while (Date.now() - started < timeoutMs) {
+      const res = await fetch(`/api/charts/update-status/${encodeURIComponent(operationId)}`, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+        },
+      });
+      const data = await parseResponsePayload(res);
+      const state = String(data.state || 'unknown');
+      if (state === 'running' || state === 'unknown') {
+        await new Promise((r) => setTimeout(r, 2000));
+        continue;
+      }
+      return data;
+    }
+    return { state: 'timeout', message: '等待任务状态超时' };
+  }
+
   const { data: pickerData } = useQuery({
     queryKey: ['tmdb-picker', debouncedPickerQuery],
     queryFn: () => adminSearchMedia(debouncedPickerQuery),
@@ -561,7 +590,7 @@ export default function AdminChartsPage() {
         signal: controller.signal,
       });
       
-      const result = await response.json();
+      const result = await parseResponsePayload(response);
       
       if (response.ok) {
         setUpdateStatus('所有榜单更新成功！');
@@ -576,7 +605,22 @@ export default function AdminChartsPage() {
       if (error instanceof DOMException && error.name === 'AbortError') {
         setUpdateStatus('已取消更新所有榜单');
       } else {
-        setUpdateStatus(`更新失败: ${error}`);
+        setUpdateStatus('连接中断，正在确认后台任务状态...');
+        const finalState = await waitForUpdateOperation(operationId);
+        const state = String(finalState.state || 'unknown');
+        if (state === 'success') {
+          setUpdateStatus('所有榜单更新成功！');
+          if (activeKey) {
+            const [platform, chart_name, media_type] = activeKey.split(':');
+            loadCurrentList(platform, chart_name, media_type as SectionType);
+          }
+        } else if (state === 'cancelled') {
+          setUpdateStatus('已取消更新所有榜单');
+        } else if (state === 'running') {
+          setUpdateStatus('更新仍在进行中（所有榜单）');
+        } else {
+          setUpdateStatus(`更新失败: ${String(finalState.message || error)}`);
+        }
       }
     } finally {
       delete updateControllersRef.current[operationKey];
@@ -617,7 +661,7 @@ export default function AdminChartsPage() {
         signal: controller.signal,
       });
       
-      const result = await response.json();
+      const result = await parseResponsePayload(response);
       
       if (response.ok) {
         setUpdateStatus(`${platform} 榜单更新成功！`);
@@ -634,7 +678,24 @@ export default function AdminChartsPage() {
       if (error instanceof DOMException && error.name === 'AbortError') {
         setUpdateStatus(`已取消更新 ${platform} 榜单`);
       } else {
-        setUpdateStatus(`更新失败: ${error}`);
+        setUpdateStatus(`连接中断，正在确认 ${platform} 任务状态...`);
+        const finalState = await waitForUpdateOperation(operationId);
+        const state = String(finalState.state || 'unknown');
+        if (state === 'success') {
+          setUpdateStatus(`${platform} 榜单更新成功！`);
+          if (activeKey) {
+            const [currentPlatform, chart_name, media_type] = activeKey.split(':');
+            if (currentPlatform === platform) {
+              loadCurrentList(currentPlatform, chart_name, media_type as SectionType);
+            }
+          }
+        } else if (state === 'cancelled') {
+          setUpdateStatus(`已取消更新 ${platform} 榜单`);
+        } else if (state === 'running') {
+          setUpdateStatus(`更新仍在进行中：${platform}`);
+        } else {
+          setUpdateStatus(`更新失败: ${String(finalState.message || error)}`);
+        }
       }
     } finally {
       delete updateControllersRef.current[operationKey];
@@ -681,7 +742,7 @@ export default function AdminChartsPage() {
         signal: controller.signal,
       });
       
-      const result = await response.json();
+      const result = await parseResponsePayload(response);
       
       if (response.ok) {
         setUpdateStatus(`${chartName} 更新成功！`);
@@ -707,7 +768,24 @@ export default function AdminChartsPage() {
       if (error instanceof DOMException && error.name === 'AbortError') {
         setUpdateStatus(`已取消更新 ${chartName}`);
       } else {
-        setUpdateStatus(`更新失败: ${error}`);
+        setUpdateStatus('连接中断，正在确认后台任务状态...');
+        const finalState = await waitForUpdateOperation(operationId);
+        const state = String(finalState.state || 'unknown');
+        if (state === 'success') {
+          setUpdateStatus(`${chartName} 更新成功！`);
+          if (activeKey) {
+            const [currentPlatform, currentChartName, media_type] = activeKey.split(':');
+            if (currentPlatform === platform && currentChartName === chartName) {
+              loadCurrentList(currentPlatform, currentChartName, media_type as SectionType);
+            }
+          }
+        } else if (state === 'cancelled') {
+          setUpdateStatus(`已取消更新 ${chartName}`);
+        } else if (state === 'running') {
+          setUpdateStatus(`更新仍在进行中：${chartName}`);
+        } else {
+          setUpdateStatus(`更新失败: ${String(finalState.message || error)}`);
+        }
       }
     } finally {
       delete updateControllersRef.current[operationKey];
