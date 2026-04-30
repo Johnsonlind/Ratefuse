@@ -24,6 +24,8 @@ MEMBERSHIP_ENABLED = os.getenv("MEMBERSHIP_ENABLED", "false").strip().lower() in
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+_update_cancel_events: dict[str, asyncio.Event] = {}
+_update_running_tasks: dict[str, asyncio.Task[int]] = {}
 
 class _UvicornAccessPathFilter(logging.Filter):
     def __init__(self, deny_substrings: list[str]):
@@ -6890,18 +6892,67 @@ def canonical_platform_name(name: str) -> str:
 def canonical_chart_name(name: str) -> str:
     return (name or "").strip()
 
+def _infer_updater_key(platform: str, chart_name: str) -> Optional[str]:
+    platform_norm = canonical_platform_name(platform).lower()
+    chart_norm = canonical_chart_name(chart_name).lower()
+    if not platform_norm:
+        return None
+
+    direct_map: dict[tuple[str, str], str] = {
+        ("豆瓣", "豆瓣 电影 top 250"): "douban_top250",
+        ("imdb", "imdb 电影 top 250"): "imdb_top250_movies",
+        ("imdb", "imdb 剧集 top 250"): "imdb_top250_tv",
+        ("metacritic", "metacritic 史上最佳电影 top 250"): "metacritic_best_movies",
+        ("metacritic", "metacritic 史上最佳剧集 top 250"): "metacritic_best_tv",
+        ("letterboxd", "letterboxd 电影 top 250"): "letterboxd_top250",
+        ("tmdb", "tmdb 高分电影 top 250"): "tmdb_top250_movies",
+        ("tmdb", "tmdb 高分剧集 top 250"): "tmdb_top250_tv",
+    }
+    direct = direct_map.get((platform_norm, chart_norm))
+    if direct:
+        return direct
+
+    if platform_norm == "豆瓣" and "top 250" in chart_norm:
+        return "douban_top250"
+    if platform_norm == "imdb":
+        if "剧集" in chart_norm or "tv" in chart_norm:
+            return "imdb_top250_tv"
+        if "电影" in chart_norm or "movie" in chart_norm:
+            return "imdb_top250_movies"
+    if platform_norm == "metacritic":
+        if "剧集" in chart_norm or "tv" in chart_norm:
+            return "metacritic_best_tv"
+        if "电影" in chart_norm or "movie" in chart_norm:
+            return "metacritic_best_movies"
+    if platform_norm == "letterboxd" and "top 250" in chart_norm:
+        return "letterboxd_top250"
+    if platform_norm == "tmdb":
+        if "剧集" in chart_norm or "tv" in chart_norm:
+            return "tmdb_top250_tv"
+        if "电影" in chart_norm or "movie" in chart_norm:
+            return "tmdb_top250_movies"
+    return None
+
 def _build_updater_registry(scraper: Any) -> dict[str, dict[str, Any]]:
     return {
         "douban_weekly_movie": {"fn": scraper.update_douban_weekly_movie, "media_type": "movie"},
         "douban_weekly_chinese_tv": {"fn": scraper.update_douban_weekly_chinese_tv, "media_type": "tv"},
         "douban_weekly_global_tv": {"fn": scraper.update_douban_weekly_global_tv, "media_type": "tv"},
+        "douban_top250": {"fn": scraper.update_douban_top250, "media_type": "movie"},
         "imdb_top10": {"fn": scraper.update_imdb_top10, "media_type": "both"},
+        "imdb_top250_movies": {"fn": scraper.update_imdb_top250_movies, "media_type": "movie"},
+        "imdb_top250_tv": {"fn": scraper.update_imdb_top250_tv, "media_type": "tv"},
         "letterboxd_popular": {"fn": scraper.update_letterboxd_popular, "media_type": "movie"},
+        "letterboxd_top250": {"fn": scraper.update_letterboxd_top250, "media_type": "movie"},
         "rotten_movies_weekly": {"fn": scraper.update_rotten_movies, "media_type": "movie"},
         "rotten_tv_weekly": {"fn": scraper.update_rotten_tv, "media_type": "tv"},
         "metacritic_movies_weekly": {"fn": scraper.update_metacritic_movies, "media_type": "movie"},
         "metacritic_shows_weekly": {"fn": scraper.update_metacritic_shows, "media_type": "tv"},
+        "metacritic_best_movies": {"fn": scraper.update_metacritic_best_movies, "media_type": "movie"},
+        "metacritic_best_tv": {"fn": scraper.update_metacritic_best_tv, "media_type": "tv"},
         "tmdb_trending_all_week": {"fn": scraper.update_tmdb_trending_all_week, "media_type": "both"},
+        "tmdb_top250_movies": {"fn": scraper.update_tmdb_top250_movies, "media_type": "movie"},
+        "tmdb_top250_tv": {"fn": scraper.update_tmdb_top250_tv, "media_type": "tv"},
         "trakt_movies_weekly": {"fn": scraper.update_trakt_movies_weekly, "media_type": "movie"},
         "trakt_shows_weekly": {"fn": scraper.update_trakt_shows_weekly, "media_type": "tv"},
     }
@@ -6990,9 +7041,47 @@ def _resolve_config_updater_key(
         ChartConfig.chart_name == chart_name,
     ).first()
     if not cfg or not cfg.updater_key:
-        return None
+        return _infer_updater_key(platform, chart_name)
     value = str(cfg.updater_key).strip()
-    return value or None
+    return value or _infer_updater_key(platform, chart_name)
+
+async def _run_updater_with_disconnect_cancel(
+    request: Request,
+    updater: Callable[[], Awaitable[int]],
+    label: str,
+    operation_key: Optional[str] = None,
+) -> int:
+    cancel_event = _update_cancel_events.get(operation_key or "") if operation_key else None
+    task = asyncio.create_task(updater())
+    if operation_key:
+        _update_running_tasks[operation_key] = task
+    try:
+        while True:
+            if task.done():
+                return await task
+            if cancel_event and cancel_event.is_set():
+                logger.info(f"收到取消信号，取消更新任务: {label}, operation={operation_key}")
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                raise HTTPException(status_code=499, detail=f"已取消更新：{label}")
+            if await request.is_disconnected():
+                logger.info(f"客户端已断开连接，取消更新任务: {label}")
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                raise HTTPException(status_code=499, detail=f"已取消更新：{label}")
+            await asyncio.sleep(0.3)
+    except asyncio.CancelledError:
+        task.cancel()
+        raise HTTPException(status_code=499, detail=f"已取消更新：{label}")
+    finally:
+        if operation_key:
+            _update_running_tasks.pop(operation_key, None)
 
 @app.get("/api/charts/configs")
 async def list_chart_configs(db: Session = Depends(get_db)):
@@ -7048,7 +7137,7 @@ async def list_chart_configs(db: Session = Depends(get_db)):
                 "table_rows": int(fallback_rules.get("table_rows_for_table_layout") or 10),
                 "card_count": int(fallback_rules.get("card_count_default") or 10),
                 "update_mode": "single" if use_single_update else (fallback_rules.get("update_mode_default") or "all"),
-                "updater_key": None,
+                "updater_key": _infer_updater_key(platform, chart_name),
                 "exportable": True,
                 "rank_label_mode": fallback_rules.get("rank_label_mode_default") or "number",
             }
@@ -7545,15 +7634,23 @@ async def get_chart_detail(
 
 @app.post("/api/charts/auto-update")
 async def auto_update_charts(
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     require_admin(current_user)
+    operation_key = str(request.headers.get("x-update-operation-key") or "").strip()
+    if operation_key:
+        logger.info(f"接收到全量更新请求 operation_key={operation_key}")
+        _update_cancel_events[operation_key] = asyncio.Event()
     
     try:
         from chart_scrapers import ChartScraper
         
-        scraper = ChartScraper(db)
+        scraper = ChartScraper(
+            db,
+            cancel_check=(lambda: bool(operation_key) and _update_cancel_events.get(operation_key, asyncio.Event()).is_set()),
+        )
         updater_registry = _build_updater_registry(scraper)
         configured_keys = _configured_updater_keys(db)
         run_items = configured_keys or [("", "", key, idx) for idx, key in enumerate(updater_registry.keys())]
@@ -7564,7 +7661,8 @@ async def auto_update_charts(
                 logger.warning(f"跳过未知 updater_key: {updater_key}")
                 continue
             updater: Callable[[], Awaitable[int]] = spec["fn"]
-            count = await updater()
+            run_label = updater_key if not chart_name else f"{platform_name}:{chart_name}"
+            count = await _run_updater_with_disconnect_cancel(request, updater, run_label, operation_key=operation_key)
             result_key = updater_key if not chart_name else f"{platform_name}:{chart_name}"
             results[result_key] = count
         
@@ -7595,20 +7693,31 @@ async def auto_update_charts(
     except Exception as e:
         logger.error(f"自动更新榜单失败: {e}")
         raise HTTPException(status_code=500, detail=f"自动更新失败: {str(e)}")
+    finally:
+        if operation_key:
+            _update_cancel_events.pop(operation_key, None)
 
 @app.post("/api/charts/auto-update/{platform}")
 async def auto_update_platform_charts(
+    request: Request,
     platform: str,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     require_admin(current_user)
     platform = canonical_platform_name(platform)
+    operation_key = str(request.headers.get("x-update-operation-key") or "").strip()
+    if operation_key:
+        logger.info(f"接收到平台更新请求 operation_key={operation_key}, platform={platform}")
+        _update_cancel_events[operation_key] = asyncio.Event()
     
     try:
         from chart_scrapers import ChartScraper
         
-        scraper = ChartScraper(db)
+        scraper = ChartScraper(
+            db,
+            cancel_check=(lambda: bool(operation_key) and _update_cancel_events.get(operation_key, asyncio.Event()).is_set()),
+        )
         updater_registry = _build_updater_registry(scraper)
         configured_keys = _configured_updater_keys(db, platform=platform)
         if not configured_keys:
@@ -7621,7 +7730,8 @@ async def auto_update_platform_charts(
                 logger.warning(f"跳过未知 updater_key: {updater_key}")
                 continue
             updater: Callable[[], Awaitable[int]] = spec["fn"]
-            count = await updater()
+            run_label = f"{platform_name}:{chart_name or updater_key}"
+            count = await _run_updater_with_disconnect_cancel(request, updater, run_label, operation_key=operation_key)
             results[f"{platform_name}:{chart_name or updater_key}:{i+1}"] = count
         
         return {
@@ -7637,6 +7747,9 @@ async def auto_update_platform_charts(
     except Exception as e:
         logger.error(f"自动更新 {platform} 榜单失败: {e}")
         raise HTTPException(status_code=500, detail=f"自动更新 {platform} 失败: {str(e)}")
+    finally:
+        if operation_key:
+            _update_cancel_events.pop(operation_key, None)
 
 @app.post("/api/charts/update-chart")
 async def update_single_chart(
@@ -7645,6 +7758,10 @@ async def update_single_chart(
     db: Session = Depends(get_db)
 ):
     require_admin(current_user)
+    operation_key = str(request.headers.get("x-update-operation-key") or "").strip()
+    if operation_key:
+        logger.info(f"接收到单榜更新请求 operation_key={operation_key}")
+        _update_cancel_events[operation_key] = asyncio.Event()
     
     try:
         body = await request.json()
@@ -7659,7 +7776,10 @@ async def update_single_chart(
         chart_name = canonical_chart_name(chart_name)
 
         from chart_scrapers import ChartScraper
-        scraper = ChartScraper(db)
+        scraper = ChartScraper(
+            db,
+            cancel_check=(lambda: bool(operation_key) and _update_cancel_events.get(operation_key, asyncio.Event()).is_set()),
+        )
         updater_registry = _build_updater_registry(scraper)
 
         resolved_key: Optional[str] = None
@@ -7675,7 +7795,12 @@ async def update_single_chart(
             )
 
         updater: Callable[[], Awaitable[int]] = resolved["fn"]
-        count = await updater()
+        count = await _run_updater_with_disconnect_cancel(
+            request,
+            updater,
+            f"{platform}:{chart_name}",
+            operation_key=operation_key,
+        )
         
         return {
             "status": "success",
@@ -7704,6 +7829,32 @@ async def update_single_chart(
             )
         logger.error(f"更新榜单失败: {e}")
         raise HTTPException(status_code=500, detail=f"更新失败: {str(e)}")
+    finally:
+        if operation_key:
+            _update_cancel_events.pop(operation_key, None)
+
+@app.post("/api/charts/cancel-update")
+async def cancel_chart_update(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+):
+    require_admin(current_user)
+    body = await request.json()
+    operation_key = str(body.get("operation_key") or "").strip()
+    if not operation_key:
+        raise HTTPException(status_code=400, detail="缺少 operation_key")
+    logger.info(f"收到取消更新请求 operation_key={operation_key}")
+    event = _update_cancel_events.get(operation_key)
+    running_task = _update_running_tasks.get(operation_key)
+    if not event:
+        if running_task and not running_task.done():
+            running_task.cancel()
+            return {"status": "success", "message": "已直接取消运行任务", "operation_key": operation_key}
+        return {"status": "noop", "message": "未找到可取消的更新任务", "operation_key": operation_key}
+    event.set()
+    if running_task and not running_task.done():
+        running_task.cancel()
+    return {"status": "success", "message": "已发送取消信号", "operation_key": operation_key}
 
 @app.post("/api/charts/clear/{platform}")
 async def clear_platform_charts(
@@ -8316,6 +8467,7 @@ async def startup_event():
             _UvicornAccessPathFilter(
                 deny_substrings=[
                     'GET /api/notifications/unread-count ',
+                    'GET /api/scheduler/status',
                 ]
             )
         )
