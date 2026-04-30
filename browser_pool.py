@@ -12,7 +12,7 @@ from playwright.async_api import async_playwright, Browser, Playwright
 
 logger = logging.getLogger(__name__)
 
-_DOUBAN_MIN_INTERVAL_SEC = 4.0
+_DOUBAN_MIN_INTERVAL_SEC = 0.8
 _douban_throttle_lock = threading.Lock()
 _douban_throttle_last: float = 0.0
 
@@ -21,24 +21,24 @@ _douban_block_lock = threading.Lock()
 _douban_backoff_level: int = 0
 
 def _douban_backoff_cooldown(level: int) -> float:
-    ladder = [90.0, 180.0, 360.0, 720.0, 1200.0, 1800.0]
+    ladder = [8.0, 15.0, 25.0, 35.0]
     idx = max(0, min(level, len(ladder) - 1))
     return ladder[idx]
 
 def _sample_human_delay(request_type: str) -> float:
     if request_type == "detail":
-        base = random.triangular(7.0, 18.0, 10.0)
+        base = random.triangular(0.25, 0.95, 0.45)
     elif request_type == "search":
-        base = random.triangular(5.0, 12.0, 7.5)
+        base = random.triangular(0.15, 0.75, 0.35)
     elif request_type == "list":
-        base = random.triangular(4.0, 10.0, 6.0)
+        base = random.triangular(0.15, 0.65, 0.3)
     else:
-        base = random.triangular(4.0, 9.0, 5.5)
+        base = random.triangular(0.15, 0.65, 0.3)
     r = random.random()
-    if r < 0.10:
-        base += random.uniform(10.0, 30.0)
-    elif r < 0.12:
-        base += random.uniform(40.0, 95.0)
+    if r < 0.06:
+        base += random.uniform(0.8, 2.2)
+    elif r < 0.07:
+        base += random.uniform(2.5, 4.0)
     return float(base)
 
 def douban_is_blocked(cookie: Optional[str] = None) -> tuple[bool, float]:
@@ -95,17 +95,18 @@ def report_douban_result(cookie: Optional[str], status: str) -> None:
     elif st == "rate_limit":
         mark_douban_rate_limited(None, cookie=cookie)
 
-_DOUBAN_SAME_COOKIE_MIN_GAP_SEC = 10.0
+_DOUBAN_SAME_COOKIE_MIN_GAP_SEC = 1.2
+_DOUBAN_BLOCK_SLEEP_CAP_SEC = 2.0
 _cookie_playwright_lock = threading.Lock()
 _douban_cookie_last_playwright_start: dict[str, float] = {}
 _douban_cookie_blocked_until: dict[str, float] = {}
 _douban_cookie_backoff_level: dict[str, int] = {}
 _douban_cookie_last_detail_at: dict[str, float] = {}
 
-douban_playwright_session_semaphore = asyncio.Semaphore(3)
+douban_playwright_session_semaphore = asyncio.Semaphore(1)
 
-_DOUBAN_START_SEGMENT_CAPACITY = 3
-_DOUBAN_START_SEGMENT_INTERVAL_SEC = 10.0
+_DOUBAN_START_SEGMENT_CAPACITY = 1
+_DOUBAN_START_SEGMENT_INTERVAL_SEC = 1.2
 _douban_start_segment_lock = asyncio.Lock()
 _douban_start_segment_tokens: int = _DOUBAN_START_SEGMENT_CAPACITY
 _douban_start_segment_last_refill: float = time.monotonic()
@@ -132,8 +133,9 @@ def wait_before_douban_playwright(cookie: Optional[str]) -> None:
     global _douban_throttle_last
     blocked, remain = douban_is_blocked(cookie)
     if blocked and remain > 0:
-        logger.info("豆瓣会话启动前冷却 %.1fs", remain)
-        time.sleep(remain)
+        sleep_for = min(remain, _DOUBAN_BLOCK_SLEEP_CAP_SEC)
+        logger.info("豆瓣会话启动前冷却 %.1fs（剩余 %.1fs）", sleep_for, remain)
+        time.sleep(sleep_for)
 
     with _douban_throttle_lock:
         now = time.monotonic()
@@ -151,8 +153,8 @@ def wait_before_douban_playwright(cookie: Optional[str]) -> None:
             logger.info("豆瓣同账号冷却 %.1fs（降低风控概率）", gap)
             time.sleep(gap)
         last_detail = _douban_cookie_last_detail_at.get(key, 0.0)
-        if last_detail > 0 and (now - last_detail) < 45.0:
-            extra = random.uniform(6.0, 18.0)
+        if last_detail > 0 and (now - last_detail) < 8.0:
+            extra = random.uniform(0.2, 0.9)
             logger.info("详情页访问过密，附加 %.1fs 间隔", extra)
             time.sleep(extra)
         _douban_cookie_last_playwright_start[key] = time.monotonic()
@@ -184,8 +186,9 @@ async def wait_before_douban_playwright_async(cookie: Optional[str]) -> None:
 def wait_before_douban_request(cookie: Optional[str], request_type: str) -> None:
     blocked, remain = douban_is_blocked(cookie)
     if blocked and remain > 0:
-        logger.info("豆瓣请求(%s)冷却 %.1fs", request_type, remain)
-        time.sleep(remain)
+        sleep_for = min(remain, _DOUBAN_BLOCK_SLEEP_CAP_SEC)
+        logger.info("豆瓣请求(%s)冷却 %.1fs（剩余 %.1fs）", request_type, sleep_for, remain)
+        time.sleep(sleep_for)
     time.sleep(_sample_human_delay(request_type))
 
 async def wait_before_douban_request_async(cookie: Optional[str], request_type: str) -> None:
