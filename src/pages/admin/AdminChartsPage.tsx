@@ -245,6 +245,11 @@ export default function AdminChartsPage() {
     }
   }
 
+  function looksLikeHtmlErrorPayload(result: unknown) {
+    const detail = String((result as { detail?: unknown })?.detail || '').toLowerCase();
+    return detail.includes('<!doctype') || detail.includes('<html') || detail.includes('gateway time-out');
+  }
+
   async function waitForUpdateOperation(operationId: string, timeoutMs = 8 * 60 * 1000) {
     const token = localStorage.getItem('token');
     const started = Date.now();
@@ -598,6 +603,23 @@ export default function AdminChartsPage() {
           const [platform, chart_name, media_type] = activeKey.split(':');
           loadCurrentList(platform, chart_name, media_type as SectionType);
         }
+      } else if (looksLikeHtmlErrorPayload(result) || response.status >= 502) {
+        setUpdateStatus('连接中断，正在确认后台任务状态...');
+        const finalState = await waitForUpdateOperation(operationId);
+        const state = String(finalState.state || 'unknown');
+        if (state === 'success') {
+          setUpdateStatus('所有榜单更新成功！');
+          if (activeKey) {
+            const [platform, chart_name, media_type] = activeKey.split(':');
+            loadCurrentList(platform, chart_name, media_type as SectionType);
+          }
+        } else if (state === 'cancelled') {
+          setUpdateStatus('已取消更新所有榜单');
+        } else if (state === 'running') {
+          setUpdateStatus('更新仍在进行中（所有榜单）');
+        } else {
+          setUpdateStatus(`更新失败: ${String(finalState.message || result.detail || '未知错误')}`);
+        }
       } else {
         setUpdateStatus(`更新失败: ${result.detail || '未知错误'}`);
       }
@@ -670,6 +692,25 @@ export default function AdminChartsPage() {
           if (currentPlatform === platform) {
             loadCurrentList(currentPlatform, chart_name, media_type as SectionType);
           }
+        }
+      } else if (looksLikeHtmlErrorPayload(result) || response.status >= 502) {
+        setUpdateStatus(`连接中断，正在确认 ${platform} 任务状态...`);
+        const finalState = await waitForUpdateOperation(operationId);
+        const state = String(finalState.state || 'unknown');
+        if (state === 'success') {
+          setUpdateStatus(`${platform} 榜单更新成功！`);
+          if (activeKey) {
+            const [currentPlatform, chart_name, media_type] = activeKey.split(':');
+            if (currentPlatform === platform) {
+              loadCurrentList(currentPlatform, chart_name, media_type as SectionType);
+            }
+          }
+        } else if (state === 'cancelled') {
+          setUpdateStatus(`已取消更新 ${platform} 榜单`);
+        } else if (state === 'running') {
+          setUpdateStatus(`更新仍在进行中：${platform}`);
+        } else {
+          setUpdateStatus(`更新失败: ${String(finalState.message || result.detail || '未知错误')}`);
         }
       } else {
         setUpdateStatus(`更新失败: ${result.detail || '未知错误'}`);
@@ -761,6 +802,26 @@ export default function AdminChartsPage() {
           verificationStarted: false,
         });
         setUpdateStatus('遇到反爬虫机制，请验证');
+      } else if (looksLikeHtmlErrorPayload(result) || response.status >= 502) {
+        setUpdateStatus(`连接中断，正在确认 ${chartName} 任务状态...`);
+        const finalState = await waitForUpdateOperation(operationId);
+        const state = String(finalState.state || 'unknown');
+        if (state === 'success') {
+          setUpdateStatus(`${chartName} 更新成功！`);
+          setAntiScrapingState(null);
+          if (activeKey) {
+            const [currentPlatform, currentChartName, media_type] = activeKey.split(':');
+            if (currentPlatform === platform && currentChartName === chartName) {
+              loadCurrentList(currentPlatform, currentChartName, media_type as SectionType);
+            }
+          }
+        } else if (state === 'cancelled') {
+          setUpdateStatus(`已取消更新 ${chartName}`);
+        } else if (state === 'running') {
+          setUpdateStatus(`更新仍在进行中：${chartName}`);
+        } else {
+          setUpdateStatus(`更新失败: ${String(finalState.message || result.detail || '未知错误')}`);
+        }
       } else {
         setUpdateStatus(`更新失败: ${result.detail?.message || result.detail || '未知错误'}`);
       }
