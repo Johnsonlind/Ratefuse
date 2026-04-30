@@ -1,7 +1,7 @@
 // ==========================================
 // 管理端榜单管理页
 // ==========================================
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useRef } from 'react';
 import { useAuth } from '../../modules/auth/AuthContext';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ThemeToggle } from '../../shared/ui/ThemeToggle';
@@ -118,6 +118,8 @@ export default function AdminChartsPage() {
   const [autoUpdating, setAutoUpdating] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<string>('');
   const [forceRefresh, setForceRefresh] = useState(0);
+  const updateControllersRef = useRef<Record<string, AbortController>>({});
+  const updateOperationIdsRef = useRef<Record<string, string>>({});
   const [schedulerState, setSchedulerState] = useState<{
     running: boolean;
     next_update: string | null;
@@ -212,6 +214,27 @@ export default function AdminChartsPage() {
       },
     });
   };
+
+  async function requestCancelUpdate(operationId?: string) {
+    if (!operationId) return;
+    try {
+      const token = localStorage.getItem('token');
+      await fetch('/api/charts/cancel-update', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ operation_key: operationId }),
+      });
+    } catch {
+    }
+  }
+
+  function buildAsciiOperationId(operationKey: string) {
+    const safeRandom = Math.random().toString(36).slice(2, 10);
+    return `op_${Date.now()}_${safeRandom}_${operationKey.length}`;
+  }
 
   const { data: pickerData } = useQuery({
     queryKey: ['tmdb-picker', debouncedPickerQuery],
@@ -509,6 +532,20 @@ export default function AdminChartsPage() {
   }
 
   async function handleAutoUpdateAll() {
+    const operationKey = 'all_update';
+    if (platformOperations[operationKey]) {
+      const operationId = updateOperationIdsRef.current[operationKey];
+      const controller = updateControllersRef.current[operationKey];
+      controller?.abort();
+      await requestCancelUpdate(operationId);
+      return;
+    }
+
+    const operationId = buildAsciiOperationId(operationKey);
+    const controller = new AbortController();
+    updateControllersRef.current[operationKey] = controller;
+    updateOperationIdsRef.current[operationKey] = operationId;
+    setPlatformOperations((prev) => ({ ...prev, [operationKey]: true }));
     setAutoUpdating(true);
     setUpdateStatus('正在更新所有榜单...');
     
@@ -519,7 +556,9 @@ export default function AdminChartsPage() {
         headers: {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
+          'X-Update-Operation-Key': operationId,
         },
+        signal: controller.signal,
       });
       
       const result = await response.json();
@@ -534,8 +573,15 @@ export default function AdminChartsPage() {
         setUpdateStatus(`更新失败: ${result.detail || '未知错误'}`);
       }
     } catch (error) {
-      setUpdateStatus(`更新失败: ${error}`);
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        setUpdateStatus('已取消更新所有榜单');
+      } else {
+        setUpdateStatus(`更新失败: ${error}`);
+      }
     } finally {
+      delete updateControllersRef.current[operationKey];
+      delete updateOperationIdsRef.current[operationKey];
+      setPlatformOperations((prev) => ({ ...prev, [operationKey]: false }));
       setAutoUpdating(false);
       setTimeout(() => setUpdateStatus(''), 3000);
     }
@@ -543,6 +589,18 @@ export default function AdminChartsPage() {
 
   async function handleAutoUpdatePlatform(platform: string) {
     const operationKey = `${platform}_update`;
+    if (platformOperations[operationKey]) {
+      const operationId = updateOperationIdsRef.current[operationKey];
+      const controller = updateControllersRef.current[operationKey];
+      controller?.abort();
+      await requestCancelUpdate(operationId);
+      return;
+    }
+
+    const operationId = buildAsciiOperationId(operationKey);
+    const controller = new AbortController();
+    updateControllersRef.current[operationKey] = controller;
+    updateOperationIdsRef.current[operationKey] = operationId;
     setPlatformOperations(prev => ({ ...prev, [operationKey]: true }));
     setUpdateStatus(`正在更新 ${platform} 榜单...`);
     
@@ -554,7 +612,9 @@ export default function AdminChartsPage() {
         headers: {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
+          'X-Update-Operation-Key': operationId,
         },
+        signal: controller.signal,
       });
       
       const result = await response.json();
@@ -571,8 +631,14 @@ export default function AdminChartsPage() {
         setUpdateStatus(`更新失败: ${result.detail || '未知错误'}`);
       }
     } catch (error) {
-      setUpdateStatus(`更新失败: ${error}`);
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        setUpdateStatus(`已取消更新 ${platform} 榜单`);
+      } else {
+        setUpdateStatus(`更新失败: ${error}`);
+      }
     } finally {
+      delete updateControllersRef.current[operationKey];
+      delete updateOperationIdsRef.current[operationKey];
       setPlatformOperations(prev => ({ ...prev, [operationKey]: false }));
       setTimeout(() => setUpdateStatus(''), 3000);
     }
@@ -580,6 +646,18 @@ export default function AdminChartsPage() {
 
   async function handleUpdateSingleChart(platform: string, chartName: string, updaterKey?: string) {
     const operationKey = `${platform}_${chartName}_update`;
+    if (platformOperations[operationKey]) {
+      const operationId = updateOperationIdsRef.current[operationKey];
+      const controller = updateControllersRef.current[operationKey];
+      controller?.abort();
+      await requestCancelUpdate(operationId);
+      return;
+    }
+
+    const operationId = buildAsciiOperationId(operationKey);
+    const controller = new AbortController();
+    updateControllersRef.current[operationKey] = controller;
+    updateOperationIdsRef.current[operationKey] = operationId;
     setPlatformOperations(prev => ({ ...prev, [operationKey]: true }));
     setUpdateStatus(`正在更新 ${chartName}...`);
     
@@ -593,12 +671,14 @@ export default function AdminChartsPage() {
         headers: {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
+          'X-Update-Operation-Key': operationId,
         },
         body: JSON.stringify({
           platform: backendPlatform,
           chart_name: backendChartName,
           updater_key: updaterKey || null,
         }),
+        signal: controller.signal,
       });
       
       const result = await response.json();
@@ -624,8 +704,14 @@ export default function AdminChartsPage() {
         setUpdateStatus(`更新失败: ${result.detail?.message || result.detail || '未知错误'}`);
       }
     } catch (error) {
-      setUpdateStatus(`更新失败: ${error}`);
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        setUpdateStatus(`已取消更新 ${chartName}`);
+      } else {
+        setUpdateStatus(`更新失败: ${error}`);
+      }
     } finally {
+      delete updateControllersRef.current[operationKey];
+      delete updateOperationIdsRef.current[operationKey];
       if (!antiScrapingState || !antiScrapingState.show) {
         setPlatformOperations(prev => ({ ...prev, [operationKey]: false }));
         setTimeout(() => {
@@ -1180,10 +1266,9 @@ export default function AdminChartsPage() {
               </button>
               <button
                 onClick={handleAutoUpdateAll}
-                disabled={autoUpdating}
-                className={`px-4 py-2 rounded font-medium transition-colors ${autoUpdating ? 'bg-gray-700 text-gray-500 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
+                className={`px-4 py-2 rounded font-medium transition-colors ${autoUpdating ? 'bg-orange-600 text-white hover:bg-orange-700' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
               >
-                {autoUpdating ? '更新中...' : '更新'}
+                {autoUpdating ? '取消更新' : '更新'}
               </button>
               <button
                 onClick={handleSyncCharts}
@@ -1310,10 +1395,9 @@ export default function AdminChartsPage() {
                   </button>
                   <button
                     onClick={() => handleAutoUpdatePlatform(platform)}
-                    disabled={platformOperations[`${platform}_update`]}
-                    className={`text-sm px-3 py-1 rounded transition-colors ${platformOperations[`${platform}_update`] ? 'bg-gray-700 text-gray-500 cursor-not-allowed' : 'bg-blue-500 text-white hover:bg-blue-600'}`}
+                    className={`text-sm px-3 py-1 rounded transition-colors ${platformOperations[`${platform}_update`] ? 'bg-orange-600 text-white hover:bg-orange-500' : 'bg-blue-500 text-white hover:bg-blue-600'}`}
                   >
-                    {platformOperations[`${platform}_update`] ? '更新中...' : `更新`}
+                    {platformOperations[`${platform}_update`] ? '取消更新' : `更新`}
                   </button>
                 </div>
               </div>
@@ -1371,14 +1455,13 @@ export default function AdminChartsPage() {
                                         {sec.input_mode !== 'manual' && (
                                           <button
                                             onClick={() => handleUpdateSingleChart(platform, sec.name, sec.updater_key)}
-                                            disabled={platformOperations[`${platform}_${sec.name}_update`]}
                                             className={`text-xs px-2 py-1 rounded transition-colors ${
                                               platformOperations[`${platform}_${sec.name}_update`]
-                                                ? 'bg-gray-700 text-gray-500 cursor-not-allowed'
+                                                ? 'bg-orange-600 text-white hover:bg-orange-500'
                                                 : 'bg-orange-600 text-white hover:bg-orange-500'
                                             }`}
                                           >
-                                            {platformOperations[`${platform}_${sec.name}_update`] ? '更新中...' : '更新'}
+                                            {platformOperations[`${platform}_${sec.name}_update`] ? '取消更新' : '更新'}
                                           </button>
                                         )}
                                         <button
