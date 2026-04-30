@@ -250,9 +250,14 @@ export default function AdminChartsPage() {
     return detail.includes('<!doctype') || detail.includes('<html') || detail.includes('gateway time-out');
   }
 
-  async function waitForUpdateOperation(operationId: string, timeoutMs = 8 * 60 * 1000) {
+  async function waitForUpdateOperation(
+    operationId: string,
+    timeoutMs = 8 * 60 * 1000,
+    onRunning?: () => void,
+  ) {
     const token = localStorage.getItem('token');
     const started = Date.now();
+    let runningNotified = false;
     while (Date.now() - started < timeoutMs) {
       const res = await fetch(`/api/charts/update-status/${encodeURIComponent(operationId)}`, {
         headers: {
@@ -262,6 +267,10 @@ export default function AdminChartsPage() {
       const data = await parseResponsePayload(res);
       const state = String(data.state || 'unknown');
       if (state === 'running' || state === 'unknown') {
+        if (!runningNotified && onRunning) {
+          runningNotified = true;
+          onRunning();
+        }
         await new Promise((r) => setTimeout(r, 2000));
         continue;
       }
@@ -605,7 +614,11 @@ export default function AdminChartsPage() {
         }
       } else if (looksLikeHtmlErrorPayload(result) || response.status >= 502) {
         setUpdateStatus('连接中断，正在确认后台任务状态...');
-        const finalState = await waitForUpdateOperation(operationId);
+        const finalState = await waitForUpdateOperation(
+          operationId,
+          8 * 60 * 1000,
+          () => setUpdateStatus('后台仍在更新所有榜单，正在持续确认状态...'),
+        );
         const state = String(finalState.state || 'unknown');
         if (state === 'success') {
           setUpdateStatus('所有榜单更新成功！');
@@ -628,7 +641,11 @@ export default function AdminChartsPage() {
         setUpdateStatus('已取消更新所有榜单');
       } else {
         setUpdateStatus('连接中断，正在确认后台任务状态...');
-        const finalState = await waitForUpdateOperation(operationId);
+        const finalState = await waitForUpdateOperation(
+          operationId,
+          8 * 60 * 1000,
+          () => setUpdateStatus('后台仍在更新所有榜单，正在持续确认状态...'),
+        );
         const state = String(finalState.state || 'unknown');
         if (state === 'success') {
           setUpdateStatus('所有榜单更新成功！');
@@ -695,7 +712,11 @@ export default function AdminChartsPage() {
         }
       } else if (looksLikeHtmlErrorPayload(result) || response.status >= 502) {
         setUpdateStatus(`连接中断，正在确认 ${platform} 任务状态...`);
-        const finalState = await waitForUpdateOperation(operationId);
+        const finalState = await waitForUpdateOperation(
+          operationId,
+          8 * 60 * 1000,
+          () => setUpdateStatus(`后台仍在更新 ${platform} 榜单，正在持续确认状态...`),
+        );
         const state = String(finalState.state || 'unknown');
         if (state === 'success') {
           setUpdateStatus(`${platform} 榜单更新成功！`);
@@ -720,7 +741,11 @@ export default function AdminChartsPage() {
         setUpdateStatus(`已取消更新 ${platform} 榜单`);
       } else {
         setUpdateStatus(`连接中断，正在确认 ${platform} 任务状态...`);
-        const finalState = await waitForUpdateOperation(operationId);
+        const finalState = await waitForUpdateOperation(
+          operationId,
+          8 * 60 * 1000,
+          () => setUpdateStatus(`后台仍在更新 ${platform} 榜单，正在持续确认状态...`),
+        );
         const state = String(finalState.state || 'unknown');
         if (state === 'success') {
           setUpdateStatus(`${platform} 榜单更新成功！`);
@@ -804,7 +829,11 @@ export default function AdminChartsPage() {
         setUpdateStatus('遇到反爬虫机制，请验证');
       } else if (looksLikeHtmlErrorPayload(result) || response.status >= 502) {
         setUpdateStatus(`连接中断，正在确认 ${chartName} 任务状态...`);
-        const finalState = await waitForUpdateOperation(operationId);
+        const finalState = await waitForUpdateOperation(
+          operationId,
+          8 * 60 * 1000,
+          () => setUpdateStatus(`后台仍在更新 ${chartName}，正在持续确认状态...`),
+        );
         const state = String(finalState.state || 'unknown');
         if (state === 'success') {
           setUpdateStatus(`${chartName} 更新成功！`);
@@ -830,7 +859,11 @@ export default function AdminChartsPage() {
         setUpdateStatus(`已取消更新 ${chartName}`);
       } else {
         setUpdateStatus('连接中断，正在确认后台任务状态...');
-        const finalState = await waitForUpdateOperation(operationId);
+        const finalState = await waitForUpdateOperation(
+          operationId,
+          8 * 60 * 1000,
+          () => setUpdateStatus(`后台仍在更新 ${chartName}，正在持续确认状态...`),
+        );
         const state = String(finalState.state || 'unknown');
         if (state === 'success') {
           setUpdateStatus(`${chartName} 更新成功！`);
