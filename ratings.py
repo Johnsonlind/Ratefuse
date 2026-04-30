@@ -1496,7 +1496,9 @@ async def search_platform(platform, tmdb_info, request=None, douban_cookie=None)
                             print(f"{platform} 搜索URL: {search_url}")
                             await check_request()
                             if platform == "douban":
-                                results = await handle_douban_search(page, search_url)
+                                results = await handle_douban_search(
+                                    page, search_url, douban_cookie=douban_cookie
+                                )
                             elif platform == "imdb":
                                 results = await handle_imdb_search(page, search_url)
                             elif platform == "letterboxd":
@@ -1687,7 +1689,9 @@ async def search_platform(platform, tmdb_info, request=None, douban_cookie=None)
                         if headers:
                             await page.set_extra_http_headers(headers)
                         
-                        results = await handle_douban_search(page, imdb_search_url)
+                        results = await handle_douban_search(
+                            page, imdb_search_url, douban_cookie=douban_cookie
+                        )
                         
                         if isinstance(results, dict) and "status" in results:
                             return results
@@ -1869,6 +1873,10 @@ def _normalize_douban_rating_url(url: str) -> str:
 
 _douban_inflight_lock = asyncio.Lock()
 _douban_inflight_tasks: dict[str, asyncio.Task] = {}
+_douban_request_queue_semaphore = asyncio.Semaphore(3)
+_douban_queue_batch_lock = asyncio.Lock()
+_douban_queue_batch_issued: int = 0
+_douban_queue_batch_release_at: float = 0.0
 
 def _douban_singleflight_key(
     media_type: str, tmdb_info: dict, douban_cookie: Optional[str]
@@ -1903,12 +1911,338 @@ async def _await_same_douban_fetch(sf_key: str, factory):
             task.add_done_callback(_cleanup)
     return await task
 
+async def _acquire_douban_batch_slot() -> None:
+    """豆瓣分批放行"""
+    global _douban_queue_batch_issued, _douban_queue_batch_release_at
+    while True:
+        sleep_for = 0.0
+        async with _douban_queue_batch_lock:
+            now = time.monotonic()
+            if _douban_queue_batch_issued >= 3:
+                if _douban_queue_batch_release_at <= 0.0:
+                    _douban_queue_batch_release_at = now + random.uniform(3.0, 5.0)
+                sleep_for = _douban_queue_batch_release_at - now
+                if sleep_for <= 0:
+                    _douban_queue_batch_issued = 0
+                    _douban_queue_batch_release_at = 0.0
+                    sleep_for = 0.0
+                else:
+                    sleep_for = max(sleep_for, 0.05)
+            else:
+                _douban_queue_batch_issued += 1
+                break
+        if sleep_for > 0:
+            await asyncio.sleep(sleep_for)
+
+
+async def run_in_douban_request_queue(factory, *, media_type: str, queue_timeout_sec: float = 30.0):
+    """豆瓣并发队列"""
+    start_wait = time.monotonic()
+    try:
+        await asyncio.wait_for(_acquire_douban_batch_slot(), timeout=queue_timeout_sec)
+        remaining = max(0.05, queue_timeout_sec - (time.monotonic() - start_wait))
+        await asyncio.wait_for(_douban_request_queue_semaphore.acquire(), timeout=remaining)
+    except asyncio.TimeoutError:
+        ret = create_error_rating_data(
+            "douban",
+            media_type,
+            RATING_STATUS["TIMEOUT"],
+            "排队中",
+        )
+        if isinstance(ret, dict):
+            ret["queueing"] = True
+        return ret
+
+    try:
+        return await factory()
+    finally:
+        _douban_request_queue_semaphore.release()
+
+async def _douban_quick_movie_rating_via_http(tmdb_info: dict, douban_cookie: Optional[str] = None) -> Optional[dict]:
+    """豆瓣电影快速路径"""
+    title = str(
+        tmdb_info.get("zh_title")
+        or tmdb_info.get("title")
+        or tmdb_info.get("name")
+        or tmdb_info.get("original_title")
+        or ""
+    ).strip()
+    if not title:
+        return None
+
+    headers = {
+        "User-Agent": random.choice(USER_AGENTS),
+        "Accept": "application/json,text/javascript,*/*;q=0.1",
+        "Referer": "https://movie.douban.com/",
+    }
+    if douban_cookie:
+        headers["Cookie"] = douban_cookie
+
+    timeout = aiohttp.ClientTimeout(total=8.0, connect=3.0, sock_read=5.0)
+    suggest_url = f"https://movie.douban.com/j/subject_suggest?q={quote(title)}"
+    try:
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            async with session.get(suggest_url) as resp:
+                if resp.status in (403, 418, 429):
+                    return create_error_rating_data(
+                        "douban",
+                        "movie",
+                        RATING_STATUS["RATE_LIMIT"],
+                        "豆瓣快速通道触发频率限制",
+                    )
+                if resp.status >= 400:
+                    return None
+                payload = await resp.json(content_type=None)
+    except Exception:
+        return None
+
+    if not isinstance(payload, list) or not payload:
+        return None
+
+    candidates = []
+    for item in payload[:8]:
+        if not isinstance(item, dict):
+            continue
+        raw_url = str(item.get("url") or "").strip()
+        sid = str(item.get("id") or "").strip()
+        if not raw_url and sid.isdigit():
+            raw_url = f"https://movie.douban.com/subject/{sid}/"
+        if not raw_url:
+            continue
+        candidates.append(
+            {
+                "title": str(item.get("title") or "").strip(),
+                "year": str(item.get("year") or "").strip(),
+                "url": _normalize_douban_detail_url(raw_url),
+            }
+        )
+    if not candidates:
+        return None
+
+    best = None
+    best_score = -1
+    for c in candidates:
+        try:
+            score = await calculate_match_degree(tmdb_info, c, "douban")
+        except Exception:
+            score = 0
+        if score > best_score:
+            best_score = score
+            best = c
+    if not best or best_score < 70:
+        return None
+
+    detail_headers = {
+        "User-Agent": random.choice(USER_AGENTS),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Referer": "https://movie.douban.com/",
+    }
+    if douban_cookie:
+        detail_headers["Cookie"] = douban_cookie
+
+    detail_timeout = aiohttp.ClientTimeout(total=10.0, connect=4.0, sock_read=6.0)
+    try:
+        async with aiohttp.ClientSession(timeout=detail_timeout, headers=detail_headers) as session:
+            async with session.get(best["url"]) as resp:
+                html = await resp.text()
+                if resp.status in (403, 418, 429) or _looks_like_douban_access_limited(
+                    html, str(resp.url), ""
+                ):
+                    return create_error_rating_data(
+                        "douban",
+                        "movie",
+                        RATING_STATUS["RATE_LIMIT"],
+                        "豆瓣快速通道触发访问限制",
+                    )
+    except Exception:
+        return None
+
+    if "暂无评分" in html or "尚未上映" in html:
+        ret = create_empty_rating_data("douban", "movie", RATING_STATUS["NO_RATING"])
+        ret["url"] = best["url"]
+        return ret
+
+    json_match = re.search(
+        r'"aggregateRating":\s*{\s*"@type":\s*"AggregateRating",\s*"ratingCount":\s*"([^"]+)",\s*"bestRating":\s*"([^"]+)",\s*"worstRating":\s*"([^"]+)",\s*"ratingValue":\s*"([^"]+)"',
+        html,
+    )
+    if json_match:
+        rating_people = json_match.group(1)
+        rating = json_match.group(4)
+    else:
+        rating_match = re.search(r'<strong[^>]*class="ll rating_num"[^>]*>([^<]*)</strong>', html)
+        people_match = re.search(r'<span[^>]*property="v:votes">(\d+)</span>', html)
+        rating = rating_match.group(1).strip() if rating_match and rating_match.group(1).strip() else "暂无"
+        rating_people = people_match.group(1).strip() if people_match else "暂无"
+
+    if rating in (None, "", "暂无") or rating_people in (None, "", "暂无"):
+        return None
+
+    return {
+        "status": RATING_STATUS["SUCCESSFUL"],
+        "rating": str(rating),
+        "rating_people": str(rating_people),
+        "url": best["url"],
+        "_match_score": float(best_score),
+    }
+
+async def _douban_quick_tv_rating_via_http(tmdb_info: dict, douban_cookie: Optional[str] = None) -> Optional[dict]:
+    """豆瓣剧集快速路径"""
+    title = str(
+        tmdb_info.get("zh_title")
+        or tmdb_info.get("title")
+        or tmdb_info.get("name")
+        or tmdb_info.get("original_title")
+        or ""
+    ).strip()
+    if not title:
+        return None
+
+    headers = {
+        "User-Agent": random.choice(USER_AGENTS),
+        "Accept": "application/json,text/javascript,*/*;q=0.1",
+        "Referer": "https://movie.douban.com/",
+    }
+    if douban_cookie:
+        headers["Cookie"] = douban_cookie
+
+    timeout = aiohttp.ClientTimeout(total=8.0, connect=3.0, sock_read=5.0)
+    suggest_url = f"https://movie.douban.com/j/subject_suggest?q={quote(title)}"
+    try:
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            async with session.get(suggest_url) as resp:
+                if resp.status in (403, 418, 429):
+                    return create_error_rating_data(
+                        "douban",
+                        "tv",
+                        RATING_STATUS["RATE_LIMIT"],
+                        "豆瓣快速通道触发频率限制",
+                    )
+                if resp.status >= 400:
+                    return None
+                payload = await resp.json(content_type=None)
+    except Exception:
+        return None
+
+    if not isinstance(payload, list) or not payload:
+        return None
+
+    candidates = []
+    for item in payload[:8]:
+        if not isinstance(item, dict):
+            continue
+        raw_url = str(item.get("url") or "").strip()
+        sid = str(item.get("id") or "").strip()
+        if not raw_url and sid.isdigit():
+            raw_url = f"https://movie.douban.com/subject/{sid}/"
+        if not raw_url:
+            continue
+        candidates.append(
+            {
+                "title": str(item.get("title") or "").strip(),
+                "year": str(item.get("year") or "").strip(),
+                "url": _normalize_douban_detail_url(raw_url),
+            }
+        )
+    if not candidates:
+        return None
+
+    best = None
+    best_score = -1
+    for c in candidates:
+        try:
+            score = await calculate_match_degree(tmdb_info, c, "douban")
+        except Exception:
+            score = 0
+        if score > best_score:
+            best_score = score
+            best = c
+    if not best or best_score < 60:
+        return None
+
+    detail_headers = {
+        "User-Agent": random.choice(USER_AGENTS),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Referer": "https://movie.douban.com/",
+    }
+    if douban_cookie:
+        detail_headers["Cookie"] = douban_cookie
+
+    detail_timeout = aiohttp.ClientTimeout(total=10.0, connect=4.0, sock_read=6.0)
+    try:
+        async with aiohttp.ClientSession(timeout=detail_timeout, headers=detail_headers) as session:
+            async with session.get(best["url"]) as resp:
+                html = await resp.text()
+                if resp.status in (403, 418, 429) or _looks_like_douban_access_limited(
+                    html, str(resp.url), ""
+                ):
+                    return create_error_rating_data(
+                        "douban",
+                        "tv",
+                        RATING_STATUS["RATE_LIMIT"],
+                        "豆瓣快速通道触发访问限制",
+                    )
+    except Exception:
+        return None
+
+    if "暂无评分" in html or "尚未上映" in html:
+        ret = create_empty_rating_data("douban", "tv", RATING_STATUS["NO_RATING"])
+        ret["url"] = best["url"]
+        ret["seasons"] = [{"season_number": 1, "rating": "暂无", "rating_people": "暂无", "url": best["url"]}]
+        return ret
+
+    json_match = re.search(
+        r'"aggregateRating":\s*{\s*"@type":\s*"AggregateRating",\s*"ratingCount":\s*"([^"]+)",\s*"bestRating":\s*"([^"]+)",\s*"worstRating":\s*"([^"]+)",\s*"ratingValue":\s*"([^"]+)"',
+        html,
+    )
+    if json_match:
+        rating_people = json_match.group(1)
+        rating = json_match.group(4)
+    else:
+        rating_match = re.search(r'<strong[^>]*class="ll rating_num"[^>]*>([^<]*)</strong>', html)
+        people_match = re.search(r'<span[^>]*property="v:votes">(\d+)</span>', html)
+        rating = rating_match.group(1).strip() if rating_match and rating_match.group(1).strip() else "暂无"
+        rating_people = people_match.group(1).strip() if people_match else "暂无"
+
+    if rating in (None, "", "暂无") or rating_people in (None, "", "暂无"):
+        return None
+
+    return {
+        "status": RATING_STATUS["SUCCESSFUL"],
+        "seasons": [
+            {
+                "season_number": 1,
+                "rating": str(rating),
+                "rating_people": str(rating_people),
+                "url": best["url"],
+            }
+        ],
+        "url": best["url"],
+        "_match_score": float(best_score),
+    }
+
 async def douban_search_and_extract_rating(
     media_type, tmdb_info, request=None, douban_cookie=None
 ):
     """在单次浏览器会话内完成豆瓣搜索与详情抓取"""
     if request and await request.is_disconnected():
         return {"status": "cancelled"}
+
+    quick = None
+    mt = (media_type or "").lower()
+    if mt == "movie":
+        quick = await _douban_quick_movie_rating_via_http(tmdb_info, douban_cookie=douban_cookie)
+    elif mt == "tv":
+        quick = await _douban_quick_tv_rating_via_http(tmdb_info, douban_cookie=douban_cookie)
+    if isinstance(quick, dict):
+        st = quick.get("status")
+        if st == RATING_STATUS["SUCCESSFUL"]:
+            report_douban_result(douban_cookie, "success")
+            return quick
+        if st == RATING_STATUS["RATE_LIMIT"]:
+            mark_douban_rate_limited(None, cookie=douban_cookie)
+            report_douban_result(douban_cookie, "rate_limit")
+            return quick
 
     async def pipeline(browser):
         context = None
@@ -1949,7 +2283,12 @@ async def douban_search_and_extract_rating(
                     continue
                 print(f"douban 搜索URL: {search_url}")
                 await check_req()
-                results = await handle_douban_search(page, search_url, fast_mode=fast_mode)
+                results = await handle_douban_search(
+                    page,
+                    search_url,
+                    fast_mode=fast_mode,
+                    douban_cookie=douban_cookie,
+                )
 
                 if isinstance(results, dict) and "status" in results:
                     st = results["status"]
@@ -2003,7 +2342,12 @@ async def douban_search_and_extract_rating(
                 print(f"\n[豆瓣备用策略] 尝试使用IMDB ID搜索: {imdb_id}")
                 await check_req()
                 imdb_search_url = f"https://search.douban.com/movie/subject_search?search_text={imdb_id}"
-                results = await handle_douban_search(page, imdb_search_url, fast_mode=fast_mode)
+                results = await handle_douban_search(
+                    page,
+                    imdb_search_url,
+                    fast_mode=fast_mode,
+                    douban_cookie=douban_cookie,
+                )
                 if isinstance(results, dict) and "status" in results:
                     st = results["status"]
                     if st == RATING_STATUS["RATE_LIMIT"]:
@@ -2168,12 +2512,14 @@ async def douban_search_and_extract_rating(
 
     return await _await_same_douban_fetch(sf_key, run_exclusive)
 
-async def handle_douban_search(page, search_url, fast_mode: bool = False):
+async def handle_douban_search(
+    page, search_url, fast_mode: bool = False, douban_cookie: Optional[str] = None
+):
     """处理豆瓣搜索"""
     try:
         if not fast_mode:
             await douban_human_wait("before_search_nav")
-        await wait_before_douban_request_async(None, "search")
+        await wait_before_douban_request_async(douban_cookie, "search")
         print(f"访问豆瓣搜索页面: {search_url}")
         await page.goto(
             search_url,
@@ -5731,7 +6077,13 @@ async def parallel_extract_ratings(tmdb_info, media_type, request=None, douban_c
                         RATING_STATUS["RATE_LIMIT"],
                         f"豆瓣触发风控，冷却中（剩余 {remain:.0f}s）",
                     )
-                rating_data = await douban_search_and_extract_rating(media_type, tmdb_info, request, cookie)
+                async def _queued_douban_fetch():
+                    return await douban_search_and_extract_rating(media_type, tmdb_info, request, cookie)
+                rating_data = await run_in_douban_request_queue(
+                    _queued_douban_fetch,
+                    media_type=media_type,
+                    queue_timeout_sec=30.0,
+                )
 
             if platform != "douban" and not used_mapping:
                 search_results = await search_platform(platform, tmdb_info, request, cookie)
@@ -5793,8 +6145,6 @@ async def parallel_extract_ratings(tmdb_info, media_type, request=None, douban_c
             except asyncio.TimeoutError:
                 elapsed = time.time() - start_time
                 print(log.error(f"{platform}: overall timeout after {timeout:.1f}s (elapsed {elapsed:.1f}s)"))
-                if platform == "douban":
-                    mark_douban_rate_limited(None, cookie=douban_cookie)
                 return platform, create_error_rating_data(
                     platform,
                     media_type,
@@ -5833,8 +6183,6 @@ async def parallel_extract_ratings(tmdb_info, media_type, request=None, douban_c
                     RATING_STATUS["TIMEOUT"],
                     f"全局超时 {GLOBAL_DEADLINE_SEC:.0f} 秒",
                 )
-                if p == "douban":
-                    mark_douban_rate_limited(None, cookie=douban_cookie)
 
         return results
 
@@ -5909,8 +6257,14 @@ async def main():
                 try:
                     print(f"开始获取 {platform} 平台评分...")
                     if platform == "douban":
-                        rating_data = await douban_search_and_extract_rating(
-                            media_type, tmdb_info, None, None
+                        async def _queued_douban_fetch():
+                            return await douban_search_and_extract_rating(
+                                media_type, tmdb_info, None, None
+                            )
+                        rating_data = await run_in_douban_request_queue(
+                            _queued_douban_fetch,
+                            media_type=media_type,
+                            queue_timeout_sec=30.0,
                         )
                         return platform, rating_data
                     search_results = await search_platform(platform, tmdb_info)
