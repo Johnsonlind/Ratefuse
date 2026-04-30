@@ -2575,7 +2575,7 @@ async def handle_douban_search(
         
         if not fast_mode:
             try:
-                await page.wait_for_load_state('networkidle', timeout=3000)
+                await page.wait_for_load_state('domcontentloaded', timeout=3000)
             except Exception:
                 pass
         
@@ -4777,7 +4777,7 @@ async def extract_douban_rating(page, media_type, matched_results, tmdb_info=Non
                             if not fast_mode:
                                 await random_delay()
                             await page.reload()
-                            await page.wait_for_load_state("networkidle", timeout=5000)
+                            await page.wait_for_load_state("domcontentloaded", timeout=5000)
                             season_content = await page.content()
                             continue
                 
