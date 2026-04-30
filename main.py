@@ -7067,7 +7067,7 @@ async def _run_updater_with_disconnect_cancel(
                 except asyncio.CancelledError:
                     pass
                 raise HTTPException(status_code=499, detail=f"已取消更新：{label}")
-            if await request.is_disconnected():
+            if not operation_key and await request.is_disconnected():
                 logger.info(f"客户端已断开连接，取消更新任务: {label}")
                 task.cancel()
                 try:
