@@ -263,7 +263,7 @@ class ChartScraper:
                 await page.goto("https://movie.douban.com/", wait_until="domcontentloaded")
                 await asyncio.sleep(3)
                 
-                await page.wait_for_load_state("networkidle")
+                await page.wait_for_load_state("domcontentloaded")
                 
                 await asyncio.sleep(3)
                 
@@ -741,7 +741,7 @@ class ChartScraper:
                 page.set_default_timeout(120000)
                 await page.goto(url, wait_until="domcontentloaded", timeout=120000)
                 try:
-                    await page.wait_for_load_state("networkidle", timeout=3000)
+                    await page.wait_for_load_state("domcontentloaded", timeout=3000)
                 except Exception:
                     pass
                 await asyncio.sleep(0.2)
@@ -1401,7 +1401,7 @@ class ChartScraper:
                     logger.warning(f"访问 IMDb 首页失败: {e}")
                 
                 logger.info(f"访问 IMDb Top 250 页面: {chart_url}")
-                await page.goto(chart_url, wait_until="networkidle", timeout=60000)
+                await page.goto(chart_url, wait_until="domcontentloaded", timeout=60000)
                 await asyncio.sleep(5)
                 
                 logger.info("滚动页面以加载所有内容...")
@@ -1904,7 +1904,7 @@ class ChartScraper:
                     await asyncio.sleep(random.uniform(1, 3))
                     
                     try:
-                        await page.wait_for_load_state("networkidle", timeout=30000)
+                        await page.wait_for_load_state("domcontentloaded", timeout=30000)
                     except Exception:
                         await asyncio.sleep(3)
                     
@@ -2066,7 +2066,7 @@ class ChartScraper:
                         await asyncio.sleep(random.uniform(0.5, 1.5))
                         
                         try:
-                            await page.wait_for_load_state("networkidle", timeout=10000)
+                            await page.wait_for_load_state("domcontentloaded", timeout=10000)
                         except Exception:
                             await asyncio.sleep(1)
                         
@@ -2641,7 +2641,7 @@ class ChartScraper:
                     await asyncio.sleep(2)
                     
                     try:
-                        await page.wait_for_load_state("networkidle", timeout=30000)
+                        await page.wait_for_load_state("domcontentloaded", timeout=30000)
                     except Exception:
                         await asyncio.sleep(3)
                     
