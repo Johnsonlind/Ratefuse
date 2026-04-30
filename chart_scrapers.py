@@ -11,7 +11,7 @@ import httpx
 import requests
 import json
 from urllib.parse import quote
-from typing import List, Dict, Optional, TYPE_CHECKING
+from typing import List, Dict, Optional, TYPE_CHECKING, Callable
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from sqlalchemy.orm import Session
@@ -111,9 +111,17 @@ def _parse_letterboxd_cookie_string(s: str) -> list:
             out.append({"name": name, "value": value, "domain": ".letterboxd.com", "path": "/"})
     return out
 
+async def _requests_get_async(*args, **kwargs):
+    return await asyncio.to_thread(requests.get, *args, **kwargs)
+
 class ChartScraper:
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, cancel_check: Optional[Callable[[], bool]] = None):
         self.db = db
+        self._cancel_check = cancel_check
+
+    def _check_cancelled(self):
+        if self._cancel_check and self._cancel_check():
+            raise asyncio.CancelledError("update cancelled")
     
     @staticmethod
     def _safe_get_title(info: Dict, fallback_title: str = '') -> str:
@@ -189,6 +197,7 @@ class ChartScraper:
 
     def _replace_chart_snapshot(self, platform: str, chart_name: str, entries: list[dict]) -> int:
         try:
+            self._check_cancelled()
             logger.info(f"{platform} {chart_name}: 准备替换快照，待写入 entries={len(entries)}")
             locked_rows = (
                 self.db.query(ChartEntry)
@@ -212,6 +221,7 @@ class ChartScraper:
             inserted_count = 0
             skipped_locked = 0
             for e in entries:
+                self._check_cancelled()
                 try:
                     mt = e["media_type"]
                     rk = int(e["rank"])
@@ -1200,9 +1210,10 @@ class ChartScraper:
         all_items = []
         
         for page in range(1, 14):
+            self._check_cancelled()
             try:
                 url = f"{TMDB_API_BASE_URL}/movie/top_rated?page={page}"
-                response = requests.get(url, headers=headers, timeout=20, verify=False)
+                response = await _requests_get_async(url, headers=headers, timeout=20, verify=False)
                 
                 if response.status_code != 200:
                     logger.warning(f"TMDB 高分电影 Top 250 API 调用失败 (page {page}): {response.status_code}")
@@ -1235,6 +1246,7 @@ class ChartScraper:
         all_items = all_items[:250]
         entries: list[dict] = []
         for rank, item in enumerate(all_items, 1):
+            self._check_cancelled()
             tmdb_id = item['tmdb_id']
             title = item.get('title', '')
             poster_path = item.get('poster_path', '')
@@ -1280,9 +1292,10 @@ class ChartScraper:
         all_items = []
         
         for page in range(1, 14):
+            self._check_cancelled()
             try:
                 url = f"{TMDB_API_BASE_URL}/tv/top_rated?page={page}"
-                response = requests.get(url, headers=headers, timeout=20, verify=False)
+                response = await _requests_get_async(url, headers=headers, timeout=20, verify=False)
                 
                 if response.status_code != 200:
                     logger.warning(f"TMDB 高分剧集 Top 250 API 调用失败 (page {page}): {response.status_code}")
@@ -1315,6 +1328,7 @@ class ChartScraper:
         all_items = all_items[:250]
         entries: list[dict] = []
         for rank, item in enumerate(all_items, 1):
+            self._check_cancelled()
             tmdb_id = item['tmdb_id']
             title = item.get('title', '')
             poster_path = item.get('poster_path', '')
@@ -1696,10 +1710,12 @@ class ChartScraper:
         
         batch_size = 30
         for batch_start in range(0, total, batch_size):
+            self._check_cancelled()
             batch = items[batch_start:batch_start + batch_size]
             results = await asyncio.gather(*[process_item(item) for item in batch], return_exceptions=True)
             
             for result in results:
+                self._check_cancelled()
                 if isinstance(result, Exception):
                     continue
                 if not result:
@@ -1774,10 +1790,12 @@ class ChartScraper:
         
         batch_size = 30
         for batch_start in range(0, total, batch_size):
+            self._check_cancelled()
             batch = items[batch_start:batch_start + batch_size]
             results = await asyncio.gather(*[process_item(item) for item in batch], return_exceptions=True)
             
             for result in results:
+                self._check_cancelled()
                 if isinstance(result, Exception):
                     continue
                 if not result:
@@ -3713,7 +3731,7 @@ class TMDBMatcher:
             find_url = f"{TMDB_API_BASE_URL}/find/{imdb_id}?api_key={TMDB_API_KEY}&external_source=imdb_id"
                 
             logger.info(f"TMDB API URL: {find_url}")
-            response = requests.get(find_url, verify=False)
+            response = await _requests_get_async(find_url, verify=False)
             logger.info(f"TMDB API响应状态: {response.status_code}")
             
             if response.status_code == 200:
@@ -3766,21 +3784,21 @@ class TMDBMatcher:
 
             headers = {"Authorization": f"Bearer {TMDB_TOKEN}", "accept": "application/json"}
 
-            def do_search(lang: str | None):
+            async def do_search(lang: str | None):
                 base = f"{TMDB_API_BASE_URL}/search/{media_type}?query={requests.utils.quote(search_title)}"
                 if lang:
                     base += f"&language={lang}"
                 if year:
                     base += f"&year={year}"
-                resp = requests.get(base, headers=headers, verify=False, timeout=20)
+                resp = await _requests_get_async(base, headers=headers, verify=False, timeout=20)
                 if resp.status_code != 200:
                     return []
                 data = resp.json()
                 return data.get("results", [])
 
-            results_zh = do_search("zh-CN")
-            results_en = [] if results_zh else do_search("en-US")
-            results_any = [] if (results_zh or results_en) else do_search(None)
+            results_zh = await do_search("zh-CN")
+            results_en = [] if results_zh else await do_search("en-US")
+            results_any = [] if (results_zh or results_en) else await do_search(None)
             results = results_zh or results_en or results_any
 
             if not results:
@@ -3817,7 +3835,7 @@ class TMDBMatcher:
                 return int(best_match.get("id"))
 
             if year:
-                results_relaxed = do_search(None)
+                results_relaxed = await do_search(None)
                 for result in results_relaxed:
                     result_title = result.get("name" if media_type == "tv" else "title", "")
                     if fuzz.partial_ratio(search_title.lower(), (result_title or "").lower()) >= 60:
@@ -3837,7 +3855,7 @@ class TMDBMatcher:
                 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
                 
                 endpoint = f"{TMDB_API_BASE_URL}/{media_type}/{tmdb_id}?api_key={TMDB_API_KEY}&language=en-US&append_to_response=credits,external_ids"
-                response = requests.get(endpoint, verify=False)
+                response = await _requests_get_async(endpoint, verify=False)
                 
                 if response.status_code == 200:
                     en_data = response.json()
@@ -3856,7 +3874,7 @@ class TMDBMatcher:
                     return None
                     
                 zh_endpoint = endpoint.replace("language=en-US", "language=zh-CN")
-                zh_response = requests.get(zh_endpoint, verify=False)
+                zh_response = await _requests_get_async(zh_endpoint, verify=False)
                 zh_data = zh_response.json() if zh_response.status_code == 200 else en_data
                 
                 if media_type == "movie":
