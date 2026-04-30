@@ -83,6 +83,38 @@ class LogFormatter:
 
 log = LogFormatter()
 
+
+def _douban_log(stage: str, **fields) -> None:
+    """豆瓣链路诊断日志，便于定位误判限流。"""
+    parts = [f"{k}={v}" for k, v in fields.items()]
+    extra = (" " + " ".join(parts)) if parts else ""
+    print(f"[douban][{stage}]{extra}")
+
+
+def _douban_limited_signals(content: str, page_url: str = "", page_title: str = "") -> list[str]:
+    c = (content or "").lower()
+    t = (page_title or "").lower()
+    u = (page_url or "").lower()
+    signals = (
+        "error code: 008",
+        "你访问豆瓣的方式有点像机器人程序",
+        "点击证明",
+        "有异常请求从你的ip发出",
+        "请求过于频繁",
+        "访问受限",
+        "访问太频繁",
+        "异常请求",
+        "安全验证",
+    )
+    hits: list[str] = []
+    for s in signals:
+        sl = s.lower()
+        if sl in c or sl in t:
+            hits.append(s)
+    if "sec.douban.com" in u:
+        hits.append("sec.douban.com(url)")
+    return hits
+
 TMDB_API_BASE_URL = os.getenv("TMDB_API_BASE_URL", "")
 if not TMDB_API_BASE_URL.endswith("/"):
     TMDB_API_BASE_URL = f"{TMDB_API_BASE_URL}/"
@@ -1132,12 +1164,14 @@ async def check_rate_limit(page, platform: str) -> dict | None:
         page_html = await page.content()
         if "error code: 008" in page_html:
             print("豆瓣访问频率限制: error code 008")
+            _douban_log("rl.check", source="check_rate_limit", reason="error code: 008")
             return {"status": RATING_STATUS["RATE_LIMIT"], "status_reason": "访问频率限制"}
         if (
             "你访问豆瓣的方式有点像机器人程序" in page_html
             or "点击证明" in page_html
         ):
             print("豆瓣人机验证页（机器人拦截）")
+            _douban_log("rl.check", source="check_rate_limit", reason="robot-challenge")
             return {
                 "status": RATING_STATUS["RATE_LIMIT"],
                 "status_reason": "豆瓣人机验证：请在本地浏览器打开 douban.com 完成验证后，更新账号中的豆瓣 Cookie 再试",
@@ -1161,6 +1195,8 @@ async def check_rate_limit(page, platform: str) -> dict | None:
         page_text = ""
     if any(phrase in page_text for phrase in rules["phrases"]):
         print(f"{platform} 访问频率限制: 检测到限制文本")
+        if platform == "douban":
+            _douban_log("rl.check", source="page_text", reason="phrase_match")
         return {"status": RATING_STATUS["RATE_LIMIT"], "status_reason": "访问频率限制"}
     
     for selector in rules["selectors"]:
@@ -1169,6 +1205,8 @@ async def check_rate_limit(page, platform: str) -> dict | None:
             text = await elem.inner_text()
             if any(phrase.lower() in text.lower() for phrase in rules["phrases"]):
                 print(f"{platform} 访问频率限制: {text}")
+                if platform == "douban":
+                    _douban_log("rl.check", source="selector", reason=text[:80])
                 return {"status": RATING_STATUS["RATE_LIMIT"], "status_reason": "访问频率限制"}
     
     return None
@@ -1187,23 +1225,7 @@ async def _is_cloudflare_challenge(page) -> bool:
         return False
 
 def _looks_like_douban_access_limited(content: str, page_url: str = "", page_title: str = "") -> bool:
-    c = (content or "").lower()
-    t = (page_title or "").lower()
-    u = (page_url or "").lower()
-    signals = (
-        "error code: 008",
-        "你访问豆瓣的方式有点像机器人程序",
-        "点击证明",
-        "有异常请求从你的ip发出",
-        "请求过于频繁",
-        "访问受限",
-        "访问太频繁",
-        "forbidden",
-        "403",
-        "禁止访问",
-        "sec.douban.com",
-    )
-    return any(s.lower() in c for s in signals) or any(s.lower() in t for s in signals) or "sec.douban.com" in u
+    return len(_douban_limited_signals(content, page_url, page_title)) > 0
 
 def _parse_letterboxd_cookie_string(s: str):
     """解析 .env 中的 LETTERBOXD_COOKIE 字符串"""
@@ -1938,11 +1960,14 @@ async def _acquire_douban_batch_slot() -> None:
 async def run_in_douban_request_queue(factory, *, media_type: str, queue_timeout_sec: float = 30.0):
     """豆瓣并发队列"""
     start_wait = time.monotonic()
+    _douban_log("queue.enter", media_type=media_type, timeout_sec=queue_timeout_sec)
     try:
         await asyncio.wait_for(_acquire_douban_batch_slot(), timeout=queue_timeout_sec)
         remaining = max(0.05, queue_timeout_sec - (time.monotonic() - start_wait))
         await asyncio.wait_for(_douban_request_queue_semaphore.acquire(), timeout=remaining)
+        _douban_log("queue.acquired", media_type=media_type, waited_ms=int((time.monotonic() - start_wait) * 1000))
     except asyncio.TimeoutError:
+        _douban_log("queue.timeout", media_type=media_type, waited_ms=int((time.monotonic() - start_wait) * 1000))
         ret = create_error_rating_data(
             "douban",
             media_type,
@@ -1957,6 +1982,7 @@ async def run_in_douban_request_queue(factory, *, media_type: str, queue_timeout
         return await factory()
     finally:
         _douban_request_queue_semaphore.release()
+        _douban_log("queue.release", media_type=media_type)
 
 async def _douban_quick_movie_rating_via_http(tmdb_info: dict, douban_cookie: Optional[str] = None) -> Optional[dict]:
     """豆瓣电影快速路径"""
@@ -1969,6 +1995,8 @@ async def _douban_quick_movie_rating_via_http(tmdb_info: dict, douban_cookie: Op
     ).strip()
     if not title:
         return None
+    tmdb_id = str(tmdb_info.get("tmdb_id") or tmdb_info.get("id") or "")
+    _douban_log("quick.movie.start", tmdb_id=tmdb_id, title=title, has_cookie=bool(douban_cookie))
 
     headers = {
         "User-Agent": random.choice(USER_AGENTS),
@@ -1983,6 +2011,7 @@ async def _douban_quick_movie_rating_via_http(tmdb_info: dict, douban_cookie: Op
     try:
         async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
             async with session.get(suggest_url) as resp:
+                _douban_log("quick.movie.suggest", tmdb_id=tmdb_id, status=resp.status)
                 if resp.status in (403, 418, 429):
                     return create_error_rating_data(
                         "douban",
@@ -1994,6 +2023,7 @@ async def _douban_quick_movie_rating_via_http(tmdb_info: dict, douban_cookie: Op
                     return None
                 payload = await resp.json(content_type=None)
     except Exception:
+        _douban_log("quick.movie.suggest.error", tmdb_id=tmdb_id)
         return None
 
     if not isinstance(payload, list) or not payload:
@@ -2030,6 +2060,7 @@ async def _douban_quick_movie_rating_via_http(tmdb_info: dict, douban_cookie: Op
             best_score = score
             best = c
     if not best or best_score < 70:
+        _douban_log("quick.movie.nomatch", tmdb_id=tmdb_id, best_score=best_score, candidates=len(candidates))
         return None
 
     detail_headers = {
@@ -2045,9 +2076,9 @@ async def _douban_quick_movie_rating_via_http(tmdb_info: dict, douban_cookie: Op
         async with aiohttp.ClientSession(timeout=detail_timeout, headers=detail_headers) as session:
             async with session.get(best["url"]) as resp:
                 html = await resp.text()
-                if resp.status in (403, 418, 429) or _looks_like_douban_access_limited(
-                    html, str(resp.url), ""
-                ):
+                hits = _douban_limited_signals(html, str(resp.url), "")
+                _douban_log("quick.movie.detail", tmdb_id=tmdb_id, status=resp.status, hits="|".join(hits[:3]))
+                if resp.status in (403, 418, 429) or hits:
                     return create_error_rating_data(
                         "douban",
                         "movie",
@@ -2055,6 +2086,7 @@ async def _douban_quick_movie_rating_via_http(tmdb_info: dict, douban_cookie: Op
                         "豆瓣快速通道触发访问限制",
                     )
     except Exception:
+        _douban_log("quick.movie.detail.error", tmdb_id=tmdb_id, url=best.get("url"))
         return None
 
     if "暂无评分" in html or "尚未上映" in html:
@@ -2076,7 +2108,9 @@ async def _douban_quick_movie_rating_via_http(tmdb_info: dict, douban_cookie: Op
         rating_people = people_match.group(1).strip() if people_match else "暂无"
 
     if rating in (None, "", "暂无") or rating_people in (None, "", "暂无"):
+        _douban_log("quick.movie.empty", tmdb_id=tmdb_id, url=best.get("url"))
         return None
+    _douban_log("quick.movie.success", tmdb_id=tmdb_id, rating=rating, votes=rating_people)
 
     return {
         "status": RATING_STATUS["SUCCESSFUL"],
@@ -2097,6 +2131,8 @@ async def _douban_quick_tv_rating_via_http(tmdb_info: dict, douban_cookie: Optio
     ).strip()
     if not title:
         return None
+    tmdb_id = str(tmdb_info.get("tmdb_id") or tmdb_info.get("id") or "")
+    _douban_log("quick.tv.start", tmdb_id=tmdb_id, title=title, has_cookie=bool(douban_cookie))
 
     headers = {
         "User-Agent": random.choice(USER_AGENTS),
@@ -2111,6 +2147,7 @@ async def _douban_quick_tv_rating_via_http(tmdb_info: dict, douban_cookie: Optio
     try:
         async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
             async with session.get(suggest_url) as resp:
+                _douban_log("quick.tv.suggest", tmdb_id=tmdb_id, status=resp.status)
                 if resp.status in (403, 418, 429):
                     return create_error_rating_data(
                         "douban",
@@ -2122,6 +2159,7 @@ async def _douban_quick_tv_rating_via_http(tmdb_info: dict, douban_cookie: Optio
                     return None
                 payload = await resp.json(content_type=None)
     except Exception:
+        _douban_log("quick.tv.suggest.error", tmdb_id=tmdb_id)
         return None
 
     if not isinstance(payload, list) or not payload:
@@ -2158,6 +2196,7 @@ async def _douban_quick_tv_rating_via_http(tmdb_info: dict, douban_cookie: Optio
             best_score = score
             best = c
     if not best or best_score < 60:
+        _douban_log("quick.tv.nomatch", tmdb_id=tmdb_id, best_score=best_score, candidates=len(candidates))
         return None
 
     detail_headers = {
@@ -2173,9 +2212,9 @@ async def _douban_quick_tv_rating_via_http(tmdb_info: dict, douban_cookie: Optio
         async with aiohttp.ClientSession(timeout=detail_timeout, headers=detail_headers) as session:
             async with session.get(best["url"]) as resp:
                 html = await resp.text()
-                if resp.status in (403, 418, 429) or _looks_like_douban_access_limited(
-                    html, str(resp.url), ""
-                ):
+                hits = _douban_limited_signals(html, str(resp.url), "")
+                _douban_log("quick.tv.detail", tmdb_id=tmdb_id, status=resp.status, hits="|".join(hits[:3]))
+                if resp.status in (403, 418, 429) or hits:
                     return create_error_rating_data(
                         "douban",
                         "tv",
@@ -2183,6 +2222,7 @@ async def _douban_quick_tv_rating_via_http(tmdb_info: dict, douban_cookie: Optio
                         "豆瓣快速通道触发访问限制",
                     )
     except Exception:
+        _douban_log("quick.tv.detail.error", tmdb_id=tmdb_id, url=best.get("url"))
         return None
 
     if "暂无评分" in html or "尚未上映" in html:
@@ -2205,7 +2245,9 @@ async def _douban_quick_tv_rating_via_http(tmdb_info: dict, douban_cookie: Optio
         rating_people = people_match.group(1).strip() if people_match else "暂无"
 
     if rating in (None, "", "暂无") or rating_people in (None, "", "暂无"):
+        _douban_log("quick.tv.empty", tmdb_id=tmdb_id, url=best.get("url"))
         return None
+    _douban_log("quick.tv.success", tmdb_id=tmdb_id, rating=rating, votes=rating_people)
 
     return {
         "status": RATING_STATUS["SUCCESSFUL"],
@@ -2227,6 +2269,8 @@ async def douban_search_and_extract_rating(
     """在单次浏览器会话内完成豆瓣搜索与详情抓取"""
     if request and await request.is_disconnected():
         return {"status": "cancelled"}
+    tmdb_id = str(tmdb_info.get("tmdb_id") or tmdb_info.get("id") or "")
+    _douban_log("pipeline.start", tmdb_id=tmdb_id, media_type=media_type, has_cookie=bool(douban_cookie))
 
     quick = None
     mt = (media_type or "").lower()
@@ -2236,6 +2280,7 @@ async def douban_search_and_extract_rating(
         quick = await _douban_quick_tv_rating_via_http(tmdb_info, douban_cookie=douban_cookie)
     if isinstance(quick, dict):
         st = quick.get("status")
+        _douban_log("pipeline.quick.result", tmdb_id=tmdb_id, status=st, reason=quick.get("status_reason"))
         if st == RATING_STATUS["SUCCESSFUL"]:
             report_douban_result(douban_cookie, "success")
             return quick
@@ -2504,6 +2549,7 @@ async def douban_search_and_extract_rating(
                     pass
 
     sf_key = _douban_singleflight_key(media_type, tmdb_info, douban_cookie)
+    _douban_log("pipeline.fallback.playwright", tmdb_id=tmdb_id, singleflight=sf_key)
 
     async def run_exclusive():
         await wait_before_douban_playwright_async(douban_cookie)
