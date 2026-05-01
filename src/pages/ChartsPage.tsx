@@ -155,23 +155,7 @@ export default function ChartsPage() {
       if (!acc[platformKey]) {
         acc[platformKey] = [];
       }
-      const existingChart = acc[platformKey].find((c) => c.chart_name === chart.chart_name);
-      if (!existingChart) {
-        acc[platformKey].push({ ...chart });
-        return acc;
-      }
-      const existingIds = new Set(existingChart.entries.map((e) => `${e.tmdb_id}-${e.rank}`));
-      chart.entries.forEach((entry) => {
-        const entryKey = `${entry.tmdb_id}-${entry.rank}`;
-        if (!existingIds.has(entryKey)) {
-          existingChart.entries.push(entry);
-          existingIds.add(entryKey);
-        }
-      });
-      existingChart.entries.sort((a, b) => a.rank - b.rank);
-      if (existingChart.media_type !== chart.media_type) {
-        existingChart.media_type = 'both';
-      }
+      acc[platformKey].push({ ...chart });
       return acc;
     }, {} as Record<string, ChartSection[]>);
 
