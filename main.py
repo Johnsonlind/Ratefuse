@@ -6958,16 +6958,13 @@ def _build_updater_registry(scraper: Any) -> dict[str, dict[str, Any]]:
         "trakt_shows_weekly": {"fn": scraper.update_trakt_shows_weekly, "media_type": "tv"},
     }
 
-def _configured_updater_keys(
+
+def _charts_for_bulk_auto_update(
     db: Session,
     platform: Optional[str] = None,
 ) -> list[tuple[str, str, str, int]]:
-    q = db.query(
-        ChartConfig.platform,
-        ChartConfig.chart_name,
-        ChartConfig.updater_key,
-        ChartConfig.sort_order,
-    ).filter(ChartConfig.updater_key.isnot(None))
+    """全量/平台「批量更新」"""
+    q = db.query(ChartConfig).filter(ChartConfig.update_mode == "all")
     if platform:
         q = q.filter(ChartConfig.platform == platform)
     rows = q.order_by(
@@ -6978,16 +6975,21 @@ def _configured_updater_keys(
     result: list[tuple[str, str, str, int]] = []
     seen: set[tuple[str, str]] = set()
     for r in rows:
-        key = str(r.updater_key or "").strip()
         plat = canonical_platform_name(r.platform)
-        if not key or not plat:
+        chart_nm = canonical_chart_name(r.chart_name)
+        if not plat:
             continue
-        dedup_key = (plat, key)
+        raw = str(r.updater_key or "").strip()
+        resolved = raw or (_infer_updater_key(r.platform, r.chart_name) or "")
+        if not resolved:
+            continue
+        dedup_key = (plat, resolved)
         if dedup_key in seen:
             continue
         seen.add(dedup_key)
-        result.append((plat, canonical_chart_name(r.chart_name), key, int(r.sort_order or 0)))
+        result.append((plat, chart_nm, resolved, int(r.sort_order or 0)))
     return result
+
 
 def _apply_chart_name_renames(
     db: Session,
@@ -7654,8 +7656,20 @@ async def auto_update_charts(
             cancel_check=(lambda: bool(operation_key) and _update_cancel_events.get(operation_key, asyncio.Event()).is_set()),
         )
         updater_registry = _build_updater_registry(scraper)
-        configured_keys = _configured_updater_keys(db)
-        run_items = configured_keys or [("", "", key, idx) for idx, key in enumerate(updater_registry.keys())]
+        run_items = _charts_for_bulk_auto_update(db)
+        if not run_items:
+            if operation_key:
+                _update_operation_status[operation_key] = {
+                    "state": "success",
+                    "message": "没有设置为「跟随全部更新」且可解析 updater 的榜单，未执行任何更新",
+                }
+            update_time = datetime.now(_TZ_SHANGHAI)
+            return {
+                "status": "success",
+                "message": "没有设置为「跟随全部更新」且可解析 updater 的榜单，未执行任何更新",
+                "results": {},
+                "timestamp": update_time.isoformat(),
+            }
         results = {}
         for platform_name, chart_name, updater_key, _ in run_items:
             spec = updater_registry.get(updater_key)
@@ -7687,7 +7701,7 @@ async def auto_update_charts(
         
         return {
             "status": "success",
-            "message": "所有榜单数据已成功更新",
+            "message": "已更新所有设置为「跟随全部更新」的榜单",
             "results": results,
             "timestamp": update_time.isoformat()
         }
@@ -7708,7 +7722,10 @@ async def auto_update_charts(
         if operation_key:
             _update_cancel_events.pop(operation_key, None)
             if operation_key in _update_operation_status and _update_operation_status[operation_key].get("state") == "running":
-                _update_operation_status[operation_key] = {"state": "success", "message": "全量更新成功"}
+                _update_operation_status[operation_key] = {
+                    "state": "success",
+                    "message": "跟随全部更新的榜单批量更新已完成",
+                }
 
 @app.post("/api/charts/auto-update/{platform}")
 async def auto_update_platform_charts(
@@ -7733,9 +7750,15 @@ async def auto_update_platform_charts(
             cancel_check=(lambda: bool(operation_key) and _update_cancel_events.get(operation_key, asyncio.Event()).is_set()),
         )
         updater_registry = _build_updater_registry(scraper)
-        configured_keys = _configured_updater_keys(db, platform=platform)
+        configured_keys = _charts_for_bulk_auto_update(db, platform=platform)
         if not configured_keys:
-            raise HTTPException(status_code=400, detail=f"{platform} 平台未配置可执行的 updater_key")
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{platform} 平台下没有设置为「跟随全部更新」且可解析 updater 的榜单；"
+                    "单独更新的榜单请使用各榜旁的更新按钮"
+                ),
+            )
         
         results = {}
         for i, (platform_name, chart_name, updater_key, _) in enumerate(configured_keys):
@@ -7750,7 +7773,7 @@ async def auto_update_platform_charts(
         
         return {
             "status": "success",
-            "message": f"{platform} 平台榜单数据已成功更新",
+            "message": f"{platform} 平台下「跟随全部更新」的榜单已更新",
             "platform": platform,
             "results": results,
             "timestamp": _iso_now_shanghai()
@@ -7772,7 +7795,10 @@ async def auto_update_platform_charts(
         if operation_key:
             _update_cancel_events.pop(operation_key, None)
             if operation_key in _update_operation_status and _update_operation_status[operation_key].get("state") == "running":
-                _update_operation_status[operation_key] = {"state": "success", "message": f"{platform} 平台更新成功"}
+                _update_operation_status[operation_key] = {
+                    "state": "success",
+                    "message": f"{platform} 平台跟榜批量更新已完成",
+                }
 
 @app.post("/api/charts/update-chart")
 async def update_single_chart(
