@@ -7204,6 +7204,8 @@ async def save_chart_configs(
 ):
     require_admin(current_user)
     try:
+        if not payload.items:
+            raise HTTPException(status_code=400, detail="items 不能为空（避免覆盖清空榜单配置）")
         existing_config_rows = (
             db.query(ChartConfig.platform, ChartConfig.chart_name, ChartConfig.updater_key)
             .order_by(ChartConfig.platform.asc(), ChartConfig.sort_order.asc(), ChartConfig.id.asc())
