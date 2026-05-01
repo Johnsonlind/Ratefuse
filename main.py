@@ -167,6 +167,7 @@ from sqlalchemy import desc
 REDIS_URL = _effective_redis_url()
 CACHE_EXPIRE_TIME = 24 * 60 * 60
 CHARTS_CACHE_EXPIRE = 2 * 60
+CHARTS_PUBLIC_CACHE_KEY = "charts:public:v2"
 redis = None
 
 _local_cache = {}
@@ -491,6 +492,10 @@ async def delete_cache(*keys: str):
     async with _local_cache_lock:
         for key in valid_keys:
             _local_cache.pop(key, None)
+
+async def invalidate_charts_list_caches() -> None:
+    """榜单列表/聚合相关缓存"""
+    await delete_cache("charts:aggregate", "charts:public", CHARTS_PUBLIC_CACHE_KEY)
 
 def _platform_absent_cache_key(platform: str, media_type: str, tmdb_id: int) -> str:
     p = (platform or "").strip().lower()
@@ -6787,7 +6792,7 @@ async def add_chart_entry(
             keep.created_by = current_user.id
             db.commit()
             db.refresh(keep)
-            await delete_cache("charts:aggregate", "charts:public")
+            await invalidate_charts_list_caches()
             return {"id": keep.id, "updated": True}
 
         entry = ChartEntry(
@@ -6804,7 +6809,7 @@ async def add_chart_entry(
         db.add(entry)
         db.commit()
         db.refresh(entry)
-        await delete_cache("charts:aggregate", "charts:public")
+        await invalidate_charts_list_caches()
     except HTTPException:
         db.rollback()
         raise
@@ -6861,7 +6866,7 @@ async def add_chart_entries_bulk(
         for e in valid:
             db.refresh(e)
         created = [e.id for e in valid]
-        await delete_cache("charts:aggregate", "charts:public")
+        await invalidate_charts_list_caches()
         return {"created": created}
     except Exception as e:
         db.rollback()
@@ -7252,7 +7257,7 @@ async def save_chart_configs(
         _apply_chart_name_renames(db, ChartEntry, rename_pairs)
         _apply_chart_name_renames(db, PublicChartEntry, rename_pairs)
         db.commit()
-        await delete_cache("charts:aggregate", "charts:public")
+        await invalidate_charts_list_caches()
         return {"ok": True, "count": len(dedup_items)}
     except Exception as e:
         db.rollback()
@@ -7430,6 +7435,17 @@ def _detail_rows_merged(
         )
     return _latest_per_rank_chart_entries(rows_private)
 
+def _chart_entries_merged_for_config(db: Session, cfg: ChartConfig) -> list[ChartEntry]:
+    """与后台录入一致"""
+    plat = canonical_platform_name(cfg.platform)
+    chart = canonical_chart_name(cfg.chart_name)
+    cfg_media = cfg.media_type if cfg.media_type in ("movie", "tv", "both") else "movie"
+    if cfg_media == "both":
+        m = _chart_entries_deduped_for_list(db, plat, chart, "movie", limit=500)
+        t = _chart_entries_deduped_for_list(db, plat, chart, "tv", limit=500)
+        return _merge_both_media_by_rank(m, t)
+    return _chart_entries_deduped_for_list(db, plat, chart, cfg_media, limit=500)
+
 @app.get("/api/charts/entries")
 async def list_chart_entries(
     platform: str,
@@ -7473,7 +7489,7 @@ async def set_entry_lock(
     for entry in entries:
         entry.locked = locked
     db.commit()
-    await delete_cache("charts:aggregate", "charts:public")
+    await invalidate_charts_list_caches()
     return {"rank": rank, "locked": locked}
     
 @app.delete("/api/charts/entries")
@@ -7498,7 +7514,7 @@ async def delete_chart_entry(
     for entry in entries:
         db.delete(entry)
     db.commit()
-    await delete_cache("charts:aggregate", "charts:public")
+    await invalidate_charts_list_caches()
     return {"deleted": True, "rank": rank}
 
 @app.get("/api/charts/aggregate")
@@ -7593,7 +7609,7 @@ async def sync_charts(
                 synced_count += 1
         
         db.commit()
-        await delete_cache("charts:aggregate", "charts:public")
+        await invalidate_charts_list_caches()
         return {
             "status": "success",
             "message": f"榜单数据已同步，共 {synced_count} 条记录",
@@ -7607,38 +7623,29 @@ async def sync_charts(
 
 @app.get("/api/charts/public")
 async def get_public_charts(db: Session = Depends(get_db)):
-    cache_key = "charts:public"
+    cache_key = CHARTS_PUBLIC_CACHE_KEY
     cached = await get_cache(cache_key)
     if cached is not None:
         return cached
     try:
-        config_rows = db.query(ChartConfig).all()
-        config_map = {
-            (canonical_platform_name(c.platform), canonical_chart_name(c.chart_name)): c for c in config_rows
-        }
-        all_entries = db.query(PublicChartEntry).order_by(
-            PublicChartEntry.platform.asc(),
-            PublicChartEntry.chart_name.asc(),
-            PublicChartEntry.media_type.asc(),
-            PublicChartEntry.rank.asc(),
-        ).all()
-
-        grouped = {}
-        for e in all_entries:
-            platform_name = canonical_platform_name(e.platform)
-            chart_name = canonical_chart_name(e.chart_name)
-            key = (platform_name, chart_name, e.media_type)
-            grouped.setdefault(key, []).append(e)
-
+        config_rows = (
+            db.query(ChartConfig)
+            .order_by(
+                ChartConfig.platform.asc(),
+                ChartConfig.sort_order.asc(),
+                ChartConfig.id.asc(),
+            )
+            .all()
+        )
         result = []
-        for key, entries in grouped.items():
-            if not entries:
-                continue
-
+        for cfg in config_rows:
+            plat = canonical_platform_name(cfg.platform)
+            chart = canonical_chart_name(cfg.chart_name)
+            cfg_media = cfg.media_type if cfg.media_type in ("movie", "tv", "both") else "movie"
+            merged = _chart_entries_merged_for_config(db, cfg)
             chart_entries = []
-            for e in entries:
+            for e in merged:
                 poster = normalize_chart_entry_poster(e.poster or "")
-
                 chart_entries.append(
                     {
                         "tmdb_id": e.tmdb_id,
@@ -7648,25 +7655,22 @@ async def get_public_charts(db: Session = Depends(get_db)):
                         "media_type": e.media_type,
                     }
                 )
-
-            platform, chart_name, media_type = key
-            cfg = config_map.get((platform, chart_name))
             result.append(
                 {
-                    "platform": platform,
-                    "chart_name": chart_name,
-                    "media_type": media_type,
+                    "platform": plat,
+                    "chart_name": chart,
+                    "media_type": cfg_media,
                     "entries": chart_entries,
-                    "visible": True if cfg is None else bool(cfg.visible),
-                    "sort_order": 9999 if cfg is None else int(cfg.sort_order),
-                    "layout": "card" if cfg is None else (cfg.layout or "card"),
-                    "table_rows": 10 if cfg is None else int(cfg.table_rows or 10),
-                    "card_count": 10 if cfg is None else int(cfg.card_count or 10),
-                    "exportable": True if cfg is None else bool(cfg.exportable),
-                    "rank_label_mode": "number" if cfg is None else (cfg.rank_label_mode or "number"),
+                    "visible": bool(cfg.visible),
+                    "sort_order": int(cfg.sort_order or 0),
+                    "layout": cfg.layout or "card",
+                    "table_rows": max(1, int(cfg.table_rows or 10)),
+                    "card_count": max(1, int(cfg.card_count or 10)),
+                    "exportable": bool(cfg.exportable),
+                    "rank_label_mode": cfg.rank_label_mode or "number",
                 }
             )
-        
+
         await set_cache(cache_key, result, expire=CHARTS_CACHE_EXPIRE)
         return result
     except Exception as e:
