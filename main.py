@@ -167,7 +167,7 @@ from sqlalchemy import desc
 REDIS_URL = _effective_redis_url()
 CACHE_EXPIRE_TIME = 24 * 60 * 60
 CHARTS_CACHE_EXPIRE = 2 * 60
-CHARTS_PUBLIC_CACHE_KEY = "charts:public:v2"
+CHARTS_PUBLIC_CACHE_KEY = "charts:public"
 redis = None
 
 _local_cache = {}
@@ -495,7 +495,15 @@ async def delete_cache(*keys: str):
 
 async def invalidate_charts_list_caches() -> None:
     """榜单列表/聚合相关缓存"""
-    await delete_cache("charts:aggregate", "charts:public", CHARTS_PUBLIC_CACHE_KEY)
+    await delete_cache("charts:aggregate")
+
+async def invalidate_charts_aggregate_cache() -> None:
+    """聚合榜单缓存"""
+    await delete_cache("charts:aggregate")
+
+async def invalidate_charts_public_cache() -> None:
+    """公开榜单列表缓存"""
+    await delete_cache(CHARTS_PUBLIC_CACHE_KEY)
 
 def _platform_absent_cache_key(platform: str, media_type: str, tmdb_id: int) -> str:
     p = (platform or "").strip().lower()
@@ -6792,7 +6800,7 @@ async def add_chart_entry(
             keep.created_by = current_user.id
             db.commit()
             db.refresh(keep)
-            await invalidate_charts_list_caches()
+            await invalidate_charts_aggregate_cache()
             return {"id": keep.id, "updated": True}
 
         entry = ChartEntry(
@@ -6809,7 +6817,7 @@ async def add_chart_entry(
         db.add(entry)
         db.commit()
         db.refresh(entry)
-        await invalidate_charts_list_caches()
+        await invalidate_charts_aggregate_cache()
     except HTTPException:
         db.rollback()
         raise
@@ -6866,7 +6874,7 @@ async def add_chart_entries_bulk(
         for e in valid:
             db.refresh(e)
         created = [e.id for e in valid]
-        await invalidate_charts_list_caches()
+        await invalidate_charts_aggregate_cache()
         return {"created": created}
     except Exception as e:
         db.rollback()
@@ -7197,23 +7205,19 @@ async def save_chart_configs(
     require_admin(current_user)
     try:
         existing_config_rows = (
-            db.query(ChartConfig.platform, ChartConfig.sort_order, ChartConfig.chart_name, ChartConfig.updater_key)
-            .order_by(ChartConfig.platform.asc(), ChartConfig.sort_order.asc())
+            db.query(ChartConfig.platform, ChartConfig.chart_name, ChartConfig.updater_key)
+            .order_by(ChartConfig.platform.asc(), ChartConfig.sort_order.asc(), ChartConfig.id.asc())
             .all()
         )
-        existing_name_by_slot: dict[tuple[str, int], str] = {
-            (canonical_platform_name(r.platform), int(r.sort_order or 0)): canonical_chart_name(r.chart_name)
-            for r in existing_config_rows
-        }
-        existing_updater_by_slot: dict[tuple[str, int], Optional[str]] = {
-            (canonical_platform_name(r.platform), int(r.sort_order or 0)): (str(r.updater_key).strip() if r.updater_key else None)
+        existing_updater_by_name: dict[tuple[str, str], Optional[str]] = {
+            (canonical_platform_name(r.platform), canonical_chart_name(r.chart_name)): (
+                str(r.updater_key).strip() if r.updater_key else None
+            )
             for r in existing_config_rows
         }
         db.query(ChartConfig).delete()
         db.flush()
         dedup_items: dict[tuple[str, str], ChartConfigItemPayload] = {}
-        dedup_sort_order: dict[str, int] = {}
-        rename_pairs: list[tuple[str, str, str]] = []
         for item in payload.items:
             platform = canonical_platform_name(item.platform)
             chart_name = canonical_chart_name(item.chart_name)
@@ -7225,14 +7229,29 @@ async def save_chart_configs(
                 continue
             dedup_items[key] = item
 
+        items_by_platform: dict[str, list[ChartConfigItemPayload]] = {}
         for item in dedup_items.values():
             platform = canonical_platform_name(item.platform)
-            chart_name = canonical_chart_name(item.chart_name)
-            order = dedup_sort_order.get(platform, 0)
-            dedup_sort_order[platform] = order + 1
-            old_chart_name = existing_name_by_slot.get((platform, order))
-            if old_chart_name and old_chart_name != chart_name:
-                rename_pairs.append((platform, old_chart_name, chart_name))
+            items_by_platform.setdefault(platform, []).append(item)
+
+        for platform, items in items_by_platform.items():
+            items_sorted = sorted(
+                items,
+                key=lambda it: (int(getattr(it, "sort_order", 0) or 0), canonical_chart_name(it.chart_name)),
+            )
+            used: set[int] = set()
+            next_slot = 0
+            for item in items_sorted:
+                chart_name = canonical_chart_name(item.chart_name)
+                desired = int(item.sort_order or 0)
+                if desired < 0:
+                    desired = 0
+                order = desired
+                if order in used:
+                    while next_slot in used:
+                        next_slot += 1
+                    order = next_slot
+                used.add(order)
             db.add(
                 ChartConfig(
                     platform=platform,
@@ -7248,16 +7267,14 @@ async def save_chart_configs(
                     updater_key=(
                         str(item.updater_key).strip()
                         if item.updater_key
-                        else existing_updater_by_slot.get((platform, order))
+                        else existing_updater_by_name.get((platform, chart_name))
                     ),
                     exportable=bool(item.exportable),
                     rank_label_mode=item.rank_label_mode if item.rank_label_mode in ("number", "month") else "number",
                 )
             )
-        _apply_chart_name_renames(db, ChartEntry, rename_pairs)
-        _apply_chart_name_renames(db, PublicChartEntry, rename_pairs)
         db.commit()
-        await invalidate_charts_list_caches()
+        await delete_cache("charts:aggregate", CHARTS_PUBLIC_CACHE_KEY)
         return {"ok": True, "count": len(dedup_items)}
     except Exception as e:
         db.rollback()
@@ -7489,7 +7506,7 @@ async def set_entry_lock(
     for entry in entries:
         entry.locked = locked
     db.commit()
-    await invalidate_charts_list_caches()
+    await invalidate_charts_aggregate_cache()
     return {"rank": rank, "locked": locked}
     
 @app.delete("/api/charts/entries")
@@ -7514,7 +7531,7 @@ async def delete_chart_entry(
     for entry in entries:
         db.delete(entry)
     db.commit()
-    await invalidate_charts_list_caches()
+    await invalidate_charts_aggregate_cache()
     return {"deleted": True, "rank": rank}
 
 @app.get("/api/charts/aggregate")
@@ -7609,7 +7626,7 @@ async def sync_charts(
                 synced_count += 1
         
         db.commit()
-        await invalidate_charts_list_caches()
+        await invalidate_charts_public_cache()
         return {
             "status": "success",
             "message": f"榜单数据已同步，共 {synced_count} 条记录",
@@ -7628,23 +7645,40 @@ async def get_public_charts(db: Session = Depends(get_db)):
     if cached is not None:
         return cached
     try:
-        config_rows = (
-            db.query(ChartConfig)
+        config_rows = db.query(ChartConfig).all()
+        config_map = {
+            (canonical_platform_name(c.platform), canonical_chart_name(c.chart_name)): c
+            for c in config_rows
+        }
+        all_entries = (
+            db.query(PublicChartEntry)
             .order_by(
-                ChartConfig.platform.asc(),
-                ChartConfig.sort_order.asc(),
-                ChartConfig.id.asc(),
+                PublicChartEntry.platform.asc(),
+                PublicChartEntry.chart_name.asc(),
+                PublicChartEntry.media_type.asc(),
+                PublicChartEntry.rank.asc(),
+                PublicChartEntry.id.asc(),
             )
             .all()
         )
+
+        grouped: dict[tuple[str, str, str], list[PublicChartEntry]] = {}
+        for e in all_entries:
+            platform_name = canonical_platform_name(e.platform)
+            chart_name = canonical_chart_name(e.chart_name)
+            key = (platform_name, chart_name, str(e.media_type or "movie"))
+            grouped.setdefault(key, []).append(e)
+
         result = []
-        for cfg in config_rows:
-            plat = canonical_platform_name(cfg.platform)
-            chart = canonical_chart_name(cfg.chart_name)
-            cfg_media = cfg.media_type if cfg.media_type in ("movie", "tv", "both") else "movie"
-            merged = _chart_entries_merged_for_config(db, cfg)
+        for key, entries in grouped.items():
+            if not entries:
+                continue
+            platform, chart_name, media_type = key
+            cfg = config_map.get((platform, chart_name))
+
+            deduped = _latest_per_rank_public_entries(entries)
             chart_entries = []
-            for e in merged:
+            for e in deduped:
                 poster = normalize_chart_entry_poster(e.poster or "")
                 chart_entries.append(
                     {
@@ -7655,19 +7689,20 @@ async def get_public_charts(db: Session = Depends(get_db)):
                         "media_type": e.media_type,
                     }
                 )
+
             result.append(
                 {
-                    "platform": plat,
-                    "chart_name": chart,
-                    "media_type": cfg_media,
+                    "platform": platform,
+                    "chart_name": chart_name,
+                    "media_type": media_type,
                     "entries": chart_entries,
-                    "visible": bool(cfg.visible),
-                    "sort_order": int(cfg.sort_order or 0),
-                    "layout": cfg.layout or "card",
-                    "table_rows": max(1, int(cfg.table_rows or 10)),
-                    "card_count": max(1, int(cfg.card_count or 10)),
-                    "exportable": bool(cfg.exportable),
-                    "rank_label_mode": cfg.rank_label_mode or "number",
+                    "visible": True if cfg is None else bool(cfg.visible),
+                    "sort_order": 9999 if cfg is None else int(cfg.sort_order),
+                    "layout": "card" if cfg is None else (cfg.layout or "card"),
+                    "table_rows": 10 if cfg is None else int(cfg.table_rows or 10),
+                    "card_count": 10 if cfg is None else int(cfg.card_count or 10),
+                    "exportable": True if cfg is None else bool(cfg.exportable),
+                    "rank_label_mode": "number" if cfg is None else (cfg.rank_label_mode or "number"),
                 }
             )
 
