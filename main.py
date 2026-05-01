@@ -167,7 +167,6 @@ from sqlalchemy import desc
 REDIS_URL = _effective_redis_url()
 CACHE_EXPIRE_TIME = 24 * 60 * 60
 CHARTS_CACHE_EXPIRE = 2 * 60
-CHARTS_PUBLIC_CACHE_KEY = "charts:public"
 redis = None
 
 _local_cache = {}
@@ -492,18 +491,6 @@ async def delete_cache(*keys: str):
     async with _local_cache_lock:
         for key in valid_keys:
             _local_cache.pop(key, None)
-
-async def invalidate_charts_list_caches() -> None:
-    """榜单列表/聚合相关缓存"""
-    await delete_cache("charts:aggregate")
-
-async def invalidate_charts_aggregate_cache() -> None:
-    """聚合榜单缓存"""
-    await delete_cache("charts:aggregate")
-
-async def invalidate_charts_public_cache() -> None:
-    """公开榜单列表缓存"""
-    await delete_cache(CHARTS_PUBLIC_CACHE_KEY)
 
 def _platform_absent_cache_key(platform: str, media_type: str, tmdb_id: int) -> str:
     p = (platform or "").strip().lower()
@@ -6776,32 +6763,23 @@ async def add_chart_entry(
     original_language = enrich["original_language"]
 
     try:
-        existing_list = (
-            db.query(ChartEntry)
-            .filter(
-                ChartEntry.platform == platform,
-                ChartEntry.chart_name == chart_name,
-                ChartEntry.media_type == media_type,
-                ChartEntry.rank == rank,
-            )
-            .order_by(ChartEntry.id.desc())
-            .all()
-        )
-        if existing_list:
-            if any(e.locked for e in existing_list):
+        existing = db.query(ChartEntry).filter(
+            ChartEntry.platform == platform,
+            ChartEntry.chart_name == chart_name,
+            ChartEntry.media_type == media_type,
+            ChartEntry.rank == rank,
+        ).first()
+        if existing:
+            if existing.locked:
                 raise HTTPException(status_code=423, detail="该排名已锁定，无法修改")
-            keep = existing_list[0]
-            for e in existing_list[1:]:
-                db.delete(e)
-            keep.tmdb_id = tmdb_id
-            keep.title = title
-            keep.poster = poster
-            keep.original_language = original_language
-            keep.created_by = current_user.id
+            existing.tmdb_id = tmdb_id
+            existing.title = title
+            existing.poster = poster
+            existing.original_language = original_language
+            existing.created_by = current_user.id
             db.commit()
-            db.refresh(keep)
-            await invalidate_charts_aggregate_cache()
-            return {"id": keep.id, "updated": True}
+            db.refresh(existing)
+            return {"id": existing.id, "updated": True}
 
         entry = ChartEntry(
             platform=platform,
@@ -6817,10 +6795,6 @@ async def add_chart_entry(
         db.add(entry)
         db.commit()
         db.refresh(entry)
-        await invalidate_charts_aggregate_cache()
-    except HTTPException:
-        db.rollback()
-        raise
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=400, detail=f"保存失败或重复: {str(e)}")
@@ -6874,7 +6848,7 @@ async def add_chart_entries_bulk(
         for e in valid:
             db.refresh(e)
         created = [e.id for e in valid]
-        await invalidate_charts_aggregate_cache()
+        await delete_cache("charts:aggregate", "charts:public")
         return {"created": created}
     except Exception as e:
         db.rollback()
@@ -6958,11 +6932,6 @@ def _infer_updater_key(platform: str, chart_name: str) -> Optional[str]:
             return "tmdb_top250_tv"
         if "电影" in chart_norm or "movie" in chart_norm:
             return "tmdb_top250_movies"
-    if platform_norm == "trakt":
-        if "剧集" in chart_norm or "show" in chart_norm or " series" in chart_norm:
-            return "trakt_shows_weekly"
-        if "电影" in chart_norm or "movie" in chart_norm:
-            return "trakt_movies_weekly"
     return None
 
 def _build_updater_registry(scraper: Any) -> dict[str, dict[str, Any]]:
@@ -6989,13 +6958,16 @@ def _build_updater_registry(scraper: Any) -> dict[str, dict[str, Any]]:
         "trakt_shows_weekly": {"fn": scraper.update_trakt_shows_weekly, "media_type": "tv"},
     }
 
-
-def _charts_for_bulk_auto_update(
+def _configured_updater_keys(
     db: Session,
     platform: Optional[str] = None,
 ) -> list[tuple[str, str, str, int]]:
-    """全量/平台「批量更新」"""
-    q = db.query(ChartConfig).filter(ChartConfig.update_mode == "all")
+    q = db.query(
+        ChartConfig.platform,
+        ChartConfig.chart_name,
+        ChartConfig.updater_key,
+        ChartConfig.sort_order,
+    ).filter(ChartConfig.updater_key.isnot(None))
     if platform:
         q = q.filter(ChartConfig.platform == platform)
     rows = q.order_by(
@@ -7006,21 +6978,16 @@ def _charts_for_bulk_auto_update(
     result: list[tuple[str, str, str, int]] = []
     seen: set[tuple[str, str]] = set()
     for r in rows:
+        key = str(r.updater_key or "").strip()
         plat = canonical_platform_name(r.platform)
-        chart_nm = canonical_chart_name(r.chart_name)
-        if not plat:
+        if not key or not plat:
             continue
-        raw = str(r.updater_key or "").strip()
-        resolved = raw or (_infer_updater_key(r.platform, r.chart_name) or "")
-        if not resolved:
-            continue
-        dedup_key = (plat, resolved)
+        dedup_key = (plat, key)
         if dedup_key in seen:
             continue
         seen.add(dedup_key)
-        result.append((plat, chart_nm, resolved, int(r.sort_order or 0)))
+        result.append((plat, canonical_chart_name(r.chart_name), key, int(r.sort_order or 0)))
     return result
-
 
 def _apply_chart_name_renames(
     db: Session,
@@ -7204,22 +7171,24 @@ async def save_chart_configs(
 ):
     require_admin(current_user)
     try:
-        if not payload.items:
-            raise HTTPException(status_code=400, detail="items 不能为空（避免覆盖清空榜单配置）")
         existing_config_rows = (
-            db.query(ChartConfig.platform, ChartConfig.chart_name, ChartConfig.updater_key)
-            .order_by(ChartConfig.platform.asc(), ChartConfig.sort_order.asc(), ChartConfig.id.asc())
+            db.query(ChartConfig.platform, ChartConfig.sort_order, ChartConfig.chart_name, ChartConfig.updater_key)
+            .order_by(ChartConfig.platform.asc(), ChartConfig.sort_order.asc())
             .all()
         )
-        existing_updater_by_name: dict[tuple[str, str], Optional[str]] = {
-            (canonical_platform_name(r.platform), canonical_chart_name(r.chart_name)): (
-                str(r.updater_key).strip() if r.updater_key else None
-            )
+        existing_name_by_slot: dict[tuple[str, int], str] = {
+            (canonical_platform_name(r.platform), int(r.sort_order or 0)): canonical_chart_name(r.chart_name)
+            for r in existing_config_rows
+        }
+        existing_updater_by_slot: dict[tuple[str, int], Optional[str]] = {
+            (canonical_platform_name(r.platform), int(r.sort_order or 0)): (str(r.updater_key).strip() if r.updater_key else None)
             for r in existing_config_rows
         }
         db.query(ChartConfig).delete()
         db.flush()
         dedup_items: dict[tuple[str, str], ChartConfigItemPayload] = {}
+        dedup_sort_order: dict[str, int] = {}
+        rename_pairs: list[tuple[str, str, str]] = []
         for item in payload.items:
             platform = canonical_platform_name(item.platform)
             chart_name = canonical_chart_name(item.chart_name)
@@ -7231,29 +7200,14 @@ async def save_chart_configs(
                 continue
             dedup_items[key] = item
 
-        items_by_platform: dict[str, list[ChartConfigItemPayload]] = {}
         for item in dedup_items.values():
             platform = canonical_platform_name(item.platform)
-            items_by_platform.setdefault(platform, []).append(item)
-
-        for platform, items in items_by_platform.items():
-            items_sorted = sorted(
-                items,
-                key=lambda it: (int(getattr(it, "sort_order", 0) or 0), canonical_chart_name(it.chart_name)),
-            )
-            used: set[int] = set()
-            next_slot = 0
-            for item in items_sorted:
-                chart_name = canonical_chart_name(item.chart_name)
-                desired = int(item.sort_order or 0)
-                if desired < 0:
-                    desired = 0
-                order = desired
-                if order in used:
-                    while next_slot in used:
-                        next_slot += 1
-                    order = next_slot
-                used.add(order)
+            chart_name = canonical_chart_name(item.chart_name)
+            order = dedup_sort_order.get(platform, 0)
+            dedup_sort_order[platform] = order + 1
+            old_chart_name = existing_name_by_slot.get((platform, order))
+            if old_chart_name and old_chart_name != chart_name:
+                rename_pairs.append((platform, old_chart_name, chart_name))
             db.add(
                 ChartConfig(
                     platform=platform,
@@ -7269,14 +7223,16 @@ async def save_chart_configs(
                     updater_key=(
                         str(item.updater_key).strip()
                         if item.updater_key
-                        else existing_updater_by_name.get((platform, chart_name))
+                        else existing_updater_by_slot.get((platform, order))
                     ),
                     exportable=bool(item.exportable),
                     rank_label_mode=item.rank_label_mode if item.rank_label_mode in ("number", "month") else "number",
                 )
             )
+        _apply_chart_name_renames(db, ChartEntry, rename_pairs)
+        _apply_chart_name_renames(db, PublicChartEntry, rename_pairs)
         db.commit()
-        await delete_cache("charts:aggregate", CHARTS_PUBLIC_CACHE_KEY)
+        await delete_cache("charts:aggregate", "charts:public")
         return {"ok": True, "count": len(dedup_items)}
     except Exception as e:
         db.rollback()
@@ -7366,105 +7322,6 @@ def latest_chart_top_by_rank(
         })
     return result
 
-def _latest_per_rank_chart_entries(entries: list[ChartEntry]) -> list[ChartEntry]:
-    by_rank: dict[int, ChartEntry] = {}
-    for e in entries:
-        r = int(e.rank)
-        if r not in by_rank or int(e.id) > int(by_rank[r].id):
-            by_rank[r] = e
-    return [by_rank[r] for r in sorted(by_rank.keys())]
-
-def _latest_per_rank_public_entries(entries: list[PublicChartEntry]) -> list[PublicChartEntry]:
-    by_rank: dict[int, PublicChartEntry] = {}
-    for e in entries:
-        r = int(e.rank)
-        if r not in by_rank or int(e.id) > int(by_rank[r].id):
-            by_rank[r] = e
-    return [by_rank[r] for r in sorted(by_rank.keys())]
-
-def _merge_both_media_by_rank(
-    movies: list[ChartEntry] | list[PublicChartEntry],
-    tvs: list[ChartEntry] | list[PublicChartEntry],
-) -> list[Any]:
-    m_by = {int(e.rank): e for e in movies}
-    t_by = {int(e.rank): e for e in tvs}
-    ranks = sorted(set(m_by.keys()) | set(t_by.keys()))
-    out: list[Any] = []
-    for r in ranks:
-        me, te = m_by.get(r), t_by.get(r)
-        if me and te:
-            out.append(me if int(me.id) >= int(te.id) else te)
-        else:
-            out.append(me or te)
-    return out
-
-def _chart_entries_deduped_for_list(
-    db: Session,
-    platform: str,
-    chart_name: str,
-    media_type: str,
-    limit: int = 500,
-) -> list[ChartEntry]:
-    sub = db.query(
-        ChartEntry.rank,
-        func.max(ChartEntry.id).label("max_id"),
-    ).filter(
-        ChartEntry.platform == platform,
-        ChartEntry.chart_name == chart_name,
-        ChartEntry.media_type == media_type,
-    ).group_by(ChartEntry.rank).subquery()
-    return (
-        db.query(ChartEntry)
-        .join(sub, ChartEntry.id == sub.c.max_id)
-        .order_by(ChartEntry.rank.asc())
-        .limit(limit)
-        .all()
-    )
-
-def _detail_rows_merged(
-    rows_public: list[PublicChartEntry] | None,
-    rows_private: list[ChartEntry] | None,
-    cfg_media: str,
-) -> list[Any]:
-    if rows_public is not None:
-        if cfg_media == "both":
-            pm = [r for r in rows_public if r.media_type == "movie"]
-            pt = [r for r in rows_public if r.media_type == "tv"]
-            return _merge_both_media_by_rank(
-                _latest_per_rank_public_entries(pm),
-                _latest_per_rank_public_entries(pt),
-            )
-        if cfg_media in ("movie", "tv"):
-            return _latest_per_rank_public_entries(
-                [r for r in rows_public if r.media_type == cfg_media]
-            )
-        return _latest_per_rank_public_entries(rows_public)
-
-    assert rows_private is not None
-    if cfg_media == "both":
-        pm = [r for r in rows_private if r.media_type == "movie"]
-        pt = [r for r in rows_private if r.media_type == "tv"]
-        return _merge_both_media_by_rank(
-            _latest_per_rank_chart_entries(pm),
-            _latest_per_rank_chart_entries(pt),
-        )
-    if cfg_media in ("movie", "tv"):
-        return _latest_per_rank_chart_entries(
-            [r for r in rows_private if r.media_type == cfg_media]
-        )
-    return _latest_per_rank_chart_entries(rows_private)
-
-def _chart_entries_merged_for_config(db: Session, cfg: ChartConfig) -> list[ChartEntry]:
-    """与后台录入一致"""
-    plat = canonical_platform_name(cfg.platform)
-    chart = canonical_chart_name(cfg.chart_name)
-    cfg_media = cfg.media_type if cfg.media_type in ("movie", "tv", "both") else "movie"
-    if cfg_media == "both":
-        m = _chart_entries_deduped_for_list(db, plat, chart, "movie", limit=500)
-        t = _chart_entries_deduped_for_list(db, plat, chart, "tv", limit=500)
-        return _merge_both_media_by_rank(m, t)
-    return _chart_entries_deduped_for_list(db, plat, chart, cfg_media, limit=500)
-
 @app.get("/api/charts/entries")
 async def list_chart_entries(
     platform: str,
@@ -7474,7 +7331,17 @@ async def list_chart_entries(
 ):
     if media_type not in ("movie", "tv"):
         raise HTTPException(status_code=400, detail="media_type 必须为 movie 或 tv")
-    items = _chart_entries_deduped_for_list(db, platform, chart_name, media_type, limit=500)
+    items = (
+        db.query(ChartEntry)
+        .filter(
+            ChartEntry.platform == platform,
+            ChartEntry.chart_name == chart_name,
+            ChartEntry.media_type == media_type,
+        )
+        .order_by(ChartEntry.rank.asc())
+        .limit(500)
+        .all()
+    )
     return [
         {
             "id": e.id,
@@ -7497,18 +7364,16 @@ async def set_entry_lock(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    entries = db.query(ChartEntry).filter(
+    entry = db.query(ChartEntry).filter(
         ChartEntry.platform == platform,
         ChartEntry.chart_name == chart_name,
         ChartEntry.media_type == media_type,
         ChartEntry.rank == rank,
-    ).all()
-    if not entries:
+    ).first()
+    if not entry:
         raise HTTPException(status_code=404, detail="条目不存在")
-    for entry in entries:
-        entry.locked = locked
+    entry.locked = locked
     db.commit()
-    await invalidate_charts_aggregate_cache()
     return {"rank": rank, "locked": locked}
     
 @app.delete("/api/charts/entries")
@@ -7520,20 +7385,18 @@ async def delete_chart_entry(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    entries = db.query(ChartEntry).filter(
+    entry = db.query(ChartEntry).filter(
         ChartEntry.platform == platform,
         ChartEntry.chart_name == chart_name,
         ChartEntry.media_type == media_type,
         ChartEntry.rank == rank,
-    ).all()
-    if not entries:
+    ).first()
+    if not entry:
         raise HTTPException(status_code=404, detail="条目不存在")
-    if any(e.locked for e in entries):
+    if entry.locked:
         raise HTTPException(status_code=423, detail="该排名已锁定，无法删除")
-    for entry in entries:
-        db.delete(entry)
+    db.delete(entry)
     db.commit()
-    await invalidate_charts_aggregate_cache()
     return {"deleted": True, "rank": rank}
 
 @app.get("/api/charts/aggregate")
@@ -7628,7 +7491,7 @@ async def sync_charts(
                 synced_count += 1
         
         db.commit()
-        await invalidate_charts_public_cache()
+        await delete_cache("charts:aggregate", "charts:public")
         return {
             "status": "success",
             "message": f"榜单数据已同步，共 {synced_count} 条记录",
@@ -7642,46 +7505,38 @@ async def sync_charts(
 
 @app.get("/api/charts/public")
 async def get_public_charts(db: Session = Depends(get_db)):
-    cache_key = CHARTS_PUBLIC_CACHE_KEY
+    cache_key = "charts:public"
     cached = await get_cache(cache_key)
     if cached is not None:
         return cached
     try:
         config_rows = db.query(ChartConfig).all()
         config_map = {
-            (canonical_platform_name(c.platform), canonical_chart_name(c.chart_name)): c
-            for c in config_rows
+            (canonical_platform_name(c.platform), canonical_chart_name(c.chart_name)): c for c in config_rows
         }
-        all_entries = (
-            db.query(PublicChartEntry)
-            .order_by(
-                PublicChartEntry.platform.asc(),
-                PublicChartEntry.chart_name.asc(),
-                PublicChartEntry.media_type.asc(),
-                PublicChartEntry.rank.asc(),
-                PublicChartEntry.id.asc(),
-            )
-            .all()
-        )
+        all_entries = db.query(PublicChartEntry).order_by(
+            PublicChartEntry.platform.asc(),
+            PublicChartEntry.chart_name.asc(),
+            PublicChartEntry.media_type.asc(),
+            PublicChartEntry.rank.asc(),
+        ).all()
 
-        grouped: dict[tuple[str, str, str], list[PublicChartEntry]] = {}
+        grouped = {}
         for e in all_entries:
             platform_name = canonical_platform_name(e.platform)
             chart_name = canonical_chart_name(e.chart_name)
-            key = (platform_name, chart_name, str(e.media_type or "movie"))
+            key = (platform_name, chart_name, e.media_type)
             grouped.setdefault(key, []).append(e)
 
         result = []
         for key, entries in grouped.items():
             if not entries:
                 continue
-            platform, chart_name, media_type = key
-            cfg = config_map.get((platform, chart_name))
 
-            deduped = _latest_per_rank_public_entries(entries)
             chart_entries = []
-            for e in deduped:
+            for e in entries:
                 poster = normalize_chart_entry_poster(e.poster or "")
+
                 chart_entries.append(
                     {
                         "tmdb_id": e.tmdb_id,
@@ -7692,6 +7547,8 @@ async def get_public_charts(db: Session = Depends(get_db)):
                     }
                 )
 
+            platform, chart_name, media_type = key
+            cfg = config_map.get((platform, chart_name))
             result.append(
                 {
                     "platform": platform,
@@ -7707,7 +7564,7 @@ async def get_public_charts(db: Session = Depends(get_db)):
                     "rank_label_mode": "number" if cfg is None else (cfg.rank_label_mode or "number"),
                 }
             )
-
+        
         await set_cache(cache_key, result, expire=CHARTS_CACHE_EXPIRE)
         return result
     except Exception as e:
@@ -7723,51 +7580,31 @@ async def get_chart_detail(
     try:
         backend_platform = canonical_platform_name(platform)
         backend_chart_name = canonical_chart_name(chart_name)
-        cfg = db.query(ChartConfig).filter(
-            ChartConfig.platform == backend_platform,
-            ChartConfig.chart_name == backend_chart_name,
-        ).first()
-        if cfg and cfg.media_type in ("movie", "tv", "both"):
-            cfg_media = cfg.media_type
-        else:
-            probe = db.query(PublicChartEntry.media_type).filter(
-                PublicChartEntry.platform == backend_platform,
-                PublicChartEntry.chart_name == backend_chart_name,
-            ).distinct().all()
-            types = {str(t[0]) for t in probe if t and t[0]}
-            if not types:
-                probe2 = db.query(ChartEntry.media_type).filter(
-                    ChartEntry.platform == backend_platform,
-                    ChartEntry.chart_name == backend_chart_name,
-                ).distinct().all()
-                types = {str(t[0]) for t in probe2 if t and t[0]}
-            if "movie" in types and "tv" in types:
-                cfg_media = "both"
-            elif "tv" in types:
-                cfg_media = "tv"
-            else:
-                cfg_media = "movie"
-
-        public_rows = db.query(PublicChartEntry).filter(
+        
+        entries = db.query(PublicChartEntry).filter(
             PublicChartEntry.platform == backend_platform,
             PublicChartEntry.chart_name == backend_chart_name,
-        ).all()
-
-        if public_rows:
-            merged = _detail_rows_merged(public_rows, None, cfg_media)
-        else:
-            private_rows = db.query(ChartEntry).filter(
+        ).order_by(PublicChartEntry.rank.asc()).all()
+        
+        if not entries:
+            entries = db.query(ChartEntry).filter(
                 ChartEntry.platform == backend_platform,
                 ChartEntry.chart_name == backend_chart_name,
-            ).all()
-            if not private_rows:
-                raise HTTPException(status_code=404, detail="榜单数据不存在")
-            merged = _detail_rows_merged(None, private_rows, cfg_media)
-
+            ).order_by(ChartEntry.rank.asc()).all()
+        
+        if not entries:
+            raise HTTPException(status_code=404, detail="榜单数据不存在")
+        
         chart_entries = []
-        for e in merged:
+        media_type = None
+        
+        for e in entries:
             poster = normalize_chart_entry_poster(e.poster or "")
-            entry_media_type = getattr(e, "media_type", None)
+            
+            entry_media_type = getattr(e, 'media_type', None)
+            if not media_type and entry_media_type:
+                media_type = entry_media_type
+            
             chart_entries.append({
                 "tmdb_id": e.tmdb_id,
                 "rank": e.rank,
@@ -7775,11 +7612,18 @@ async def get_chart_detail(
                 "poster": poster,
                 "media_type": entry_media_type,
             })
-
+        
+        if not media_type:
+            media_type = 'movie'
+        cfg = db.query(ChartConfig).filter(
+            ChartConfig.platform == backend_platform,
+            ChartConfig.chart_name == backend_chart_name,
+        ).first()
+        
         return {
             "platform": platform,
             "chart_name": chart_name,
-            "media_type": cfg_media,
+            "media_type": media_type,
             "entries": chart_entries,
             "rank_label_mode": "number" if cfg is None else (cfg.rank_label_mode or "number"),
         }
@@ -7810,20 +7654,8 @@ async def auto_update_charts(
             cancel_check=(lambda: bool(operation_key) and _update_cancel_events.get(operation_key, asyncio.Event()).is_set()),
         )
         updater_registry = _build_updater_registry(scraper)
-        run_items = _charts_for_bulk_auto_update(db)
-        if not run_items:
-            if operation_key:
-                _update_operation_status[operation_key] = {
-                    "state": "success",
-                    "message": "没有设置为「跟随全部更新」且可解析 updater 的榜单，未执行任何更新",
-                }
-            update_time = datetime.now(_TZ_SHANGHAI)
-            return {
-                "status": "success",
-                "message": "没有设置为「跟随全部更新」且可解析 updater 的榜单，未执行任何更新",
-                "results": {},
-                "timestamp": update_time.isoformat(),
-            }
+        configured_keys = _configured_updater_keys(db)
+        run_items = configured_keys or [("", "", key, idx) for idx, key in enumerate(updater_registry.keys())]
         results = {}
         for platform_name, chart_name, updater_key, _ in run_items:
             spec = updater_registry.get(updater_key)
@@ -7855,7 +7687,7 @@ async def auto_update_charts(
         
         return {
             "status": "success",
-            "message": "已更新所有设置为「跟随全部更新」的榜单",
+            "message": "所有榜单数据已成功更新",
             "results": results,
             "timestamp": update_time.isoformat()
         }
@@ -7876,10 +7708,7 @@ async def auto_update_charts(
         if operation_key:
             _update_cancel_events.pop(operation_key, None)
             if operation_key in _update_operation_status and _update_operation_status[operation_key].get("state") == "running":
-                _update_operation_status[operation_key] = {
-                    "state": "success",
-                    "message": "跟随全部更新的榜单批量更新已完成",
-                }
+                _update_operation_status[operation_key] = {"state": "success", "message": "全量更新成功"}
 
 @app.post("/api/charts/auto-update/{platform}")
 async def auto_update_platform_charts(
@@ -7904,15 +7733,9 @@ async def auto_update_platform_charts(
             cancel_check=(lambda: bool(operation_key) and _update_cancel_events.get(operation_key, asyncio.Event()).is_set()),
         )
         updater_registry = _build_updater_registry(scraper)
-        configured_keys = _charts_for_bulk_auto_update(db, platform=platform)
+        configured_keys = _configured_updater_keys(db, platform=platform)
         if not configured_keys:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"{platform} 平台下没有设置为「跟随全部更新」且可解析 updater 的榜单；"
-                    "单独更新的榜单请使用各榜旁的更新按钮"
-                ),
-            )
+            raise HTTPException(status_code=400, detail=f"{platform} 平台未配置可执行的 updater_key")
         
         results = {}
         for i, (platform_name, chart_name, updater_key, _) in enumerate(configured_keys):
@@ -7927,7 +7750,7 @@ async def auto_update_platform_charts(
         
         return {
             "status": "success",
-            "message": f"{platform} 平台下「跟随全部更新」的榜单已更新",
+            "message": f"{platform} 平台榜单数据已成功更新",
             "platform": platform,
             "results": results,
             "timestamp": _iso_now_shanghai()
@@ -7949,10 +7772,7 @@ async def auto_update_platform_charts(
         if operation_key:
             _update_cancel_events.pop(operation_key, None)
             if operation_key in _update_operation_status and _update_operation_status[operation_key].get("state") == "running":
-                _update_operation_status[operation_key] = {
-                    "state": "success",
-                    "message": f"{platform} 平台跟榜批量更新已完成",
-                }
+                _update_operation_status[operation_key] = {"state": "success", "message": f"{platform} 平台更新成功"}
 
 @app.post("/api/charts/update-chart")
 async def update_single_chart(
