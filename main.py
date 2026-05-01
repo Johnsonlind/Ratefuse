@@ -6763,23 +6763,32 @@ async def add_chart_entry(
     original_language = enrich["original_language"]
 
     try:
-        existing = db.query(ChartEntry).filter(
-            ChartEntry.platform == platform,
-            ChartEntry.chart_name == chart_name,
-            ChartEntry.media_type == media_type,
-            ChartEntry.rank == rank,
-        ).first()
-        if existing:
-            if existing.locked:
+        existing_list = (
+            db.query(ChartEntry)
+            .filter(
+                ChartEntry.platform == platform,
+                ChartEntry.chart_name == chart_name,
+                ChartEntry.media_type == media_type,
+                ChartEntry.rank == rank,
+            )
+            .order_by(ChartEntry.id.desc())
+            .all()
+        )
+        if existing_list:
+            if any(e.locked for e in existing_list):
                 raise HTTPException(status_code=423, detail="该排名已锁定，无法修改")
-            existing.tmdb_id = tmdb_id
-            existing.title = title
-            existing.poster = poster
-            existing.original_language = original_language
-            existing.created_by = current_user.id
+            keep = existing_list[0]
+            for e in existing_list[1:]:
+                db.delete(e)
+            keep.tmdb_id = tmdb_id
+            keep.title = title
+            keep.poster = poster
+            keep.original_language = original_language
+            keep.created_by = current_user.id
             db.commit()
-            db.refresh(existing)
-            return {"id": existing.id, "updated": True}
+            db.refresh(keep)
+            await delete_cache("charts:aggregate", "charts:public")
+            return {"id": keep.id, "updated": True}
 
         entry = ChartEntry(
             platform=platform,
@@ -6795,6 +6804,10 @@ async def add_chart_entry(
         db.add(entry)
         db.commit()
         db.refresh(entry)
+        await delete_cache("charts:aggregate", "charts:public")
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=400, detail=f"保存失败或重复: {str(e)}")
@@ -6932,6 +6945,11 @@ def _infer_updater_key(platform: str, chart_name: str) -> Optional[str]:
             return "tmdb_top250_tv"
         if "电影" in chart_norm or "movie" in chart_norm:
             return "tmdb_top250_movies"
+    if platform_norm == "trakt":
+        if "剧集" in chart_norm or "show" in chart_norm or " series" in chart_norm:
+            return "trakt_shows_weekly"
+        if "电影" in chart_norm or "movie" in chart_norm:
+            return "trakt_movies_weekly"
     return None
 
 def _build_updater_registry(scraper: Any) -> dict[str, dict[str, Any]]:
@@ -7324,6 +7342,94 @@ def latest_chart_top_by_rank(
         })
     return result
 
+def _latest_per_rank_chart_entries(entries: list[ChartEntry]) -> list[ChartEntry]:
+    by_rank: dict[int, ChartEntry] = {}
+    for e in entries:
+        r = int(e.rank)
+        if r not in by_rank or int(e.id) > int(by_rank[r].id):
+            by_rank[r] = e
+    return [by_rank[r] for r in sorted(by_rank.keys())]
+
+def _latest_per_rank_public_entries(entries: list[PublicChartEntry]) -> list[PublicChartEntry]:
+    by_rank: dict[int, PublicChartEntry] = {}
+    for e in entries:
+        r = int(e.rank)
+        if r not in by_rank or int(e.id) > int(by_rank[r].id):
+            by_rank[r] = e
+    return [by_rank[r] for r in sorted(by_rank.keys())]
+
+def _merge_both_media_by_rank(
+    movies: list[ChartEntry] | list[PublicChartEntry],
+    tvs: list[ChartEntry] | list[PublicChartEntry],
+) -> list[Any]:
+    m_by = {int(e.rank): e for e in movies}
+    t_by = {int(e.rank): e for e in tvs}
+    ranks = sorted(set(m_by.keys()) | set(t_by.keys()))
+    out: list[Any] = []
+    for r in ranks:
+        me, te = m_by.get(r), t_by.get(r)
+        if me and te:
+            out.append(me if int(me.id) >= int(te.id) else te)
+        else:
+            out.append(me or te)
+    return out
+
+def _chart_entries_deduped_for_list(
+    db: Session,
+    platform: str,
+    chart_name: str,
+    media_type: str,
+    limit: int = 500,
+) -> list[ChartEntry]:
+    sub = db.query(
+        ChartEntry.rank,
+        func.max(ChartEntry.id).label("max_id"),
+    ).filter(
+        ChartEntry.platform == platform,
+        ChartEntry.chart_name == chart_name,
+        ChartEntry.media_type == media_type,
+    ).group_by(ChartEntry.rank).subquery()
+    return (
+        db.query(ChartEntry)
+        .join(sub, ChartEntry.id == sub.c.max_id)
+        .order_by(ChartEntry.rank.asc())
+        .limit(limit)
+        .all()
+    )
+
+def _detail_rows_merged(
+    rows_public: list[PublicChartEntry] | None,
+    rows_private: list[ChartEntry] | None,
+    cfg_media: str,
+) -> list[Any]:
+    if rows_public is not None:
+        if cfg_media == "both":
+            pm = [r for r in rows_public if r.media_type == "movie"]
+            pt = [r for r in rows_public if r.media_type == "tv"]
+            return _merge_both_media_by_rank(
+                _latest_per_rank_public_entries(pm),
+                _latest_per_rank_public_entries(pt),
+            )
+        if cfg_media in ("movie", "tv"):
+            return _latest_per_rank_public_entries(
+                [r for r in rows_public if r.media_type == cfg_media]
+            )
+        return _latest_per_rank_public_entries(rows_public)
+
+    assert rows_private is not None
+    if cfg_media == "both":
+        pm = [r for r in rows_private if r.media_type == "movie"]
+        pt = [r for r in rows_private if r.media_type == "tv"]
+        return _merge_both_media_by_rank(
+            _latest_per_rank_chart_entries(pm),
+            _latest_per_rank_chart_entries(pt),
+        )
+    if cfg_media in ("movie", "tv"):
+        return _latest_per_rank_chart_entries(
+            [r for r in rows_private if r.media_type == cfg_media]
+        )
+    return _latest_per_rank_chart_entries(rows_private)
+
 @app.get("/api/charts/entries")
 async def list_chart_entries(
     platform: str,
@@ -7333,17 +7439,7 @@ async def list_chart_entries(
 ):
     if media_type not in ("movie", "tv"):
         raise HTTPException(status_code=400, detail="media_type 必须为 movie 或 tv")
-    items = (
-        db.query(ChartEntry)
-        .filter(
-            ChartEntry.platform == platform,
-            ChartEntry.chart_name == chart_name,
-            ChartEntry.media_type == media_type,
-        )
-        .order_by(ChartEntry.rank.asc())
-        .limit(500)
-        .all()
-    )
+    items = _chart_entries_deduped_for_list(db, platform, chart_name, media_type, limit=500)
     return [
         {
             "id": e.id,
@@ -7366,16 +7462,18 @@ async def set_entry_lock(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    entry = db.query(ChartEntry).filter(
+    entries = db.query(ChartEntry).filter(
         ChartEntry.platform == platform,
         ChartEntry.chart_name == chart_name,
         ChartEntry.media_type == media_type,
         ChartEntry.rank == rank,
-    ).first()
-    if not entry:
+    ).all()
+    if not entries:
         raise HTTPException(status_code=404, detail="条目不存在")
-    entry.locked = locked
+    for entry in entries:
+        entry.locked = locked
     db.commit()
+    await delete_cache("charts:aggregate", "charts:public")
     return {"rank": rank, "locked": locked}
     
 @app.delete("/api/charts/entries")
@@ -7387,18 +7485,20 @@ async def delete_chart_entry(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    entry = db.query(ChartEntry).filter(
+    entries = db.query(ChartEntry).filter(
         ChartEntry.platform == platform,
         ChartEntry.chart_name == chart_name,
         ChartEntry.media_type == media_type,
         ChartEntry.rank == rank,
-    ).first()
-    if not entry:
+    ).all()
+    if not entries:
         raise HTTPException(status_code=404, detail="条目不存在")
-    if entry.locked:
+    if any(e.locked for e in entries):
         raise HTTPException(status_code=423, detail="该排名已锁定，无法删除")
-    db.delete(entry)
+    for entry in entries:
+        db.delete(entry)
     db.commit()
+    await delete_cache("charts:aggregate", "charts:public")
     return {"deleted": True, "rank": rank}
 
 @app.get("/api/charts/aggregate")
@@ -7582,31 +7682,51 @@ async def get_chart_detail(
     try:
         backend_platform = canonical_platform_name(platform)
         backend_chart_name = canonical_chart_name(chart_name)
-        
-        entries = db.query(PublicChartEntry).filter(
+        cfg = db.query(ChartConfig).filter(
+            ChartConfig.platform == backend_platform,
+            ChartConfig.chart_name == backend_chart_name,
+        ).first()
+        if cfg and cfg.media_type in ("movie", "tv", "both"):
+            cfg_media = cfg.media_type
+        else:
+            probe = db.query(PublicChartEntry.media_type).filter(
+                PublicChartEntry.platform == backend_platform,
+                PublicChartEntry.chart_name == backend_chart_name,
+            ).distinct().all()
+            types = {str(t[0]) for t in probe if t and t[0]}
+            if not types:
+                probe2 = db.query(ChartEntry.media_type).filter(
+                    ChartEntry.platform == backend_platform,
+                    ChartEntry.chart_name == backend_chart_name,
+                ).distinct().all()
+                types = {str(t[0]) for t in probe2 if t and t[0]}
+            if "movie" in types and "tv" in types:
+                cfg_media = "both"
+            elif "tv" in types:
+                cfg_media = "tv"
+            else:
+                cfg_media = "movie"
+
+        public_rows = db.query(PublicChartEntry).filter(
             PublicChartEntry.platform == backend_platform,
             PublicChartEntry.chart_name == backend_chart_name,
-        ).order_by(PublicChartEntry.rank.asc()).all()
-        
-        if not entries:
-            entries = db.query(ChartEntry).filter(
+        ).all()
+
+        if public_rows:
+            merged = _detail_rows_merged(public_rows, None, cfg_media)
+        else:
+            private_rows = db.query(ChartEntry).filter(
                 ChartEntry.platform == backend_platform,
                 ChartEntry.chart_name == backend_chart_name,
-            ).order_by(ChartEntry.rank.asc()).all()
-        
-        if not entries:
-            raise HTTPException(status_code=404, detail="榜单数据不存在")
-        
+            ).all()
+            if not private_rows:
+                raise HTTPException(status_code=404, detail="榜单数据不存在")
+            merged = _detail_rows_merged(None, private_rows, cfg_media)
+
         chart_entries = []
-        media_type = None
-        
-        for e in entries:
+        for e in merged:
             poster = normalize_chart_entry_poster(e.poster or "")
-            
-            entry_media_type = getattr(e, 'media_type', None)
-            if not media_type and entry_media_type:
-                media_type = entry_media_type
-            
+            entry_media_type = getattr(e, "media_type", None)
             chart_entries.append({
                 "tmdb_id": e.tmdb_id,
                 "rank": e.rank,
@@ -7614,18 +7734,11 @@ async def get_chart_detail(
                 "poster": poster,
                 "media_type": entry_media_type,
             })
-        
-        if not media_type:
-            media_type = 'movie'
-        cfg = db.query(ChartConfig).filter(
-            ChartConfig.platform == backend_platform,
-            ChartConfig.chart_name == backend_chart_name,
-        ).first()
-        
+
         return {
             "platform": platform,
             "chart_name": chart_name,
-            "media_type": media_type,
+            "media_type": cfg_media,
             "entries": chart_entries,
             "rank_label_mode": "number" if cfg is None else (cfg.rank_label_mode or "number"),
         }
