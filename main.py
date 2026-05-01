@@ -43,6 +43,18 @@ class _UvicornAccessPathFilter(logging.Filter):
                 return False
         return True
 
+class _AsyncioSlowLogFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            msg = record.getMessage()
+        except Exception:
+            msg = str(getattr(record, "msg", "") or "")
+        if "Executing <Task" in msg and " took " in msg:
+            return False
+        if "Executing <Handle" in msg and " took " in msg:
+            return False
+        return True
+
 def _request_trace_id(request: Optional["Request"]) -> str:
     if not request:
         return "-"
@@ -8572,6 +8584,10 @@ async def startup_event():
                 ]
             )
         )
+    except Exception:
+        pass
+    try:
+        logging.getLogger("asyncio").addFilter(_AsyncioSlowLogFilter())
     except Exception:
         pass
     try:
