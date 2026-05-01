@@ -143,7 +143,6 @@ export default function AdminChartsPage() {
   
   const [testingNotification, setTestingNotification] = useState(false);
   const [chartConfigs, setChartConfigs] = useState<ChartPlatformConfig[]>(() => getDefaultChartConfig());
-  const [configLoaded, setConfigLoaded] = useState(false);
   const [editingChart, setEditingChart] = useState<{
     platform: string;
     section: ChartSectionConfig;
@@ -410,7 +409,6 @@ export default function AdminChartsPage() {
     if (!remoteConfigs) return;
     if (remoteConfigs.length === 0) {
       setChartConfigs(getDefaultChartConfig());
-      setConfigLoaded(true);
       return;
     }
     const grouped = new Map<string, ChartSectionConfig[]>();
@@ -438,53 +436,8 @@ export default function AdminChartsPage() {
     const allPlatforms = Array.from(new Set(remoteConfigs.map((x) => PLATFORM_NAME_MAP[x.platform] || x.platform)));
     const next = allPlatforms.map((p) => ({ platform: p, sections: grouped.get(p) || [] }));
     setChartConfigs(next);
-    setConfigLoaded(true);
   }, [remoteConfigs]);
 
-  useEffect(() => {
-    if (!configLoaded) return;
-    const run = async () => {
-      const items = chartConfigs.flatMap((cfg) =>
-        cfg.sections.map((sec, index) => ({
-          platform: PLATFORM_NAME_REVERSE_MAP[cfg.platform] || cfg.platform,
-          chart_name: CHART_NAME_REVERSE_MAP[sec.name] || sec.name,
-          media_type: sec.media_type,
-          sort_order: index,
-          visible: sec.visible,
-          input_mode: sec.input_mode,
-          layout: sec.layout,
-          table_rows: sec.table_rows,
-          card_count: sec.card_count,
-          update_mode: sec.update_mode,
-          updater_key: sec.updater_key,
-          exportable: sec.exportable,
-          rank_label_mode: sec.rank_label_mode,
-        })),
-      );
-      const token = localStorage.getItem('token');
-      const headers: HeadersInit = {
-        'Content-Type': 'application/json',
-      };
-      if (token) {
-        headers.Authorization = `Bearer ${token}`;
-      }
-      const res = await fetch('/api/charts/configs', {
-        method: 'PUT',
-        headers,
-        credentials: 'include',
-        body: JSON.stringify({ items }),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        const detail =
-          (err && (err.detail || err.message))
-            ? (err.detail || err.message)
-            : `保存榜单配置失败（${res.status}）`;
-        console.error('保存榜单配置失败:', detail);
-      }
-    };
-    void run();
-  }, [chartConfigs, configLoaded]);
 
   useEffect(() => {
     const ordered = PLATFORM_ORDER.filter((p) => chartConfigs.some((cfg) => cfg.platform === p));
