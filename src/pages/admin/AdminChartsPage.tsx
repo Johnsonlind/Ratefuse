@@ -143,6 +143,7 @@ export default function AdminChartsPage() {
   
   const [testingNotification, setTestingNotification] = useState(false);
   const [chartConfigs, setChartConfigs] = useState<ChartPlatformConfig[]>(() => getDefaultChartConfig());
+  const [configLoaded, setConfigLoaded] = useState(false);
   const [editingChart, setEditingChart] = useState<{
     platform: string;
     section: ChartSectionConfig;
@@ -242,11 +243,6 @@ export default function AdminChartsPage() {
     } catch {
       return { detail: text || `HTTP ${response.status}` };
     }
-  }
-
-  function apiSuccessMessage(result: unknown, fallback: string): string {
-    const m = (result as { message?: unknown })?.message;
-    return typeof m === 'string' && m.trim() ? m.trim() : fallback;
   }
 
   function looksLikeHtmlErrorPayload(result: unknown) {
@@ -409,6 +405,7 @@ export default function AdminChartsPage() {
     if (!remoteConfigs) return;
     if (remoteConfigs.length === 0) {
       setChartConfigs(getDefaultChartConfig());
+      setConfigLoaded(true);
       return;
     }
     const grouped = new Map<string, ChartSectionConfig[]>();
@@ -436,8 +433,53 @@ export default function AdminChartsPage() {
     const allPlatforms = Array.from(new Set(remoteConfigs.map((x) => PLATFORM_NAME_MAP[x.platform] || x.platform)));
     const next = allPlatforms.map((p) => ({ platform: p, sections: grouped.get(p) || [] }));
     setChartConfigs(next);
+    setConfigLoaded(true);
   }, [remoteConfigs]);
 
+  useEffect(() => {
+    if (!configLoaded) return;
+    const run = async () => {
+      const items = chartConfigs.flatMap((cfg) =>
+        cfg.sections.map((sec, index) => ({
+          platform: PLATFORM_NAME_REVERSE_MAP[cfg.platform] || cfg.platform,
+          chart_name: CHART_NAME_REVERSE_MAP[sec.name] || sec.name,
+          media_type: sec.media_type,
+          sort_order: index,
+          visible: sec.visible,
+          input_mode: sec.input_mode,
+          layout: sec.layout,
+          table_rows: sec.table_rows,
+          card_count: sec.card_count,
+          update_mode: sec.update_mode,
+          updater_key: sec.updater_key,
+          exportable: sec.exportable,
+          rank_label_mode: sec.rank_label_mode,
+        })),
+      );
+      const token = localStorage.getItem('token');
+      const headers: HeadersInit = {
+        'Content-Type': 'application/json',
+      };
+      if (token) {
+        headers.Authorization = `Bearer ${token}`;
+      }
+      const res = await fetch('/api/charts/configs', {
+        method: 'PUT',
+        headers,
+        credentials: 'include',
+        body: JSON.stringify({ items }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        const detail =
+          (err && (err.detail || err.message))
+            ? (err.detail || err.message)
+            : `保存榜单配置失败（${res.status}）`;
+        console.error('保存榜单配置失败:', detail);
+      }
+    };
+    void run();
+  }, [chartConfigs, configLoaded]);
 
   useEffect(() => {
     const ordered = PLATFORM_ORDER.filter((p) => chartConfigs.some((cfg) => cfg.platform === p));
@@ -548,7 +590,7 @@ export default function AdminChartsPage() {
     updateOperationIdsRef.current[operationKey] = operationId;
     setPlatformOperations((prev) => ({ ...prev, [operationKey]: true }));
     setAutoUpdating(true);
-    setUpdateStatus('正在更新设置为「跟随全部更新」的榜单…');
+    setUpdateStatus('正在更新所有榜单...');
     
     try {
       const token = localStorage.getItem('token');
@@ -565,7 +607,7 @@ export default function AdminChartsPage() {
       const result = await parseResponsePayload(response);
       
       if (response.ok) {
-        setUpdateStatus(apiSuccessMessage(result, '更新完成'));
+        setUpdateStatus('所有榜单更新成功！');
         if (activeKey) {
           const [platform, chart_name, media_type] = activeKey.split(':');
           loadCurrentList(platform, chart_name, media_type as SectionType);
@@ -575,19 +617,19 @@ export default function AdminChartsPage() {
         const finalState = await waitForUpdateOperation(
           operationId,
           8 * 60 * 1000,
-          () => setUpdateStatus('后台仍在更新跟榜批量任务，正在持续确认状态…'),
+          () => setUpdateStatus('后台仍在更新所有榜单，正在持续确认状态...'),
         );
         const state = String(finalState.state || 'unknown');
         if (state === 'success') {
-          setUpdateStatus(apiSuccessMessage(finalState, '更新完成'));
+          setUpdateStatus('所有榜单更新成功！');
           if (activeKey) {
             const [platform, chart_name, media_type] = activeKey.split(':');
             loadCurrentList(platform, chart_name, media_type as SectionType);
           }
         } else if (state === 'cancelled') {
-          setUpdateStatus('已取消跟榜批量更新');
+          setUpdateStatus('已取消更新所有榜单');
         } else if (state === 'running') {
-          setUpdateStatus('跟榜批量更新仍在进行中');
+          setUpdateStatus('更新仍在进行中（所有榜单）');
         } else {
           setUpdateStatus(`更新失败: ${String(finalState.message || result.detail || '未知错误')}`);
         }
@@ -596,25 +638,25 @@ export default function AdminChartsPage() {
       }
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
-        setUpdateStatus('已取消跟榜批量更新');
+        setUpdateStatus('已取消更新所有榜单');
       } else {
         setUpdateStatus('连接中断，正在确认后台任务状态...');
         const finalState = await waitForUpdateOperation(
           operationId,
           8 * 60 * 1000,
-          () => setUpdateStatus('后台仍在更新跟榜批量任务，正在持续确认状态…'),
+          () => setUpdateStatus('后台仍在更新所有榜单，正在持续确认状态...'),
         );
         const state = String(finalState.state || 'unknown');
         if (state === 'success') {
-          setUpdateStatus(apiSuccessMessage(finalState, '更新完成'));
+          setUpdateStatus('所有榜单更新成功！');
           if (activeKey) {
             const [platform, chart_name, media_type] = activeKey.split(':');
             loadCurrentList(platform, chart_name, media_type as SectionType);
           }
         } else if (state === 'cancelled') {
-          setUpdateStatus('已取消跟榜批量更新');
+          setUpdateStatus('已取消更新所有榜单');
         } else if (state === 'running') {
-          setUpdateStatus('跟榜批量更新仍在进行中');
+          setUpdateStatus('更新仍在进行中（所有榜单）');
         } else {
           setUpdateStatus(`更新失败: ${String(finalState.message || error)}`);
         }
@@ -643,7 +685,7 @@ export default function AdminChartsPage() {
     updateControllersRef.current[operationKey] = controller;
     updateOperationIdsRef.current[operationKey] = operationId;
     setPlatformOperations(prev => ({ ...prev, [operationKey]: true }));
-    setUpdateStatus(`正在更新 ${platform} 下「跟随全部更新」的榜单…`);
+    setUpdateStatus(`正在更新 ${platform} 榜单...`);
     
     try {
       const token = localStorage.getItem('token');
@@ -661,7 +703,7 @@ export default function AdminChartsPage() {
       const result = await parseResponsePayload(response);
       
       if (response.ok) {
-        setUpdateStatus(apiSuccessMessage(result, `${platform} 榜单更新完成`));
+        setUpdateStatus(`${platform} 榜单更新成功！`);
         if (activeKey) {
           const [currentPlatform, chart_name, media_type] = activeKey.split(':');
           if (currentPlatform === platform) {
@@ -673,11 +715,11 @@ export default function AdminChartsPage() {
         const finalState = await waitForUpdateOperation(
           operationId,
           8 * 60 * 1000,
-          () => setUpdateStatus(`后台仍在更新 ${platform} 跟榜任务，正在持续确认状态…`),
+          () => setUpdateStatus(`后台仍在更新 ${platform} 榜单，正在持续确认状态...`),
         );
         const state = String(finalState.state || 'unknown');
         if (state === 'success') {
-          setUpdateStatus(apiSuccessMessage(finalState, `${platform} 榜单更新完成`));
+          setUpdateStatus(`${platform} 榜单更新成功！`);
           if (activeKey) {
             const [currentPlatform, chart_name, media_type] = activeKey.split(':');
             if (currentPlatform === platform) {
@@ -702,11 +744,11 @@ export default function AdminChartsPage() {
         const finalState = await waitForUpdateOperation(
           operationId,
           8 * 60 * 1000,
-          () => setUpdateStatus(`后台仍在更新 ${platform} 跟榜任务，正在持续确认状态…`),
+          () => setUpdateStatus(`后台仍在更新 ${platform} 榜单，正在持续确认状态...`),
         );
         const state = String(finalState.state || 'unknown');
         if (state === 'success') {
-          setUpdateStatus(apiSuccessMessage(finalState, `${platform} 榜单更新完成`));
+          setUpdateStatus(`${platform} 榜单更新成功！`);
           if (activeKey) {
             const [currentPlatform, chart_name, media_type] = activeKey.split(':');
             if (currentPlatform === platform) {
