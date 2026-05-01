@@ -129,6 +129,7 @@ from models import (
     _shanghai_naive_now,
 )
 from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.exc import TimeoutError as SATimeoutError
 from ratings import (
     douban_search_and_extract_rating,
     extract_rating_info,
@@ -387,10 +388,17 @@ async def get_current_user(
                 if getattr(user, "is_banned", False):
                     raise HTTPException(status_code=403, detail="账号已被封禁，请联系管理员")
                 return user
+        except SATimeoutError:
+            logger.error("鉴权查询超时（缓存路径）：数据库连接池已耗尽")
+            raise HTTPException(status_code=503, detail="服务繁忙，请稍后重试")
         except Exception:
             pass
 
-    user = db.query(User).filter(User.email == email).first()
+    try:
+        user = db.query(User).filter(User.email == email).first()
+    except SATimeoutError:
+        logger.error("鉴权查询超时：数据库连接池已耗尽")
+        raise HTTPException(status_code=503, detail="服务繁忙，请稍后重试")
     if user is None:
         raise credentials_exception
     if getattr(user, "is_banned", False):
@@ -412,7 +420,11 @@ async def get_current_user_optional(
         if email is None:
             return None
             
-        user = db.query(User).filter(User.email == email).first()
+        try:
+            user = db.query(User).filter(User.email == email).first()
+        except SATimeoutError:
+            logger.error("可选鉴权查询超时：数据库连接池已耗尽")
+            return None
         if user is None:
             return None
         if getattr(user, "is_banned", False):
