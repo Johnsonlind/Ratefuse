@@ -32,10 +32,12 @@ if not SQLALCHEMY_DATABASE_URL:
     raise RuntimeError("缺少环境变量 SQLALCHEMY_DATABASE_URL，请在 .env 中配置数据库连接串")
 _engine_kwargs = dict(
     poolclass=QueuePool,
-    pool_size=10,
-    max_overflow=20,
-    pool_timeout=30,
-    pool_recycle=1800,
+    pool_size=int(os.getenv("DB_POOL_SIZE", "30")),
+    max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "60")),
+    pool_timeout=int(os.getenv("DB_POOL_TIMEOUT", "60")),
+    pool_recycle=int(os.getenv("DB_POOL_RECYCLE", "1800")),
+    pool_pre_ping=True,
+    pool_use_lifo=True,
 )
 if SQLALCHEMY_DATABASE_URL.startswith("mysql+"):
     _engine_kwargs["connect_args"] = {"init_command": "SET time_zone='+08:00'"}
