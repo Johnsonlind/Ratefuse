@@ -7465,44 +7465,50 @@ async def sync_charts(
         db.query(PublicChartEntry).delete()
         db.commit()
         
-        distinct_charts = db.query(
-            ChartEntry.platform,
-            ChartEntry.chart_name,
-            ChartEntry.media_type
-        ).distinct().all()
-        
+        config_rows = (
+            db.query(ChartConfig)
+            .order_by(ChartConfig.platform.asc(), ChartConfig.sort_order.asc(), ChartConfig.id.asc())
+            .all()
+        )
+
         synced_count = 0
         synced_at = _shanghai_naive_now()
-        
-        for platform, chart_name, media_type in distinct_charts:
-            platform = canonical_platform_name(platform)
-            chart_name = canonical_chart_name(chart_name)
-            sub = db.query(
-                ChartEntry.rank,
-                func.max(ChartEntry.id).label('max_id')
-            ).filter(
-                ChartEntry.platform == platform,
-                ChartEntry.chart_name == chart_name,
-                ChartEntry.media_type == media_type,
-            ).group_by(ChartEntry.rank).subquery()
-            
-            entries = db.query(ChartEntry).join(
-                sub, ChartEntry.id == sub.c.max_id
-            ).order_by(ChartEntry.rank.asc()).all()
-            
-            for entry in entries:
-                public_entry = PublicChartEntry(
-                    platform=entry.platform,
-                    chart_name=entry.chart_name,
-                    media_type=entry.media_type,
-                    tmdb_id=entry.tmdb_id,
-                    title=entry.title,
-                    poster=entry.poster,
-                    rank=entry.rank,
-                    synced_at=synced_at
-                )
-                db.add(public_entry)
-                synced_count += 1
+
+        for cfg in config_rows:
+            platform = canonical_platform_name(cfg.platform)
+            chart_name = canonical_chart_name(cfg.chart_name)
+            cfg_media = str(cfg.media_type or "movie").strip().lower()
+            if cfg_media not in ("movie", "tv", "both"):
+                cfg_media = "movie"
+            media_types = ["movie", "tv"] if cfg_media == "both" else [cfg_media]
+
+            for media_type in media_types:
+                sub = db.query(
+                    ChartEntry.rank,
+                    func.max(ChartEntry.id).label('max_id')
+                ).filter(
+                    ChartEntry.platform == platform,
+                    ChartEntry.chart_name == chart_name,
+                    ChartEntry.media_type == media_type,
+                ).group_by(ChartEntry.rank).subquery()
+                
+                entries = db.query(ChartEntry).join(
+                    sub, ChartEntry.id == sub.c.max_id
+                ).order_by(ChartEntry.rank.asc()).all()
+                
+                for entry in entries:
+                    public_entry = PublicChartEntry(
+                        platform=platform,
+                        chart_name=chart_name,
+                        media_type=entry.media_type,
+                        tmdb_id=entry.tmdb_id,
+                        title=entry.title,
+                        poster=entry.poster,
+                        rank=entry.rank,
+                        synced_at=synced_at
+                    )
+                    db.add(public_entry)
+                    synced_count += 1
         
         db.commit()
         await delete_cache("charts:aggregate", "charts:public")
@@ -7524,70 +7530,38 @@ async def get_public_charts(db: Session = Depends(get_db)):
     if cached is not None:
         return cached
     try:
-        config_rows = db.query(ChartConfig).all()
-        config_map = {
-            (canonical_platform_name(c.platform), canonical_chart_name(c.chart_name)): c for c in config_rows
-        }
-        all_entries = db.query(PublicChartEntry).order_by(
-            PublicChartEntry.platform.asc(),
-            PublicChartEntry.chart_name.asc(),
-            PublicChartEntry.media_type.asc(),
-            PublicChartEntry.rank.asc(),
-        ).all()
-
-        grouped = {}
-        for e in all_entries:
-            platform_name = canonical_platform_name(e.platform)
-            chart_name = canonical_chart_name(e.chart_name)
-            key = (platform_name, chart_name, e.media_type)
-            grouped.setdefault(key, []).append(e)
-
-        grouped_by_chart: dict[tuple[str, str], list[tuple[str, list[PublicChartEntry]]]] = {}
-        for (platform, chart_name, media_type), entries in grouped.items():
-            grouped_by_chart.setdefault((platform, chart_name), []).append((str(media_type or ""), entries))
-
+        config_rows = (
+            db.query(ChartConfig)
+            .order_by(ChartConfig.platform.asc(), ChartConfig.sort_order.asc(), ChartConfig.id.asc())
+            .all()
+        )
         result = []
-        for (platform, chart_name), variants in grouped_by_chart.items():
-            cfg = config_map.get((platform, chart_name))
-            expected_media_type = str(cfg.media_type or "").strip() if cfg and cfg.media_type else ""
+        for cfg in config_rows:
+            platform = canonical_platform_name(cfg.platform)
+            chart_name = canonical_chart_name(cfg.chart_name)
+            cfg_media = str(cfg.media_type or "movie").strip().lower()
+            if cfg_media not in ("movie", "tv", "both"):
+                cfg_media = "movie"
 
-            selected_entries: list[PublicChartEntry] = []
-            selected_media_type = expected_media_type or "movie"
+            entries_query = db.query(PublicChartEntry).filter(
+                PublicChartEntry.platform == platform,
+                PublicChartEntry.chart_name == chart_name,
+            )
+            if cfg_media in ("movie", "tv"):
+                entries_query = entries_query.filter(PublicChartEntry.media_type == cfg_media)
+            entries = entries_query.order_by(PublicChartEntry.rank.asc(), PublicChartEntry.id.asc()).all()
 
-            variant_map = {mt: ents for mt, ents in variants}
-            if expected_media_type in ("movie", "tv"):
-                if expected_media_type in variant_map:
-                    selected_entries = variant_map[expected_media_type]
-                    selected_media_type = expected_media_type
-                elif "both" in variant_map:
-                    selected_entries = variant_map["both"]
-                    selected_media_type = "both"
-            elif expected_media_type == "both":
-                if "both" in variant_map:
-                    selected_entries = variant_map["both"]
-                    selected_media_type = "both"
-                else:
-                    merged: list[PublicChartEntry] = []
-                    merged.extend(variant_map.get("movie", []))
-                    merged.extend(variant_map.get("tv", []))
-                    selected_entries = sorted(merged, key=lambda x: int(x.rank or 0))
-                    selected_media_type = "both"
-
-            if not selected_entries:
-                best_mt = ""
-                best_entries: list[PublicChartEntry] = []
-                for mt, ents in variants:
-                    if len(ents) > len(best_entries):
-                        best_mt = mt
-                        best_entries = ents
-                selected_entries = best_entries
-                selected_media_type = best_mt or "movie"
-
-            if not selected_entries:
-                continue
+            if not entries:
+                fallback_query = db.query(ChartEntry).filter(
+                    ChartEntry.platform == platform,
+                    ChartEntry.chart_name == chart_name,
+                )
+                if cfg_media in ("movie", "tv"):
+                    fallback_query = fallback_query.filter(ChartEntry.media_type == cfg_media)
+                entries = fallback_query.order_by(ChartEntry.rank.asc(), ChartEntry.id.desc()).all()
 
             chart_entries = []
-            for e in selected_entries:
+            for e in entries:
                 poster = normalize_chart_entry_poster(e.poster or "")
                 chart_entries.append(
                     {
@@ -7595,7 +7569,7 @@ async def get_public_charts(db: Session = Depends(get_db)):
                         "rank": e.rank,
                         "title": e.title,
                         "poster": poster,
-                        "media_type": e.media_type,
+                        "media_type": getattr(e, "media_type", cfg_media),
                     }
                 )
 
@@ -7603,15 +7577,15 @@ async def get_public_charts(db: Session = Depends(get_db)):
                 {
                     "platform": platform,
                     "chart_name": chart_name,
-                    "media_type": selected_media_type,
+                    "media_type": cfg_media,
                     "entries": chart_entries,
-                    "visible": True if cfg is None else bool(cfg.visible),
-                    "sort_order": 9999 if cfg is None else int(cfg.sort_order),
-                    "layout": "card" if cfg is None else (cfg.layout or "card"),
-                    "table_rows": 10 if cfg is None else int(cfg.table_rows or 10),
-                    "card_count": 10 if cfg is None else int(cfg.card_count or 10),
-                    "exportable": True if cfg is None else bool(cfg.exportable),
-                    "rank_label_mode": "number" if cfg is None else (cfg.rank_label_mode or "number"),
+                    "visible": bool(cfg.visible),
+                    "sort_order": int(cfg.sort_order or 0),
+                    "layout": cfg.layout or "card",
+                    "table_rows": int(cfg.table_rows or 10),
+                    "card_count": int(cfg.card_count or 10),
+                    "exportable": bool(cfg.exportable),
+                    "rank_label_mode": cfg.rank_label_mode or "number",
                 }
             )
         
