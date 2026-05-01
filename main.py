@@ -7480,42 +7480,22 @@ async def sync_charts(
             cfg_media = str(cfg.media_type or "movie").strip().lower()
             if cfg_media not in ("movie", "tv", "both"):
                 cfg_media = "movie"
-            if cfg_media == "both":
+            media_types = ["movie", "tv"] if cfg_media == "both" else [cfg_media]
+
+            for media_type in media_types:
                 sub = db.query(
                     ChartEntry.rank,
                     func.max(ChartEntry.id).label('max_id')
                 ).filter(
                     ChartEntry.platform == platform,
                     ChartEntry.chart_name == chart_name,
+                    ChartEntry.media_type == media_type,
                 ).group_by(ChartEntry.rank).subquery()
+                
                 entries = db.query(ChartEntry).join(
                     sub, ChartEntry.id == sub.c.max_id
                 ).order_by(ChartEntry.rank.asc()).all()
-                for entry in entries:
-                    public_entry = PublicChartEntry(
-                        platform=platform,
-                        chart_name=chart_name,
-                        media_type=entry.media_type,
-                        tmdb_id=entry.tmdb_id,
-                        title=entry.title,
-                        poster=entry.poster,
-                        rank=entry.rank,
-                        synced_at=synced_at
-                    )
-                    db.add(public_entry)
-                    synced_count += 1
-            else:
-                sub = db.query(
-                    ChartEntry.rank,
-                    func.max(ChartEntry.id).label('max_id')
-                ).filter(
-                    ChartEntry.platform == platform,
-                    ChartEntry.chart_name == chart_name,
-                    ChartEntry.media_type == cfg_media,
-                ).group_by(ChartEntry.rank).subquery()
-                entries = db.query(ChartEntry).join(
-                    sub, ChartEntry.id == sub.c.max_id
-                ).order_by(ChartEntry.rank.asc()).all()
+                
                 for entry in entries:
                     public_entry = PublicChartEntry(
                         platform=platform,
@@ -7569,7 +7549,7 @@ async def get_public_charts(db: Session = Depends(get_db)):
             )
             if cfg_media in ("movie", "tv"):
                 entries_query = entries_query.filter(PublicChartEntry.media_type == cfg_media)
-            entries = entries_query.order_by(PublicChartEntry.rank.asc(), PublicChartEntry.id.desc()).all()
+            entries = entries_query.order_by(PublicChartEntry.rank.asc(), PublicChartEntry.id.asc()).all()
 
             if not entries:
                 fallback_query = db.query(ChartEntry).filter(
@@ -7579,16 +7559,6 @@ async def get_public_charts(db: Session = Depends(get_db)):
                 if cfg_media in ("movie", "tv"):
                     fallback_query = fallback_query.filter(ChartEntry.media_type == cfg_media)
                 entries = fallback_query.order_by(ChartEntry.rank.asc(), ChartEntry.id.desc()).all()
-
-            dedup_by_rank: dict[int, Any] = {}
-            for e in entries:
-                try:
-                    rk = int(e.rank)
-                except Exception:
-                    continue
-                if rk not in dedup_by_rank:
-                    dedup_by_rank[rk] = e
-            entries = [dedup_by_rank[rk] for rk in sorted(dedup_by_rank.keys())]
 
             chart_entries = []
             for e in entries:
@@ -7651,16 +7621,6 @@ async def get_chart_detail(
         
         chart_entries = []
         media_type = None
-        dedup_by_rank: dict[int, Any] = {}
-        for e in entries:
-            try:
-                rk = int(e.rank)
-            except Exception:
-                continue
-            prev = dedup_by_rank.get(rk)
-            if prev is None or int(getattr(e, "id", 0) or 0) > int(getattr(prev, "id", 0) or 0):
-                dedup_by_rank[rk] = e
-        entries = [dedup_by_rank[rk] for rk in sorted(dedup_by_rank.keys())]
         
         for e in entries:
             poster = normalize_chart_entry_poster(e.poster or "")
