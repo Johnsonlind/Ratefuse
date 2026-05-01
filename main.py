@@ -7560,6 +7560,20 @@ async def get_public_charts(db: Session = Depends(get_db)):
                     fallback_query = fallback_query.filter(ChartEntry.media_type == cfg_media)
                 entries = fallback_query.order_by(ChartEntry.rank.asc(), ChartEntry.id.desc()).all()
 
+            if cfg_media == "both" and entries:
+                by_rank: dict[int, Any] = {}
+                for e in entries:
+                    try:
+                        rk = int(getattr(e, "rank", 0) or 0)
+                    except Exception:
+                        continue
+                    prev = by_rank.get(rk)
+                    prev_id = int(getattr(prev, "id", 0) or 0) if prev is not None else 0
+                    cur_id = int(getattr(e, "id", 0) or 0)
+                    if prev is None or cur_id >= prev_id:
+                        by_rank[rk] = e
+                entries = [by_rank[k] for k in sorted(by_rank.keys())]
+
             chart_entries = []
             for e in entries:
                 poster = normalize_chart_entry_poster(e.poster or "")
