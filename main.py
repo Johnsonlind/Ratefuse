@@ -7542,15 +7542,53 @@ async def get_public_charts(db: Session = Depends(get_db)):
             key = (platform_name, chart_name, e.media_type)
             grouped.setdefault(key, []).append(e)
 
+        grouped_by_chart: dict[tuple[str, str], list[tuple[str, list[PublicChartEntry]]]] = {}
+        for (platform, chart_name, media_type), entries in grouped.items():
+            grouped_by_chart.setdefault((platform, chart_name), []).append((str(media_type or ""), entries))
+
         result = []
-        for key, entries in grouped.items():
-            if not entries:
+        for (platform, chart_name), variants in grouped_by_chart.items():
+            cfg = config_map.get((platform, chart_name))
+            expected_media_type = str(cfg.media_type or "").strip() if cfg and cfg.media_type else ""
+
+            selected_entries: list[PublicChartEntry] = []
+            selected_media_type = expected_media_type or "movie"
+
+            variant_map = {mt: ents for mt, ents in variants}
+            if expected_media_type in ("movie", "tv"):
+                if expected_media_type in variant_map:
+                    selected_entries = variant_map[expected_media_type]
+                    selected_media_type = expected_media_type
+                elif "both" in variant_map:
+                    selected_entries = variant_map["both"]
+                    selected_media_type = "both"
+            elif expected_media_type == "both":
+                if "both" in variant_map:
+                    selected_entries = variant_map["both"]
+                    selected_media_type = "both"
+                else:
+                    merged: list[PublicChartEntry] = []
+                    merged.extend(variant_map.get("movie", []))
+                    merged.extend(variant_map.get("tv", []))
+                    selected_entries = sorted(merged, key=lambda x: int(x.rank or 0))
+                    selected_media_type = "both"
+
+            if not selected_entries:
+                best_mt = ""
+                best_entries: list[PublicChartEntry] = []
+                for mt, ents in variants:
+                    if len(ents) > len(best_entries):
+                        best_mt = mt
+                        best_entries = ents
+                selected_entries = best_entries
+                selected_media_type = best_mt or "movie"
+
+            if not selected_entries:
                 continue
 
             chart_entries = []
-            for e in entries:
+            for e in selected_entries:
                 poster = normalize_chart_entry_poster(e.poster or "")
-
                 chart_entries.append(
                     {
                         "tmdb_id": e.tmdb_id,
@@ -7561,13 +7599,11 @@ async def get_public_charts(db: Session = Depends(get_db)):
                     }
                 )
 
-            platform, chart_name, media_type = key
-            cfg = config_map.get((platform, chart_name))
             result.append(
                 {
                     "platform": platform,
                     "chart_name": chart_name,
-                    "media_type": media_type,
+                    "media_type": selected_media_type,
                     "entries": chart_entries,
                     "visible": True if cfg is None else bool(cfg.visible),
                     "sort_order": 9999 if cfg is None else int(cfg.sort_order),
