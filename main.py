@@ -6908,6 +6908,10 @@ def _infer_updater_key(platform: str, chart_name: str) -> Optional[str]:
         ("letterboxd", "letterboxd 电影 top 250"): "letterboxd_top250",
         ("tmdb", "tmdb 高分电影 top 250"): "tmdb_top250_movies",
         ("tmdb", "tmdb 高分剧集 top 250"): "tmdb_top250_tv",
+        ("trakt", "上周电影 top 榜"): "trakt_movies_weekly",
+        ("trakt", "trakt 上周电影 top 榜"): "trakt_movies_weekly",
+        ("trakt", "上周剧集 top 榜"): "trakt_shows_weekly",
+        ("trakt", "trakt 上周剧集 top 榜"): "trakt_shows_weekly",
     }
     direct = direct_map.get((platform_norm, chart_norm))
     if direct:
@@ -6932,6 +6936,11 @@ def _infer_updater_key(platform: str, chart_name: str) -> Optional[str]:
             return "tmdb_top250_tv"
         if "电影" in chart_norm or "movie" in chart_norm:
             return "tmdb_top250_movies"
+    if platform_norm == "trakt":
+        if "电影" in chart_norm or "movie" in chart_norm:
+            return "trakt_movies_weekly"
+        if "剧集" in chart_norm or "tv" in chart_norm or "show" in chart_norm:
+            return "trakt_shows_weekly"
     return None
 
 def _build_updater_registry(scraper: Any) -> dict[str, dict[str, Any]]:
@@ -6967,7 +6976,8 @@ def _configured_updater_keys(
         ChartConfig.chart_name,
         ChartConfig.updater_key,
         ChartConfig.sort_order,
-    ).filter(ChartConfig.updater_key.isnot(None))
+        ChartConfig.update_mode,
+    )
     if platform:
         q = q.filter(ChartConfig.platform == platform)
     rows = q.order_by(
@@ -6978,15 +6988,18 @@ def _configured_updater_keys(
     result: list[tuple[str, str, str, int]] = []
     seen: set[tuple[str, str]] = set()
     for r in rows:
-        key = str(r.updater_key or "").strip()
+        if str(getattr(r, "update_mode", "") or "").strip().lower() == "single":
+            continue
         plat = canonical_platform_name(r.platform)
+        chart = canonical_chart_name(r.chart_name)
+        key = str(r.updater_key or "").strip() or (_infer_updater_key(plat, chart) or "")
         if not key or not plat:
             continue
         dedup_key = (plat, key)
         if dedup_key in seen:
             continue
         seen.add(dedup_key)
-        result.append((plat, canonical_chart_name(r.chart_name), key, int(r.sort_order or 0)))
+        result.append((plat, chart, key, int(r.sort_order or 0)))
     return result
 
 def _apply_chart_name_renames(
@@ -7091,13 +7104,20 @@ async def list_chart_configs(db: Session = Depends(get_db)):
         .order_by(ChartConfig.platform.asc(), ChartConfig.sort_order.asc(), ChartConfig.id.asc())
         .all()
     )
-    if not rows:
-        grouped = (
-            db.query(ChartEntry.platform, ChartEntry.chart_name, ChartEntry.media_type)
-            .distinct()
-            .order_by(ChartEntry.platform.asc(), ChartEntry.chart_name.asc(), ChartEntry.media_type.asc())
-            .all()
-        )
+    grouped = (
+        db.query(ChartEntry.platform, ChartEntry.chart_name, ChartEntry.media_type)
+        .distinct()
+        .order_by(ChartEntry.platform.asc(), ChartEntry.chart_name.asc(), ChartEntry.media_type.asc())
+        .all()
+    )
+
+    existing_by_key: dict[tuple[str, str], ChartConfig] = {}
+    for r in rows or []:
+        existing_by_key[(canonical_platform_name(r.platform), canonical_chart_name(r.chart_name))] = r
+
+    distinct_keys = {(canonical_platform_name(p), canonical_chart_name(c)) for p, c, _ in grouped}
+    needs_fallback = (not rows) or (len(existing_by_key) < len(distinct_keys))
+    if needs_fallback:
         fallback_rules = {
             "table_layout_keywords": [],
             "single_update_keywords": [],
@@ -7110,7 +7130,6 @@ async def list_chart_configs(db: Session = Depends(get_db)):
         }
         table_keywords = [str(x).lower() for x in (fallback_rules.get("table_layout_keywords") or [])]
         single_keywords = [str(x).lower() for x in (fallback_rules.get("single_update_keywords") or [])]
-        fallback_items: list[dict] = []
         platform_orders: dict[str, int] = {}
         dedup_by_chart: dict[tuple[str, str], dict] = {}
         for platform, chart_name, media_type in grouped:
@@ -7127,23 +7146,23 @@ async def list_chart_configs(db: Session = Depends(get_db)):
             chart_name_lc = (chart_name or "").lower()
             use_table_layout = any(k and k in chart_name_lc for k in table_keywords)
             use_single_update = any(k and k in chart_name_lc for k in single_keywords)
+            cfg = existing_by_key.get(key)
             dedup_by_chart[key] = {
                 "platform": platform,
                 "chart_name": chart_name,
-                "media_type": media_type if media_type in ("movie", "tv", "both") else "movie",
-                "sort_order": order,
-                "visible": True,
-                "input_mode": fallback_rules.get("input_mode_default") or "both",
-                "layout": "table" if use_table_layout else (fallback_rules.get("layout_default") or "card"),
-                "table_rows": int(fallback_rules.get("table_rows_for_table_layout") or 10),
-                "card_count": int(fallback_rules.get("card_count_default") or 10),
-                "update_mode": "single" if use_single_update else (fallback_rules.get("update_mode_default") or "all"),
-                "updater_key": _infer_updater_key(platform, chart_name),
-                "exportable": True,
-                "rank_label_mode": fallback_rules.get("rank_label_mode_default") or "number",
+                "media_type": (cfg.media_type if cfg and cfg.media_type else (media_type if media_type in ("movie", "tv", "both") else "movie")),
+                "sort_order": (cfg.sort_order if cfg and cfg.sort_order is not None else order),
+                "visible": (cfg.visible if cfg is not None else True),
+                "input_mode": (cfg.input_mode if cfg and cfg.input_mode else (fallback_rules.get("input_mode_default") or "both")),
+                "layout": (cfg.layout if cfg and cfg.layout else ("table" if use_table_layout else (fallback_rules.get("layout_default") or "card"))),
+                "table_rows": int((cfg.table_rows if cfg and cfg.table_rows else (fallback_rules.get("table_rows_for_table_layout") or 10))),
+                "card_count": int((cfg.card_count if cfg and cfg.card_count else (fallback_rules.get("card_count_default") or 10))),
+                "update_mode": (cfg.update_mode if cfg and cfg.update_mode else ("single" if use_single_update else (fallback_rules.get("update_mode_default") or "all"))),
+                "updater_key": (str(cfg.updater_key).strip() if cfg and cfg.updater_key else _infer_updater_key(platform, chart_name)),
+                "exportable": (cfg.exportable if cfg is not None else True),
+                "rank_label_mode": (cfg.rank_label_mode if cfg and cfg.rank_label_mode else (fallback_rules.get("rank_label_mode_default") or "number")),
             }
-        fallback_items = list(dedup_by_chart.values())
-        return fallback_items
+        return list(dedup_by_chart.values())
     return [
         {
             "platform": r.platform,
@@ -7205,9 +7224,6 @@ async def save_chart_configs(
             chart_name = canonical_chart_name(item.chart_name)
             order = dedup_sort_order.get(platform, 0)
             dedup_sort_order[platform] = order + 1
-            old_chart_name = existing_name_by_slot.get((platform, order))
-            if old_chart_name and old_chart_name != chart_name:
-                rename_pairs.append((platform, old_chart_name, chart_name))
             db.add(
                 ChartConfig(
                     platform=platform,
@@ -7229,8 +7245,6 @@ async def save_chart_configs(
                     rank_label_mode=item.rank_label_mode if item.rank_label_mode in ("number", "month") else "number",
                 )
             )
-        _apply_chart_name_renames(db, ChartEntry, rename_pairs)
-        _apply_chart_name_renames(db, PublicChartEntry, rename_pairs)
         db.commit()
         await delete_cache("charts:aggregate", "charts:public")
         return {"ok": True, "count": len(dedup_items)}
