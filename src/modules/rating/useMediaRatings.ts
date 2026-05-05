@@ -41,10 +41,6 @@ function mapBackendStatusToFrontend(data: { status?: string; status_reason?: str
   if (!data || typeof data !== 'object') return 'error';
   const status = String(data.status ?? '').trim();
   const reason = String(data.status_reason ?? '').trim();
-  if (reason.includes('未收录')) return 'not_found';
-  if (reason.includes('平台已锁定') || reason.includes('停止抓取')) return 'not_found';
-  if (status.toLowerCase() === 'no found') return 'not_found';
-  if (status.toLowerCase() === 'locked') return 'not_found';
   switch (status) {
     case 'Successful':
       return 'successful';
@@ -61,6 +57,10 @@ function mapBackendStatusToFrontend(data: { status?: string; status_reason?: str
     case 'Locked':
       return 'not_found';
     default:
+      if (reason.includes('未收录')) return 'not_found';
+      if (reason.includes('平台已锁定') || reason.includes('停止抓取')) return 'not_found';
+      if (status.toLowerCase() === 'no found') return 'not_found';
+      if (status.toLowerCase() === 'locked') return 'not_found';
       return 'error';
   }
 }
