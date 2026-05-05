@@ -1885,12 +1885,21 @@ def _normalize_douban_rating_url(url: str) -> str:
             if r.startswith("http://"):
                 r = "https://" + r[len("http://") :]
             if r:
-                return r
+                return _normalize_douban_rating_url(r)
         except Exception:
             return u
 
     if u.startswith("http://movie.douban.com/"):
-        return "https://" + u[len("http://") :]
+        u = "https://" + u[len("http://") :]
+    try:
+        p2 = urlparse(u)
+        host2 = (p2.netloc or "").lower().split(":")[0]
+        if host2 in ("movie.douban.com", "www.movie.douban.com"):
+            m2 = re.search(r"/subject/(\d+)", p2.path or "")
+            if m2:
+                return f"https://movie.douban.com/subject/{m2.group(1)}/"
+    except Exception:
+        pass
     return u
 
 _douban_inflight_lock = asyncio.Lock()
@@ -5862,6 +5871,15 @@ def create_empty_rating_data(platform, media_type, status):
             "seasons": [],
             "status": status
         }
+    elif platform == "tmdb":
+        out = {
+            "rating": 0.0,
+            "voteCount": 0,
+            "status": status,
+        }
+        if media_type == "tv":
+            out["seasons"] = []
+        return out
     elif platform == "trakt":
         return {
             "rating": "暂无",
