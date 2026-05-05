@@ -57,6 +57,15 @@ interface PlatformSeasonData {
   [key: string]: unknown;
 }
 
+function defaultManualRatingDataStatus(platformData: PlatformSeasonData | null): 'successful' | 'no_rating' {
+  if (!platformData) return 'successful';
+  const st =
+    extractValue(platformData, 'status') ||
+    extractValue(platformData, 'series', 'status') ||
+    extractValue(platformData, 'overall', 'status');
+  return st === 'No Rating' ? 'no_rating' : 'successful';
+}
+
 function getSeasonsFromPlatformData(platformKey: string, data: PlatformSeasonData | null): SeasonEntry[] {
   if (!data) return [];
   const arr = data.seasons || data.series?.seasons;
@@ -161,6 +170,7 @@ export default function AdminRatingEditPage() {
         tmdb_id: selectedMedia.id,
         media_type: selectedMedia.type,
         platform: platformKey,
+        rating_data_status: formData.get('rating_data_status') || 'successful',
       };
 
       switch (platformKey) {
@@ -339,6 +349,20 @@ export default function AdminRatingEditPage() {
                   className="mb-4"
                 />
                 <form onSubmit={handleSubmit} className="space-y-4">
+                  <div className="sm:max-w-xs">
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                      评分状态
+                    </label>
+                    <select
+                      key={`rating-status-${activePlatform}-${selectedMedia.id}-${defaultManualRatingDataStatus(platformData)}`}
+                      name="rating_data_status"
+                      defaultValue={defaultManualRatingDataStatus(platformData)}
+                      className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-white"
+                    >
+                      <option value="successful">有评分</option>
+                      <option value="no_rating">暂无评分</option>
+                    </select>
+                  </div>
                   {activePlatform === '豆瓣' && (
                     <div className="grid gap-3 sm:grid-cols-2">
                       <Input
@@ -356,7 +380,7 @@ export default function AdminRatingEditPage() {
                       <Input
                         label="评分链接"
                         name="url"
-                        placeholder="如 https://movie.douban.com/subject/xxx"
+                        placeholder="如 https://movie.douban.com/subject/xxx/"
                         defaultValue={extractValue(platformData, 'url')}
                       />
                     </div>
