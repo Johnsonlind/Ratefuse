@@ -470,7 +470,7 @@ async def get_cache(key: str):
             if data:
                 data = json.loads(data)
                 if isinstance(data, dict) and "status" in data:
-                    if data.get("status") == RATING_STATUS["SUCCESSFUL"]:
+                    if data.get("status") in (RATING_STATUS["SUCCESSFUL"], RATING_STATUS["NO_RATING"]):
                         return data
                     return None
                 return data
@@ -493,7 +493,7 @@ async def set_cache(key: str, data: dict, expire: int = CACHE_EXPIRE_TIME):
     if redis:
         try:
             if isinstance(data, dict) and "status" in data:
-                if data.get("status") == RATING_STATUS["SUCCESSFUL"]:
+                if data.get("status") in (RATING_STATUS["SUCCESSFUL"], RATING_STATUS["NO_RATING"]):
                     await redis.setex(key, expire, json.dumps(data))
             else:
                 await redis.setex(key, expire, json.dumps(data))
