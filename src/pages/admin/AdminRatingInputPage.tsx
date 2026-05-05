@@ -44,10 +44,15 @@ export default function AdminRatingInputPage() {
   const [activePlatform, setActivePlatform] = useState<string>(PLATFORMS[0]);
   const [submitting, setSubmitting] = useState(false);
   const [seasons, setSeasons] = useState<SeasonEntry[]>([]);
+  const [ratingDataStatus, setRatingDataStatus] = useState<'successful' | 'no_rating'>('successful');
 
   useEffect(() => {
     document.title = '评分手动录入（管理员） - RateFuse';
   }, []);
+
+  useEffect(() => {
+    setRatingDataStatus('successful');
+  }, [selectedMedia?.id, searchType]);
 
   const addSeason = () => {
     const next = seasons.length ? Math.max(...seasons.map((x) => Number(x.season_number) || 0)) + 1 : 1;
@@ -81,6 +86,7 @@ export default function AdminRatingInputPage() {
         tmdb_id: selectedMedia.id,
         media_type: selectedMedia.type,
         platform: platformKey,
+        rating_data_status: ratingDataStatus,
       };
 
       switch (platformKey) {
@@ -236,23 +242,37 @@ export default function AdminRatingInputPage() {
                 className="mb-4"
               />
               <form onSubmit={handleSubmit} className="space-y-4">
+                <div className="sm:max-w-xs">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    评分状态
+                  </label>
+                  <select
+                    name="rating_data_status"
+                    value={ratingDataStatus}
+                    onChange={(e) => setRatingDataStatus(e.target.value as 'successful' | 'no_rating')}
+                    className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-white"
+                  >
+                    <option value="successful">有评分</option>
+                    <option value="no_rating">暂无评分</option>
+                  </select>
+                </div>
                 {activePlatform === '豆瓣' && (
                   <div className="grid gap-3 sm:grid-cols-2">
                     <Input label="评分" name="rating" placeholder="如 8.5" />
                     <Input label="评分人数" name="rating_people" placeholder="如 100000" />
-                    <Input label="评分链接" name="url" placeholder="如 https://movie.douban.com/subject/xxx" />
+                    <Input label="评分链接" name="url" placeholder="如 https://movie.douban.com/subject/xxx/" />
                   </div>
                 )}
                 {activePlatform === 'IMDb' && (
                   <div className="grid gap-3 sm:grid-cols-2">
-                    <Input label="评分" name="rating" placeholder="如 8.5" required />
+                    <Input label="评分" name="rating" placeholder="如 8.5" required={ratingDataStatus === 'successful'} />
                     <Input label="评分人数" name="rating_people" placeholder="如 1000000" />
                     <Input label="评分链接" name="url" placeholder="如 https://www.imdb.com/title/ttxxxxxxx/" />
                   </div>
                 )}
                 {activePlatform === 'Letterboxd' && (
                   <div className="grid gap-3 sm:grid-cols-2">
-                    <Input label="评分" name="rating" placeholder="如 3.8" required />
+                    <Input label="评分" name="rating" placeholder="如 3.8" required={ratingDataStatus === 'successful'} />
                     <Input label="评分人数" name="rating_count" placeholder="如 50000" />
                     <Input label="评分链接" name="url" placeholder="如 https://letterboxd.com/film/xxxxxx/" />
                   </div>
@@ -279,14 +299,14 @@ export default function AdminRatingInputPage() {
                 )}
                 {activePlatform === 'TMDB' && (
                   <div className="grid gap-3 sm:grid-cols-2">
-                    <Input label="评分" name="rating" placeholder="如 7.8" type="number" step="0.1" required />
+                    <Input label="评分" name="rating" placeholder="如 7.8" type="number" step="0.1" required={ratingDataStatus === 'successful'} />
                     <Input label="投票数" name="vote_count" placeholder="如 5000" type="number" />
                     <Input label="评分链接" name="url" placeholder="如 https://www.themoviedb.org/movie/xxxxxx" />
                   </div>
                 )}
                 {activePlatform === 'Trakt' && (
                   <div className="grid gap-3 sm:grid-cols-2">
-                    <Input label="评分" name="rating" placeholder="如 8.2" type="number" step="0.1" required />
+                    <Input label="评分" name="rating" placeholder="如 8.2" type="number" step="0.1" required={ratingDataStatus === 'successful'} />
                     <Input label="投票数" name="votes" placeholder="如 10000" type="number" />
                     <Input label="评分链接" name="url" placeholder="如 https://trakt.tv/movies/xxxxxx" />
                   </div>
