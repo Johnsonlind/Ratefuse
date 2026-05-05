@@ -149,6 +149,7 @@ from ratings import (
     RATING_STATUS,
     search_platform,
     create_rating_data,
+    create_empty_rating_data,
     get_tmdb_http_client,
     is_platform_locked,
     update_platform_status_after_fetch,
@@ -3010,12 +3011,21 @@ def _normalize_douban_rating_url(url: str) -> str:
             if r.startswith("http://"):
                 r = "https://" + r[len("http://") :]
             if r:
-                return r
+                return _normalize_douban_rating_url(r)
         except Exception:
             return u
 
     if u.startswith("http://movie.douban.com/") or u.startswith("http://www.douban.com/") or u.startswith("http://douban.com/"):
         u = "https://" + u[len("http://") :]
+    try:
+        p2 = urlparse(u)
+        host2 = (p2.netloc or "").lower().split(":")[0]
+        if host2 in ("movie.douban.com", "www.movie.douban.com"):
+            m2 = _DOUBAN_ID_RE.search(p2.path or "")
+            if m2:
+                return f"https://movie.douban.com/subject/{m2.group(1)}/"
+    except Exception:
+        pass
     return u
 
 def _extract_letterboxd_slug_from_url(url: str) -> Optional[str]:
@@ -6472,6 +6482,12 @@ async def admin_export_media_detail_views(
 # 12. 手动评分与榜单
 # ==========================================
 
+def _resolve_manual_rating_data_status(body: dict) -> str:
+    raw = str(body.get("rating_data_status") or "").strip().lower()
+    if raw in ("no_rating", "暂无评分"):
+        return RATING_STATUS["NO_RATING"]
+    return RATING_STATUS["SUCCESSFUL"]
+
 def _build_seasons_list(body: dict, platform: str, media_type: str) -> list:
     if media_type != "tv":
         return []
@@ -6492,7 +6508,7 @@ def _build_seasons_list(body: dict, platform: str, media_type: str) -> list:
         item = {"season_number": sn}
         url = str(s.get("url") or "").strip()
         if url:
-            item["url"] = url
+            item["url"] = _normalize_douban_rating_url(url) if platform == "douban" else url
         if platform == "douban":
             item["rating"] = str(s.get("rating") or "").strip() or "0"
             item["rating_people"] = str(s.get("rating_people") or "").strip() or "0"
@@ -6518,9 +6534,34 @@ def _build_seasons_list(body: dict, platform: str, media_type: str) -> list:
     return result
 
 def _build_manual_rating_payload(platform: str, body: dict, media_type: str):
-    status = RATING_STATUS["SUCCESSFUL"]
+    data_status = _resolve_manual_rating_data_status(body)
     seasons_list = _build_seasons_list(body, platform, media_type) if media_type == "tv" else []
     url = str(body.get("url") or "").strip()
+    if platform == "douban" and url:
+        url = _normalize_douban_rating_url(url)
+
+    if data_status == RATING_STATUS["NO_RATING"]:
+        payload = create_empty_rating_data(platform, media_type, data_status)
+        if url:
+            payload["url"] = url
+        if platform == "letterboxd":
+            payload["status_widget"] = str(body.get("status") or "Released").strip()
+        if media_type == "tv" and seasons_list:
+            if platform == "douban":
+                payload["seasons"] = [
+                    {
+                        "season_number": s["season_number"],
+                        "rating": "暂无",
+                        "rating_people": "暂无",
+                        **({"url": s["url"]} if s.get("url") else {}),
+                    }
+                    for s in seasons_list
+                ]
+            elif platform in ("rottentomatoes", "metacritic", "tmdb", "trakt"):
+                payload["seasons"] = seasons_list
+        return payload
+
+    status = RATING_STATUS["SUCCESSFUL"]
     if platform == "douban":
         base = {
             "status": status,
