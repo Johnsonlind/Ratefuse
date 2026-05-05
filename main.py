@@ -553,6 +553,14 @@ async def set_platform_absent_marker(platform: str, media_type: str, tmdb_id: in
     except Exception as e:
         logger.warning(f"写入 platform absent 冷却失败: {e}")
 
+async def clear_platform_absent_marker(platform: str, media_type: str, tmdb_id: int) -> None:
+    if not redis:
+        return
+    try:
+        await redis.delete(_platform_absent_cache_key(platform, media_type, tmdb_id))
+    except Exception as e:
+        logger.warning(f"清理 platform absent 冷却失败: {e}")
+
 def _should_mark_platform_absent(rating_info: Any) -> bool:
     if not isinstance(rating_info, dict):
         return False
@@ -6679,6 +6687,7 @@ async def save_manual_rating(
     cache_key = f"rating:{platform}:{media_type}:{tid}"
     try:
         await set_cache(cache_key, payload)
+        await clear_platform_absent_marker(platform, media_type, tid)
     except Exception as e:
         logger.error(f"保存手动评分到缓存失败: {e}")
         raise HTTPException(status_code=503, detail=f"缓存写入失败，请检查 Redis 连接: {str(e)}")
@@ -6742,6 +6751,7 @@ async def create_manual_rating(
     cache_key = f"rating:{platform}:{media_type}:{tid}"
     try:
         await set_cache(cache_key, payload)
+        await clear_platform_absent_marker(platform, media_type, tid)
     except Exception as e:
         logger.error(f"保存手动评分到缓存失败: {e}")
         raise HTTPException(status_code=503, detail=f"缓存写入失败: {str(e)}")
