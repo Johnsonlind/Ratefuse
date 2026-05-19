@@ -8,7 +8,7 @@ import ErrorMessage from '../../shared/ui/ErrorMessage';
 import type { FetchStatus } from '../../shared/types/status';
 import { calculateSeasonRating } from './calculateSeasonRating';
 import { OverallRatingCard } from './OverallRatingCard';
-import { calculateTVShowOverallRating } from './calculateTVShowOverallRating';
+import { calculateOverallRating } from './calculateOverallRating';
 import { isValidRatingData } from '../../modules/rating/ratingHelpers';
 import { 
   getDoubanUrl,
@@ -258,7 +258,7 @@ export function TVShowRatingGrid({
     return null;
   };
 
-  const overallRating = calculateTVShowOverallRating(ratingData);
+  const overallRating = calculateOverallRating(ratingData, 'tvshow');
   const seasonRating = selectedSeason ? calculateSeasonRating(ratingData, selectedSeason) : null;
 
   const gridCols =
@@ -268,22 +268,22 @@ export function TVShowRatingGrid({
 
   return (
     <div className="space-y-4">
-      {!selectedSeason && (
+      {!selectedSeason && overallRating.rating ? (
         <div className="mb-6">
           <OverallRatingCard 
-            rating={overallRating.rating || 0} 
+            rating={overallRating.rating} 
             validPlatformsCount={overallRating.validRatings}
           />
         </div>
-      )}
-      {selectedSeason && seasonRating && (
+      ) : null}
+      {selectedSeason && seasonRating?.rating ? (
         <div className="mb-6">
           <OverallRatingCard 
-            rating={seasonRating.rating || 0}
+            rating={seasonRating.rating}
             validPlatformsCount={seasonRating.validRatings}
           />
         </div>
-      )}
+      ) : null}
       {/* 评分卡片 */}
       <div className={`grid ${gridCols} gap-4 ${className}`}>
         {/* 豆瓣评分 */}
