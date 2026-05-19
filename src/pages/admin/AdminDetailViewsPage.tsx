@@ -2,7 +2,7 @@
 // 管理端详情访问管理页
 // ==========================================
 import { useEffect, useMemo, useState } from 'react';
-import { CalendarDays, Download, Film, RefreshCw, Trash2 } from 'lucide-react';
+import { CalendarDays, Download, Eraser, Film, RefreshCw, Trash2 } from 'lucide-react';
 import { authFetch, authFetchJson } from '../../api/authFetch';
 import { ConfirmDialog } from '../../shared/ui/ConfirmDialog';
 import { formatChinaDateTime, formatChinaYyyyMmDd } from '../../shared/utils/time';
@@ -47,7 +47,10 @@ export default function AdminDetailViewsPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>('');
   const [actionError, setActionError] = useState<string>('');
+  const [actionSuccess, setActionSuccess] = useState<string>('');
   const [exporting, setExporting] = useState(false);
+  const [clearingCache, setClearingCache] = useState(false);
+  const [clearCacheModalOpen, setClearCacheModalOpen] = useState(false);
 
   const [deleteModal, setDeleteModal] = useState<{ open: boolean; logId: number | null }>({
     open: false,
@@ -198,6 +201,27 @@ export default function AdminDetailViewsPage() {
     );
   }
 
+  async function handleClearRatingCache() {
+    setClearingCache(true);
+    setActionError('');
+    setActionSuccess('');
+    try {
+      const res = await authFetch('/api/admin/ratings/cache/clear-all', {
+        method: 'POST',
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(body?.detail || body?.message || '清除缓存失败');
+      }
+      setClearCacheModalOpen(false);
+      setActionSuccess(body?.message || '评分缓存已清除');
+    } catch (e: any) {
+      setActionError(e?.message || '清除缓存失败');
+    } finally {
+      setClearingCache(false);
+    }
+  }
+
   async function handleExportExcel() {
     setExporting(true);
     setActionError('');
@@ -310,6 +334,16 @@ export default function AdminDetailViewsPage() {
         <div className="flex items-center gap-2">
           <button
             type="button"
+            onClick={() => setClearCacheModalOpen(true)}
+            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-amber-200 dark:border-amber-700 bg-white dark:bg-gray-800/60 text-sm text-amber-700 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-colors disabled:opacity-50"
+            disabled={loading || clearingCache}
+            title="清除 Redis 中所有评分相关缓存"
+          >
+            <Eraser className={`w-4 h-4 ${clearingCache ? 'animate-pulse' : ''}`} />
+            一键清除所有缓存评分
+          </button>
+          <button
+            type="button"
             onClick={() => void handleExportExcel()}
             className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800/60 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors disabled:opacity-50"
             disabled={loading || exporting}
@@ -413,6 +447,7 @@ export default function AdminDetailViewsPage() {
 
         {error ? <div className="mt-4 text-sm text-red-600 dark:text-red-400">{error}</div> : null}
         {actionError ? <div className="mt-3 text-sm text-red-600 dark:text-red-400">{actionError}</div> : null}
+        {actionSuccess ? <div className="mt-3 text-sm text-green-600 dark:text-green-400">{actionSuccess}</div> : null}
       </div>
 
       <div className="mt-5 rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-800/50 overflow-hidden">
@@ -600,6 +635,16 @@ export default function AdminDetailViewsPage() {
           setBatchDeleteModalOpen(false);
           void handleBatchDelete();
         }}
+      />
+      <ConfirmDialog
+        open={clearCacheModalOpen}
+        title="清除评分缓存"
+        message="确定要清除 Redis 中所有评分相关缓存吗？清除后下次访问详情页将重新抓取各平台评分。"
+        confirmText={clearingCache ? '清除中...' : '清除'}
+        cancelText="取消"
+        variant="danger"
+        onCancel={() => setClearCacheModalOpen(false)}
+        onConfirm={() => void handleClearRatingCache()}
       />
     </div>
   );
