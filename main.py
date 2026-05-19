@@ -517,6 +517,34 @@ async def delete_cache(*keys: str):
         for key in valid_keys:
             _local_cache.pop(key, None)
 
+_RATING_CACHE_PREFIXES = ("rating:", "ratings:all:", "tmdb:rating:")
+
+async def _purge_local_rating_cache() -> int:
+    removed = 0
+    async with _local_cache_lock:
+        keys_to_remove = [
+            k for k in _local_cache
+            if any(k.startswith(prefix) for prefix in _RATING_CACHE_PREFIXES)
+        ]
+        for key in keys_to_remove:
+            _local_cache.pop(key, None)
+            removed += 1
+    return removed
+
+async def _delete_redis_keys_by_patterns(patterns: list[str]) -> int:
+    if not redis:
+        return 0
+    deleted = 0
+    for pattern in patterns:
+        cursor = 0
+        while True:
+            cursor, batch = await redis.scan(cursor=cursor, match=pattern, count=500)
+            if batch:
+                deleted += int(await redis.delete(*batch))
+            if cursor == 0:
+                break
+    return deleted
+
 def _platform_absent_cache_key(platform: str, media_type: str, tmdb_id: int) -> str:
     p = (platform or "").strip().lower()
     mt = (media_type or "").strip().lower()
@@ -6393,6 +6421,25 @@ async def admin_batch_delete_media_detail_views(
     ).delete(synchronize_session=False)
     db.commit()
     return {"ok": True, "deleted": len(cleaned_ids)}
+
+@app.post("/api/admin/ratings/cache/clear-all")
+async def admin_clear_all_rating_cache(
+    current_user: User = Depends(get_current_user),
+):
+    require_admin(current_user)
+    try:
+        patterns = ["rating:*", "ratings:all:*", "tmdb:rating:*"]
+        redis_deleted = await _delete_redis_keys_by_patterns(patterns)
+        local_deleted = await _purge_local_rating_cache()
+        return {
+            "ok": True,
+            "redis_deleted": redis_deleted,
+            "local_deleted": local_deleted,
+            "message": f"已清除 {redis_deleted} 条 Redis 评分缓存（本地缓存 {local_deleted} 条）",
+        }
+    except Exception as e:
+        logger.error(f"清除评分缓存失败: {e}")
+        raise HTTPException(status_code=500, detail=f"清除评分缓存失败: {str(e)}")
 
 @app.get("/api/admin/detail-views/export")
 async def admin_export_media_detail_views(
