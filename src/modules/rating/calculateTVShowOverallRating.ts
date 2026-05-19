@@ -25,6 +25,7 @@ export function calculateTVShowOverallRating(ratingData: TVShowRatingData) {
     ratingData.seasons
       ?.filter((s) => s.douban && s.douban.rating && s.douban.rating_people)
       .map((s) => ({
+        season_number: s.season_number,
         rating: s.douban!.rating,
         rating_people: s.douban!.rating_people,
       })) ?? [];
@@ -49,6 +50,14 @@ export function calculateTVShowOverallRating(ratingData: TVShowRatingData) {
         state
       );
     }
+  } else if (ratingData.douban && allDoubanSeasons.length === 1) {
+    const onlySeason = allDoubanSeasons[0];
+    processDoubanRating(
+      effectiveRatingData,
+      medianVoteCount,
+      state,
+      onlySeason.season_number
+    );
   } else {
     processDoubanRating(ratingData, medianVoteCount, state);
   }
