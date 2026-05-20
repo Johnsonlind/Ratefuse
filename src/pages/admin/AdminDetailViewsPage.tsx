@@ -16,6 +16,7 @@ type DetailViewItem = {
   id: number;
   visited_at: string | null;
   media_type: MediaType;
+  tmdb_id: number | null;
   title: string;
   url: string;
   user: { id: number; email: string; username: string } | null;
@@ -32,6 +33,8 @@ type DetailViewsResp = {
     start_date: string | null;
     end_date: string | null;
     media_type: MediaType | null;
+    q?: string | null;
+    tmdb_id?: number | null;
   };
 };
 
@@ -39,6 +42,8 @@ export default function AdminDetailViewsPage() {
   const [startDate, setStartDate] = useState<string>(() => formatChinaYyyyMmDd());
   const [endDate, setEndDate] = useState<string>(() => formatChinaYyyyMmDd());
   const [mediaType, setMediaType] = useState<MediaType | ''>('');
+  const [titleQuery, setTitleQuery] = useState('');
+  const [tmdbIdFilter, setTmdbIdFilter] = useState('');
   const [username, setUsername] = useState('');
   const [page, setPage] = useState(1);
   const [pageInput, setPageInput] = useState('1');
@@ -69,9 +74,11 @@ export default function AdminDetailViewsPage() {
     if (startDate) p.set('start_date', startDate);
     if (endDate) p.set('end_date', endDate);
     if (mediaType) p.set('media_type', mediaType);
+    if (titleQuery.trim()) p.set('q', titleQuery.trim());
+    if (tmdbIdFilter.trim()) p.set('tmdb_id', tmdbIdFilter.trim());
     if (username.trim()) p.set('username', username.trim());
     return p.toString();
-  }, [startDate, endDate, mediaType, username]);
+  }, [startDate, endDate, mediaType, titleQuery, tmdbIdFilter, username]);
 
   const query = useMemo(() => {
     const p = new URLSearchParams(baseQuery);
@@ -107,15 +114,7 @@ export default function AdminDetailViewsPage() {
   }, [query]);
 
   const totalPages = data ? Math.max(1, Math.ceil((data.total || 0) / pageSize)) : 1;
-  const normalizedUsername = username.trim().toLowerCase();
-  const visibleItems = useMemo(() => {
-    const items = data?.items || [];
-    if (!normalizedUsername) return items;
-    return items.filter((it) => {
-      const name = it.user?.username?.toLowerCase?.() || '';
-      return name.includes(normalizedUsername);
-    });
-  }, [data?.items, normalizedUsername]);
+  const visibleItems = data?.items || [];
 
   useEffect(() => {
     setPageInput(String(page));
@@ -415,6 +414,33 @@ export default function AdminDetailViewsPage() {
             </select>
           </div>
           <div className="w-full sm:w-56 min-w-0">
+            <label className="text-sm text-gray-700 dark:text-gray-300 mb-1 block">名称模糊搜索</label>
+            <input
+              type="text"
+              value={titleQuery}
+              onChange={(e) => {
+                setTitleQuery(e.target.value);
+                setPage(1);
+              }}
+              placeholder="输入影视名称关键字"
+              className="w-full max-w-full min-w-0 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900/40 text-gray-900 dark:text-white text-sm"
+            />
+          </div>
+          <div className="w-full sm:w-44 min-w-0">
+            <label className="text-sm text-gray-700 dark:text-gray-300 mb-1 block">TMDB ID 精确筛选</label>
+            <input
+              type="text"
+              inputMode="numeric"
+              value={tmdbIdFilter}
+              onChange={(e) => {
+                setTmdbIdFilter(e.target.value.replace(/[^\d]/g, ''));
+                setPage(1);
+              }}
+              placeholder="例如 157336"
+              className="w-full max-w-full min-w-0 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900/40 text-gray-900 dark:text-white text-sm"
+            />
+          </div>
+          <div className="w-full sm:w-56 min-w-0">
             <label className="text-sm text-gray-700 dark:text-gray-300 mb-1 block">用户昵称</label>
             <input
               type="text"
@@ -483,6 +509,7 @@ export default function AdminDetailViewsPage() {
                 <th className="text-left font-medium px-4 py-3">访问时间</th>
                 <th className="text-left font-medium px-4 py-3">影视类型</th>
                 <th className="text-left font-medium px-4 py-3">影视名称</th>
+                <th className="text-left font-medium px-4 py-3">TMDB</th>
                 <th className="text-left font-medium px-4 py-3">影视链接</th>
                 <th className="text-left font-medium px-4 py-3">用户</th>
                 <th className="text-left font-medium px-4 py-3">各平台评分获取状态</th>
@@ -492,13 +519,13 @@ export default function AdminDetailViewsPage() {
             <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
               {loading ? (
                 <tr>
-                  <td className="px-4 py-6 text-gray-500 dark:text-gray-400" colSpan={7}>
+                  <td className="px-4 py-6 text-gray-500 dark:text-gray-400" colSpan={9}>
                     加载中...
                   </td>
                 </tr>
               ) : visibleItems.length === 0 ? (
                 <tr>
-                  <td className="px-4 py-6 text-gray-500 dark:text-gray-400" colSpan={7}>
+                  <td className="px-4 py-6 text-gray-500 dark:text-gray-400" colSpan={9}>
                     暂无记录
                   </td>
                 </tr>
@@ -519,6 +546,9 @@ export default function AdminDetailViewsPage() {
                     <td className="px-4 py-3 whitespace-nowrap">{it.media_type === 'movie' ? '电影' : '剧集'}</td>
                     <td className="px-4 py-3 max-w-[360px] truncate" title={it.title}>
                       {it.title}
+                    </td>
+                    <td className="px-4 py-3 whitespace-nowrap text-gray-700 dark:text-gray-200">
+                      {it.tmdb_id ?? '-'}
                     </td>
                     <td className="px-4 py-3 max-w-[420px] truncate">
                       <a
