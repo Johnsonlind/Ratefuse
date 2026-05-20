@@ -1993,6 +1993,295 @@ async def run_in_douban_request_queue(factory, *, media_type: str, queue_timeout
         _douban_request_queue_semaphore.release()
         _douban_log("queue.release", media_type=media_type)
 
+_DOUBAN_SEASON_TITLE_RE = re.compile(
+    r"第([一二三四五六七八九十百\d]+)季|Season\s*(\d+)",
+    re.IGNORECASE,
+)
+
+def _parse_douban_season_number_from_title(title: str) -> Optional[int]:
+    if not title:
+        return None
+    m = _DOUBAN_SEASON_TITLE_RE.search(title)
+    if not m:
+        return None
+    chinese_season = m.group(1)
+    arabic_season = m.group(2) if m.lastindex and m.lastindex >= 2 else None
+    if chinese_season:
+        if str(chinese_season).isdigit():
+            return int(chinese_season)
+        return chinese_to_arabic(chinese_season)
+    if arabic_season:
+        try:
+            return int(arabic_season)
+        except Exception:
+            return None
+    return None
+
+def _expected_tmdb_tv_season_numbers(tmdb_info: dict) -> set[int]:
+    out: set[int] = set()
+    try:
+        nos = int((tmdb_info or {}).get("number_of_seasons") or 0)
+        if nos > 0:
+            out.update(range(1, nos + 1))
+    except Exception:
+        pass
+    for s in (tmdb_info or {}).get("seasons") or []:
+        if not isinstance(s, dict):
+            continue
+        try:
+            n = int(s.get("season_number") or 0)
+        except Exception:
+            continue
+        if n > 0:
+            out.add(n)
+    return out
+
+def _tmdb_tv_is_multi_season(tmdb_info: dict) -> bool:
+    return len(_expected_tmdb_tv_season_numbers(tmdb_info)) > 1
+
+def _douban_parse_rating_from_html(html: str) -> tuple[str, str]:
+    json_match = re.search(
+        r'"aggregateRating":\s*{\s*"@type":\s*"AggregateRating",\s*"ratingCount":\s*"([^"]+)",\s*"bestRating":\s*"([^"]+)",\s*"worstRating":\s*"([^"]+)",\s*"ratingValue":\s*"([^"]+)"',
+        html or "",
+    )
+    if json_match:
+        return str(json_match.group(4)), str(json_match.group(1))
+    rating_match = re.search(r'<strong[^>]*class="ll rating_num"[^>]*>([^<]*)</strong>', html or "")
+    people_match = re.search(r'<span[^>]*property="v:votes">(\d+)</span>', html or "")
+    rating = rating_match.group(1).strip() if rating_match and rating_match.group(1).strip() else "暂无"
+    rating_people = people_match.group(1).strip() if people_match else "暂无"
+    return rating, rating_people
+
+async def _douban_fetch_tv_season_rating_via_http(
+    url: str,
+    douban_cookie: Optional[str] = None,
+) -> Optional[dict]:
+    detail_headers = {
+        "User-Agent": random.choice(USER_AGENTS),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Referer": "https://movie.douban.com/",
+    }
+    if douban_cookie:
+        detail_headers["Cookie"] = douban_cookie
+    detail_timeout = aiohttp.ClientTimeout(total=10.0, connect=4.0, sock_read=6.0)
+    try:
+        async with aiohttp.ClientSession(timeout=detail_timeout, headers=detail_headers) as session:
+            async with session.get(url) as resp:
+                html = await resp.text()
+                hits = _douban_limited_signals(html, str(resp.url), "")
+                if resp.status in (403, 418, 429) or hits:
+                    return None
+    except Exception:
+        return None
+    if "暂无评分" in html or "尚未上映" in html:
+        return {"rating": "暂无", "rating_people": "暂无", "url": url}
+    rating, rating_people = _douban_parse_rating_from_html(html)
+    if rating in (None, "", "暂无") or rating_people in (None, "", "暂无"):
+        return None
+    return {"rating": str(rating), "rating_people": str(rating_people), "url": url}
+
+async def _douban_suggest_candidates_for_query(
+    query: str,
+    douban_cookie: Optional[str] = None,
+) -> list[dict]:
+    q = str(query or "").strip()
+    if not q:
+        return []
+    headers = {
+        "User-Agent": random.choice(USER_AGENTS),
+        "Accept": "application/json,text/javascript,*/*;q=0.1",
+        "Referer": "https://movie.douban.com/",
+    }
+    if douban_cookie:
+        headers["Cookie"] = douban_cookie
+    timeout = aiohttp.ClientTimeout(total=8.0, connect=3.0, sock_read=5.0)
+    suggest_url = f"https://movie.douban.com/j/subject_suggest?q={quote(q)}"
+    try:
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            async with session.get(suggest_url) as resp:
+                if resp.status >= 400:
+                    return []
+                payload = await resp.json(content_type=None)
+    except Exception:
+        return []
+    if not isinstance(payload, list):
+        return []
+    candidates = []
+    for item in payload[:12]:
+        if not isinstance(item, dict):
+            continue
+        raw_url = str(item.get("url") or "").strip()
+        sid = str(item.get("id") or "").strip()
+        if not raw_url and sid.isdigit():
+            raw_url = f"https://movie.douban.com/subject/{sid}/"
+        if not raw_url:
+            continue
+        candidates.append(
+            {
+                "title": str(item.get("title") or "").strip(),
+                "year": str(item.get("year") or "").strip(),
+                "url": _normalize_douban_detail_url(raw_url),
+            }
+        )
+    return candidates
+
+async def _douban_quick_tv_multi_season_via_http(
+    tmdb_info: dict,
+    douban_cookie: Optional[str] = None,
+) -> Optional[dict]:
+    expected = sorted(_expected_tmdb_tv_season_numbers(tmdb_info))
+    if len(expected) <= 1:
+        return None
+    title = str(
+        tmdb_info.get("zh_title")
+        or tmdb_info.get("title")
+        or tmdb_info.get("name")
+        or tmdb_info.get("original_title")
+        or ""
+    ).strip()
+    if not title:
+        return None
+    tmdb_id = str(tmdb_info.get("tmdb_id") or tmdb_info.get("id") or "")
+    candidates = await _douban_suggest_candidates_for_query(title, douban_cookie=douban_cookie)
+    if not candidates:
+        return None
+
+    season_best: dict[int, dict] = {}
+    for c in candidates:
+        sn = _parse_douban_season_number_from_title(c.get("title") or "")
+        if sn is None or sn not in expected:
+            continue
+        try:
+            score = await calculate_match_degree(tmdb_info, c, "douban")
+        except Exception:
+            score = 0
+        if score < 60:
+            continue
+        prev = season_best.get(sn)
+        if not prev or score > prev.get("_score", 0):
+            season_best[sn] = {**c, "_score": score}
+
+    missing = [sn for sn in expected if sn not in season_best]
+    for sn in missing:
+        for query in (
+            f"{title} 第{sn}季",
+            f"{title} Season {sn}",
+        ):
+            extra = await _douban_suggest_candidates_for_query(query, douban_cookie=douban_cookie)
+            for c in extra:
+                c_sn = _parse_douban_season_number_from_title(c.get("title") or "")
+                if c_sn != sn:
+                    continue
+                try:
+                    score = await calculate_match_degree(tmdb_info, c, "douban")
+                except Exception:
+                    score = 0
+                if score < 55:
+                    continue
+                prev = season_best.get(sn)
+                if not prev or score > prev.get("_score", 0):
+                    season_best[sn] = {**c, "_score": score}
+            if sn in season_best:
+                break
+
+    if len(season_best) < len(expected):
+        _douban_log(
+            "quick.tv.multi.partial",
+            tmdb_id=tmdb_id,
+            found=sorted(season_best.keys()),
+            expected=expected,
+        )
+        return None
+
+    seasons_out = []
+    for sn in expected:
+        entry = season_best[sn]
+        fetched = await _douban_fetch_tv_season_rating_via_http(entry["url"], douban_cookie=douban_cookie)
+        if not fetched:
+            return None
+        seasons_out.append(
+            {
+                "season_number": sn,
+                "rating": fetched["rating"],
+                "rating_people": fetched["rating_people"],
+                "url": fetched["url"],
+            }
+        )
+
+    _douban_log("quick.tv.multi.success", tmdb_id=tmdb_id, seasons=len(seasons_out))
+    first_url = seasons_out[0]["url"] if seasons_out else ""
+    return {
+        "status": RATING_STATUS["SUCCESSFUL"],
+        "seasons": seasons_out,
+        "url": first_url,
+        "_match_score": float(max(x.get("_score", 0) for x in season_best.values())),
+    }
+
+async def _douban_fill_missing_tv_season_urls(
+    tmdb_info: dict,
+    season_results: list[dict],
+    matched_results: list,
+    douban_cookie: Optional[str] = None,
+) -> list[dict]:
+    expected = _expected_tmdb_tv_season_numbers(tmdb_info)
+    if len(expected) <= 1:
+        return season_results
+    by_sn: dict[int, dict] = {}
+    for sr in season_results:
+        try:
+            sn = int(sr.get("season_number") or 0)
+        except Exception:
+            continue
+        if sn > 0 and sn not in by_sn:
+            by_sn[sn] = sr
+
+    for result in matched_results or []:
+        if not isinstance(result, dict):
+            continue
+        title = result.get("title", "")
+        sn = _parse_douban_season_number_from_title(title)
+        if sn is None or sn in by_sn or sn not in expected:
+            continue
+        url = _normalize_douban_detail_url(str(result.get("url") or ""))
+        if url:
+            by_sn[sn] = {"season_number": sn, "title": title, "url": url}
+
+    title = str(
+        tmdb_info.get("zh_title")
+        or tmdb_info.get("title")
+        or tmdb_info.get("name")
+        or tmdb_info.get("original_title")
+        or ""
+    ).strip()
+    missing = sorted([sn for sn in expected if sn not in by_sn])
+    for sn in missing:
+        if not title:
+            break
+        best = None
+        best_score = -1
+        for query in (f"{title} 第{sn}季", f"{title} Season {sn}"):
+            for c in await _douban_suggest_candidates_for_query(query, douban_cookie=douban_cookie):
+                c_sn = _parse_douban_season_number_from_title(c.get("title") or "")
+                if c_sn != sn:
+                    continue
+                try:
+                    score = await calculate_match_degree(tmdb_info, c, "douban")
+                except Exception:
+                    score = 0
+                if score > best_score:
+                    best_score = score
+                    best = c
+        if best and best_score >= 55:
+            by_sn[sn] = {
+                "season_number": sn,
+                "title": best.get("title") or "",
+                "url": best.get("url") or "",
+            }
+
+    out = list(by_sn.values())
+    out.sort(key=lambda x: x["season_number"])
+    return out
+
 async def _douban_quick_movie_rating_via_http(tmdb_info: dict, douban_cookie: Optional[str] = None) -> Optional[dict]:
     """豆瓣电影快速路径"""
     title = str(
@@ -2286,7 +2575,10 @@ async def douban_search_and_extract_rating(
     if mt == "movie":
         quick = await _douban_quick_movie_rating_via_http(tmdb_info, douban_cookie=douban_cookie)
     elif mt == "tv":
-        quick = await _douban_quick_tv_rating_via_http(tmdb_info, douban_cookie=douban_cookie)
+        if _tmdb_tv_is_multi_season(tmdb_info):
+            quick = await _douban_quick_tv_multi_season_via_http(tmdb_info, douban_cookie=douban_cookie)
+        else:
+            quick = await _douban_quick_tv_rating_via_http(tmdb_info, douban_cookie=douban_cookie)
     if isinstance(quick, dict):
         st = quick.get("status")
         _douban_log("pipeline.quick.result", tmdb_id=tmdb_id, status=st, reason=quick.get("status_reason"))
@@ -2452,7 +2744,7 @@ async def douban_search_and_extract_rating(
                 await check_req()
                 score = await calculate_match_degree(tmdb_info, result, "douban")
                 result["match_score"] = score
-                if media_type == "tv" and len(tmdb_info.get("seasons", [])) > 1:
+                if media_type == "tv" and _tmdb_tv_is_multi_season(tmdb_info):
                     if score > 50:
                         matched_results.append(result)
                 else:
@@ -2462,7 +2754,7 @@ async def douban_search_and_extract_rating(
 
             if (
                 media_type == "tv"
-                and len(tmdb_info.get("seasons", [])) > 1
+                and _tmdb_tv_is_multi_season(tmdb_info)
                 and matched_results
             ):
                 matched_results.sort(
@@ -2498,7 +2790,7 @@ async def douban_search_and_extract_rating(
 
             if (
                 media_type == "tv"
-                and len(tmdb_info.get("seasons", [])) > 1
+                and _tmdb_tv_is_multi_season(tmdb_info)
                 and matched_results
             ):
                 rating_data = await extract_douban_rating(
@@ -3541,7 +3833,7 @@ async def extract_rating_info(media_type, platform, tmdb_info, search_results, r
                     if isinstance(result, dict):
                         result["match_score"] = score
                 
-                if media_type == "tv" and len(tmdb_info.get("seasons", [])) > 1:
+                if media_type == "tv" and _tmdb_tv_is_multi_season(tmdb_info):
                     if score > 50:
                         matched_results.append(result)
                 else:
@@ -3549,7 +3841,7 @@ async def extract_rating_info(media_type, platform, tmdb_info, search_results, r
                         highest_score = score
                         best_match = result
 
-            if media_type == "tv" and len(tmdb_info.get("seasons", [])) > 1 and matched_results:
+            if media_type == "tv" and _tmdb_tv_is_multi_season(tmdb_info) and matched_results:
                 matched_results.sort(key=lambda x: x.get("match_score", 0), reverse=True)
                 print(f"{platform} 找到 {len(matched_results)} 个匹配的季")
                 
@@ -3750,7 +4042,7 @@ async def extract_rating_info(media_type, platform, tmdb_info, search_results, r
 
                     try:
                         if platform == "douban":
-                            if media_type == "tv" and len(tmdb_info.get("seasons", [])) > 1 and matched_results:
+                            if media_type == "tv" and _tmdb_tv_is_multi_season(tmdb_info) and matched_results:
                                 print("检测到多季剧集，进行分季抓取以获取所有季评分")
                                 rating_data = await extract_douban_rating(page, media_type, matched_results, tmdb_info=tmdb_info, request=request, douban_cookie=douban_cookie)
                             else:
@@ -4566,19 +4858,20 @@ async def extract_douban_rating(page, media_type, matched_results, tmdb_info=Non
         season_results = []
         for result in matched_results:
             title = result.get("title", "")
-            season_match = re.search(r'第([一二三四五六七八九十百]+)季|Season\s*(\d+)', title, re.IGNORECASE)
-            if season_match:
-                chinese_season = season_match.group(1) if season_match.group(1) else None
-                arabic_season = season_match.group(2) if len(season_match.groups()) > 1 else None
-                
-                season_number = chinese_to_arabic(chinese_season) if chinese_season else int(arabic_season) if arabic_season else None
-                
-                if season_number:
-                    season_results.append({
-                        "season_number": season_number,
-                        "title": title,
-                        "url": result.get("url")
-                    })
+            season_number = _parse_douban_season_number_from_title(title)
+            if season_number:
+                season_results.append({
+                    "season_number": season_number,
+                    "title": title,
+                    "url": result.get("url")
+                })
+
+        season_results = await _douban_fill_missing_tv_season_urls(
+            tmdb_info or {},
+            season_results,
+            matched_results,
+            douban_cookie=douban_cookie,
+        )
 
         total_seasons = 0
         try:
@@ -5550,9 +5843,20 @@ async def extract_metacritic_rating(page, media_type, tmdb_info):
             elif tmdb_info.get("number_of_seasons", 0) > 1:
                 print(f"\n[多季剧集]Metacritic分季处理")
                 base_url = page.url.rstrip('/')
-                
+                season_numbers: list[int] = []
                 for season in tmdb_info.get("seasons", []):
-                    season_number = season.get("season_number")
+                    try:
+                        sn = int(season.get("season_number") or 0)
+                    except Exception:
+                        sn = 0
+                    if sn > 0:
+                        season_numbers.append(sn)
+                if not season_numbers:
+                    season_numbers = list(
+                        range(1, int(tmdb_info.get("number_of_seasons", 0) or 0) + 1)
+                    )
+
+                for season_number in season_numbers:
                     try:
                         season_url = f"{base_url}/season-{season_number}/"
                         season_attempts += 1
