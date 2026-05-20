@@ -6286,6 +6286,8 @@ async def admin_get_media_detail_views(
     end_date: Optional[str] = None,
     media_type: Optional[str] = None,
     username: Optional[str] = None,
+    q: Optional[str] = None,
+    tmdb_id: Optional[int] = None,
     page: int = 1,
     page_size: int = 20,
     current_user: User = Depends(get_current_user),
@@ -6315,23 +6317,33 @@ async def admin_get_media_detail_views(
         if media_type not in ("movie", "tv"):
             raise HTTPException(status_code=400, detail="media_type 必须是 movie 或 tv")
 
-    q = db.query(MediaDetailAccessLog).options(selectinload(MediaDetailAccessLog.user))
+    query = db.query(MediaDetailAccessLog).options(selectinload(MediaDetailAccessLog.user))
     if start_dt is not None:
-        q = q.filter(MediaDetailAccessLog.visited_at >= start_dt)
+        query = query.filter(MediaDetailAccessLog.visited_at >= start_dt)
     if end_dt is not None:
-        q = q.filter(MediaDetailAccessLog.visited_at < end_dt)
+        query = query.filter(MediaDetailAccessLog.visited_at < end_dt)
     if media_type:
-        q = q.filter(MediaDetailAccessLog.media_type == media_type)
+        query = query.filter(MediaDetailAccessLog.media_type == media_type)
     if username:
         username = username.strip()
         if username:
-            q = q.join(User, MediaDetailAccessLog.user_id == User.id).filter(
+            query = query.join(User, MediaDetailAccessLog.user_id == User.id).filter(
                 func.lower(User.username).like(f"%{username.lower()}%")
             )
+    if q:
+        title_keyword = str(q).strip()
+        if title_keyword:
+            query = query.filter(MediaDetailAccessLog.title.ilike(f"%{title_keyword}%"))
+    if tmdb_id is not None:
+        try:
+            tmdb_id_filter = int(tmdb_id)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="tmdb_id 必须是整数")
+        query = query.filter(MediaDetailAccessLog.tmdb_id == tmdb_id_filter)
 
-    total = q.count()
+    total = query.count()
     rows = (
-        q.order_by(desc(MediaDetailAccessLog.visited_at))
+        query.order_by(desc(MediaDetailAccessLog.visited_at))
         .offset((page - 1) * page_size)
         .limit(page_size)
         .all()
@@ -6352,6 +6364,7 @@ async def admin_get_media_detail_views(
                 "visited_at": _to_shanghai_iso(r.visited_at) if r.visited_at else None,
                 "id": r.id,
                 "media_type": r.media_type,
+                "tmdb_id": r.tmdb_id,
                 "title": r.title,
                 "url": r.url,
                 "platform_rating_fetch_statuses": statuses,
@@ -6378,6 +6391,8 @@ async def admin_get_media_detail_views(
             "end_date": end_date,
             "media_type": media_type,
             "username": username,
+            "q": q,
+            "tmdb_id": tmdb_id,
         },
     }
 
@@ -6448,6 +6463,8 @@ async def admin_export_media_detail_views(
     end_date: Optional[str] = None,
     media_type: Optional[str] = None,
     username: Optional[str] = None,
+    q: Optional[str] = None,
+    tmdb_id: Optional[int] = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -6468,26 +6485,36 @@ async def admin_export_media_detail_views(
         if media_type not in ("movie", "tv"):
             raise HTTPException(status_code=400, detail="media_type 必须是 movie 或 tv")
 
-    q = db.query(MediaDetailAccessLog)
+    query = db.query(MediaDetailAccessLog)
     if start_dt is not None:
-        q = q.filter(MediaDetailAccessLog.visited_at >= start_dt)
+        query = query.filter(MediaDetailAccessLog.visited_at >= start_dt)
     if end_dt is not None:
-        q = q.filter(MediaDetailAccessLog.visited_at < end_dt)
+        query = query.filter(MediaDetailAccessLog.visited_at < end_dt)
     if media_type:
-        q = q.filter(MediaDetailAccessLog.media_type == media_type)
+        query = query.filter(MediaDetailAccessLog.media_type == media_type)
     if username:
         username = username.strip()
         if username:
-            q = q.join(User, MediaDetailAccessLog.user_id == User.id).filter(
+            query = query.join(User, MediaDetailAccessLog.user_id == User.id).filter(
                 func.lower(User.username).like(f"%{username.lower()}%")
             )
+    if q:
+        title_keyword = str(q).strip()
+        if title_keyword:
+            query = query.filter(MediaDetailAccessLog.title.ilike(f"%{title_keyword}%"))
+    if tmdb_id is not None:
+        try:
+            tmdb_id_filter = int(tmdb_id)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="tmdb_id 必须是整数")
+        query = query.filter(MediaDetailAccessLog.tmdb_id == tmdb_id_filter)
 
-    total = q.count()
+    total = query.count()
     max_rows = int(os.getenv("MAX_EXPORT_ROWS", "50000"))
     if total > max_rows:
         raise HTTPException(status_code=400, detail=f"数据过多（{total} 条），无法导出（限制 {max_rows} 条）")
 
-    rows = q.order_by(MediaDetailAccessLog.visited_at.asc()).all()
+    rows = query.order_by(MediaDetailAccessLog.visited_at.asc()).all()
 
     def csv_escape(value: Any) -> str:
         s = "" if value is None else str(value)
