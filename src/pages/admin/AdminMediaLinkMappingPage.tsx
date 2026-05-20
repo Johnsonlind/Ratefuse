@@ -671,9 +671,9 @@ export default function AdminMediaLinkMappingPage() {
               <th className="px-4 py-3 text-left font-medium text-gray-500 dark:text-gray-400">TMDB</th>
               <th className="px-4 py-3 text-left font-medium text-gray-500 dark:text-gray-400">类型</th>
               <th className="px-4 py-3 text-left font-medium text-gray-500 dark:text-gray-400">Douban</th>
-              <th className="px-4 py-3 text-left font-medium text-gray-500 dark:text-gray-400">LB</th>
               <th className="px-4 py-3 text-left font-medium text-gray-500 dark:text-gray-400">RT</th>
               <th className="px-4 py-3 text-left font-medium text-gray-500 dark:text-gray-400">MTC</th>
+              <th className="px-4 py-3 text-left font-medium text-gray-500 dark:text-gray-400">LB</th>
               <th className="px-4 py-3 text-left font-medium text-gray-500 dark:text-gray-400">状态</th>
               <th className="px-4 py-3 text-left font-medium text-gray-500 dark:text-gray-400">更新时间</th>
               <th className="px-4 py-3 text-right font-medium text-gray-500 dark:text-gray-400">操作</th>
@@ -713,13 +713,13 @@ export default function AdminMediaLinkMappingPage() {
                     <PlatformLinksCell item={item} platform="douban" />
                   </td>
                   <td className="px-4 py-3">
-                    <PlatformLinksCell item={item} platform="letterboxd" />
-                  </td>
-                  <td className="px-4 py-3">
                     <PlatformLinksCell item={item} platform="rottentomatoes" />
                   </td>
                   <td className="px-4 py-3">
                     <PlatformLinksCell item={item} platform="metacritic" />
+                  </td>
+                  <td className="px-4 py-3">
+                    <PlatformLinksCell item={item} platform="letterboxd" />
                   </td>
                   <td className="px-4 py-3">
                     <span
