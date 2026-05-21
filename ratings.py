@@ -2039,30 +2039,123 @@ def _expected_tmdb_tv_season_numbers(tmdb_info: dict) -> set[int]:
 def _tmdb_tv_is_multi_season(tmdb_info: dict) -> bool:
     return len(_expected_tmdb_tv_season_numbers(tmdb_info)) > 1
 
-def _douban_parse_rating_from_html(html: str) -> tuple[str, str]:
-    json_match = re.search(
-        r'"aggregateRating":\s*{\s*"@type":\s*"AggregateRating",\s*"ratingCount":\s*"([^"]+)",\s*"bestRating":\s*"([^"]+)",\s*"worstRating":\s*"([^"]+)",\s*"ratingValue":\s*"([^"]+)"',
-        html or "",
+_DOUBAN_AGGREGATE_RATING_RE = re.compile(
+    r'"aggregateRating":\s*{\s*"@type":\s*"AggregateRating",\s*"ratingCount":\s*"([^"]+)",\s*"bestRating":\s*"([^"]+)",\s*"worstRating":\s*"([^"]+)",\s*"ratingValue":\s*"([^"]+)"'
+)
+_DOUBAN_RATING_SELF_OPEN_RE = re.compile(
+    r'<div[^>]*class="[^"]*\brating_self\b[^"]*"[^>]*>',
+    re.I,
+)
+
+def _douban_parse_microdata_block(block: str) -> tuple[Optional[str], Optional[str]]:
+    if not block:
+        return None, None
+    rating_match = re.search(
+        r'<strong[^>]*class="[^"]*\brating_num\b[^"]*"[^>]*(?:property="v:average")?[^>]*>([^<]*)</strong>',
+        block,
+        re.I,
     )
-    if json_match:
-        return str(json_match.group(4)), str(json_match.group(1))
-    rating_match = re.search(r'<strong[^>]*class="ll rating_num"[^>]*>([^<]*)</strong>', html or "")
-    people_match = re.search(r'<span[^>]*property="v:votes">(\d+)</span>', html or "")
-    rating = rating_match.group(1).strip() if rating_match and rating_match.group(1).strip() else "暂无"
-    rating_people = people_match.group(1).strip() if people_match else "暂无"
+    people_match = re.search(r'<span[^>]*property="v:votes">(\d+)</span>', block, re.I)
+    if not people_match:
+        people_match = re.search(
+            r'class="rating_people"[^>]*>[\s\S]*?(\d+)\s*人评价',
+            block,
+            re.I,
+        )
+    rating = rating_match.group(1).strip() if rating_match and rating_match.group(1).strip() else None
+    rating_people = people_match.group(1).strip() if people_match else None
     return rating, rating_people
+
+def _douban_parse_microdata_from_html(html: str) -> tuple[Optional[str], Optional[str]]:
+    if not html:
+        return None, None
+    for block_open in _DOUBAN_RATING_SELF_OPEN_RE.finditer(html):
+        chunk = html[block_open.start() : block_open.start() + 5000]
+        rating, rating_people = _douban_parse_microdata_block(chunk)
+        if rating and rating_people:
+            return rating, rating_people
+    rating_match = re.search(
+        r'<strong[^>]*class="[^"]*\brating_num\b[^"]*"[^>]*>([^<]*)</strong>',
+        html,
+        re.I,
+    )
+    people_match = re.search(r'<span[^>]*property="v:votes">(\d+)</span>', html)
+    if not people_match:
+        people_match = re.search(
+            r'class="rating_people"[^>]*>[\s\S]*?(\d+)\s*人评价',
+            html,
+            re.I,
+        )
+    rating = rating_match.group(1).strip() if rating_match and rating_match.group(1).strip() else None
+    rating_people = people_match.group(1).strip() if people_match else None
+    return rating, rating_people
+
+def _douban_parse_rating_from_json_ld(html: str) -> tuple[Optional[str], Optional[str]]:
+    json_match = _DOUBAN_AGGREGATE_RATING_RE.search(html or "")
+    if not json_match:
+        return None, None
+    return str(json_match.group(4)), str(json_match.group(1))
+
+def _douban_parse_rating_from_html(html: str) -> tuple[str, str]:
+    rating, rating_people = _douban_parse_microdata_from_html(html or "")
+    if not rating or not rating_people:
+        json_rating, json_people = _douban_parse_rating_from_json_ld(html or "")
+        rating = rating or json_rating
+        rating_people = rating_people or json_people
+    return (
+        str(rating).strip() if rating else "暂无",
+        str(rating_people).strip() if rating_people else "暂无",
+    )
+
+_DOUBAN_PLAYWRIGHT_RATING_JS = """() => {
+    const root = document.querySelector('div.rating_self[typeof="v:Rating"]')
+        || document.querySelector('div.rating_self');
+    if (!root) return { rating: '', votes: '' };
+    const ratingEl = root.querySelector('strong.rating_num, [property="v:average"]');
+    const votesEl = root.querySelector('span[property="v:votes"]');
+    const rating = ratingEl ? (ratingEl.textContent || '').trim() : '';
+    let votes = votesEl ? (votesEl.textContent || '').trim().replace(/\\D/g, '') : '';
+    if (!votes) {
+        const link = root.querySelector('a.rating_people');
+        const m = link && (link.textContent || '').match(/(\\d+)/);
+        votes = m ? m[1] : '';
+    }
+    return { rating, votes };
+}"""
+
+async def _douban_extract_rating_values(page, html: str) -> tuple[str, str]:
+    dom_rating: Optional[str] = None
+    dom_votes: Optional[str] = None
+    if page is not None:
+        try:
+            dom = await page.evaluate(_DOUBAN_PLAYWRIGHT_RATING_JS)
+            if isinstance(dom, dict):
+                dom_rating = str(dom.get("rating") or "").strip() or None
+                dom_votes = str(dom.get("votes") or "").strip() or None
+        except Exception:
+            pass
+    html_rating, html_votes = _douban_parse_rating_from_html(html or "")
+    rating = dom_rating if dom_rating and dom_rating != "暂无" else html_rating
+    rating_people = dom_votes if dom_votes and dom_votes != "暂无" else html_votes
+    return rating or "暂无", rating_people or "暂无"
+
+def _douban_detail_request_headers(douban_cookie: Optional[str] = None) -> dict:
+    headers = {
+        "User-Agent": random.choice(USER_AGENTS),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Referer": "https://movie.douban.com/",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+    }
+    if douban_cookie:
+        headers["Cookie"] = douban_cookie
+    return headers
 
 async def _douban_fetch_tv_season_rating_via_http(
     url: str,
     douban_cookie: Optional[str] = None,
 ) -> Optional[dict]:
-    detail_headers = {
-        "User-Agent": random.choice(USER_AGENTS),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Referer": "https://movie.douban.com/",
-    }
-    if douban_cookie:
-        detail_headers["Cookie"] = douban_cookie
+    detail_headers = _douban_detail_request_headers(douban_cookie)
     detail_timeout = aiohttp.ClientTimeout(total=10.0, connect=4.0, sock_read=6.0)
     try:
         async with aiohttp.ClientSession(timeout=detail_timeout, headers=detail_headers) as session:
@@ -2361,13 +2454,7 @@ async def _douban_quick_movie_rating_via_http(tmdb_info: dict, douban_cookie: Op
         _douban_log("quick.movie.nomatch", tmdb_id=tmdb_id, best_score=best_score, candidates=len(candidates))
         return None
 
-    detail_headers = {
-        "User-Agent": random.choice(USER_AGENTS),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Referer": "https://movie.douban.com/",
-    }
-    if douban_cookie:
-        detail_headers["Cookie"] = douban_cookie
+    detail_headers = _douban_detail_request_headers(douban_cookie)
 
     detail_timeout = aiohttp.ClientTimeout(total=10.0, connect=4.0, sock_read=6.0)
     try:
@@ -2392,18 +2479,7 @@ async def _douban_quick_movie_rating_via_http(tmdb_info: dict, douban_cookie: Op
         ret["url"] = best["url"]
         return ret
 
-    json_match = re.search(
-        r'"aggregateRating":\s*{\s*"@type":\s*"AggregateRating",\s*"ratingCount":\s*"([^"]+)",\s*"bestRating":\s*"([^"]+)",\s*"worstRating":\s*"([^"]+)",\s*"ratingValue":\s*"([^"]+)"',
-        html,
-    )
-    if json_match:
-        rating_people = json_match.group(1)
-        rating = json_match.group(4)
-    else:
-        rating_match = re.search(r'<strong[^>]*class="ll rating_num"[^>]*>([^<]*)</strong>', html)
-        people_match = re.search(r'<span[^>]*property="v:votes">(\d+)</span>', html)
-        rating = rating_match.group(1).strip() if rating_match and rating_match.group(1).strip() else "暂无"
-        rating_people = people_match.group(1).strip() if people_match else "暂无"
+    rating, rating_people = _douban_parse_rating_from_html(html)
 
     if rating in (None, "", "暂无") or rating_people in (None, "", "暂无"):
         _douban_log("quick.movie.empty", tmdb_id=tmdb_id, url=best.get("url"))
@@ -2497,13 +2573,7 @@ async def _douban_quick_tv_rating_via_http(tmdb_info: dict, douban_cookie: Optio
         _douban_log("quick.tv.nomatch", tmdb_id=tmdb_id, best_score=best_score, candidates=len(candidates))
         return None
 
-    detail_headers = {
-        "User-Agent": random.choice(USER_AGENTS),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Referer": "https://movie.douban.com/",
-    }
-    if douban_cookie:
-        detail_headers["Cookie"] = douban_cookie
+    detail_headers = _douban_detail_request_headers(douban_cookie)
 
     detail_timeout = aiohttp.ClientTimeout(total=10.0, connect=4.0, sock_read=6.0)
     try:
@@ -2529,18 +2599,7 @@ async def _douban_quick_tv_rating_via_http(tmdb_info: dict, douban_cookie: Optio
         ret["seasons"] = [{"season_number": 1, "rating": "暂无", "rating_people": "暂无", "url": best["url"]}]
         return ret
 
-    json_match = re.search(
-        r'"aggregateRating":\s*{\s*"@type":\s*"AggregateRating",\s*"ratingCount":\s*"([^"]+)",\s*"bestRating":\s*"([^"]+)",\s*"worstRating":\s*"([^"]+)",\s*"ratingValue":\s*"([^"]+)"',
-        html,
-    )
-    if json_match:
-        rating_people = json_match.group(1)
-        rating = json_match.group(4)
-    else:
-        rating_match = re.search(r'<strong[^>]*class="ll rating_num"[^>]*>([^<]*)</strong>', html)
-        people_match = re.search(r'<span[^>]*property="v:votes">(\d+)</span>', html)
-        rating = rating_match.group(1).strip() if rating_match and rating_match.group(1).strip() else "暂无"
-        rating_people = people_match.group(1).strip() if people_match else "暂无"
+    rating, rating_people = _douban_parse_rating_from_html(html)
 
     if rating in (None, "", "暂无") or rating_people in (None, "", "暂无"):
         _douban_log("quick.tv.empty", tmdb_id=tmdb_id, url=best.get("url"))
@@ -4814,33 +4873,8 @@ async def extract_douban_rating(page, media_type, matched_results, tmdb_info=Non
             print(f"豆瓣详情页被安全验证重定向: {initial_page_url}")
             return ret
         
-        json_match = re.search(r'"aggregateRating":\s*{\s*"@type":\s*"AggregateRating",\s*"ratingCount":\s*"([^"]+)",\s*"bestRating":\s*"([^"]+)",\s*"worstRating":\s*"([^"]+)",\s*"ratingValue":\s*"([^"]+)"', content)
-        
-        if json_match:
-            rating_people = json_match.group(1)
-            rating = json_match.group(4)
-        else:
-            rating_match = re.search(r'<strong[^>]*class="ll rating_num"[^>]*>([^<]*)</strong>', content)
-            rating = rating_match.group(1).strip() if rating_match and rating_match.group(1).strip() else "暂无"
-            people_match = re.search(r'<span[^>]*property="v:votes">(\d+)</span>', content)
-            rating_people = people_match.group(1) if people_match else "暂无"
-            if rating in [None, "暂无"] or rating_people in [None, "暂无"]:
-                try:
-                    rating = await page.evaluate('''() => {
-                        const el = document.querySelector('strong.rating_num');
-                        return el ? el.textContent.trim() : "暂无";
-                    }''') or "暂无"
-                    rating_people = await page.evaluate('''() => {
-                        const el = document.querySelector('span[property="v:votes"]');
-                        return el ? el.textContent.trim() : "暂无";
-                    }''') or "暂无"
-                except Exception:
-                    pass
-            if rating not in [None, "暂无"] and rating_people not in [None, "暂无"]:
-                pass
-            else:
-                pass
-            
+        rating, rating_people = await _douban_extract_rating_values(page, content or "")
+
         if media_type != "tv":
             if "暂无评分" in content or "尚未上映" in content:
                 return create_empty_rating_data("douban", media_type, RATING_STATUS["NO_RATING"])
@@ -4942,26 +4976,9 @@ async def extract_douban_rating(page, media_type, matched_results, tmdb_info=Non
                     season_rating = str(rating).strip() if rating not in [None, "暂无"] else "暂无"
                     season_rating_people = str(rating_people).strip() if rating_people not in [None, "暂无"] else "暂无"
                     if season_rating in ["暂无", "", None] or season_rating_people in ["暂无", "", None]:
-                        json_match_current = re.search(
-                            r'"aggregateRating":\s*{\s*"@type":\s*"AggregateRating",\s*"ratingCount":\s*"([^"]+)",\s*"bestRating":\s*"([^"]+)",\s*"worstRating":\s*"([^"]+)",\s*"ratingValue":\s*"([^"]+)"',
-                            content or ""
+                        season_rating, season_rating_people = await _douban_extract_rating_values(
+                            page, content or ""
                         )
-                        if json_match_current:
-                            season_rating_people = json_match_current.group(1)
-                            season_rating = json_match_current.group(4)
-                        else:
-                            rating_match_current = re.search(
-                                r'<strong[^>]*class="ll rating_num"[^>]*>([^<]*)</strong>',
-                                content or ""
-                            )
-                            people_match_current = re.search(
-                                r'<span[^>]*property="v:votes">(\d+)</span>',
-                                content or ""
-                            )
-                            if rating_match_current and rating_match_current.group(1).strip():
-                                season_rating = rating_match_current.group(1).strip()
-                            if people_match_current:
-                                season_rating_people = people_match_current.group(1)
                     if season_rating not in ["暂无", "", None] and season_rating_people not in ["暂无", "", None]:
                         all_seasons_no_rating = False
                     ratings["seasons"].append({
@@ -5040,39 +5057,12 @@ async def extract_douban_rating(page, media_type, matched_results, tmdb_info=Non
                 season_rating_people = "暂无"
                 for attempt in range(3):
                     try:
-                        json_match = re.search(r'"aggregateRating":\s*{\s*"@type":\s*"AggregateRating",\s*"ratingCount":\s*"([^"]+)",\s*"bestRating":\s*"([^"]+)",\s*"worstRating":\s*"([^"]+)",\s*"ratingValue":\s*"([^"]+)"', season_content)
-                        
-                        if json_match:
-                            season_rating_people = json_match.group(1)
-                            season_rating = json_match.group(4)
-                            print(f"豆瓣提取到第{season_number}季评分成功")
-                        else:
-                            season_rating = await page.evaluate('''() => {
-                                const ratingElement = document.querySelector('strong.rating_num');
-                                return ratingElement ? ratingElement.textContent.trim() : "暂无";
-                            }''')
-                            
-                            season_rating_people = await page.evaluate('''() => {
-                                const votesElement = document.querySelector('span[property="v:votes"]');
-                                return votesElement ? votesElement.textContent.trim() : "暂无";
-                            }''')
-                            
-                            if season_rating in ["暂无", "", None]:
-                                rating_match = re.search(r'<strong[^>]*class="ll rating_num"[^>]*>([^<]*)</strong>', season_content)
-                                if rating_match and rating_match.group(1).strip():
-                                    season_rating = rating_match.group(1).strip()
-                                
-                            if season_rating_people in ["暂无", "", None]:
-                                people_match = re.search(r'<span[^>]*property="v:votes">(\d+)</span>', season_content)
-                                if people_match:
-                                    season_rating_people = people_match.group(1)
-                            
-                            if season_rating not in ["暂无", "", None] and season_rating_people not in ["暂无", "", None]:
-                                print(f"豆瓣使用备选方法提取第{season_number}季评分成功")
-                        
+                        season_rating, season_rating_people = await _douban_extract_rating_values(
+                            page, season_content or ""
+                        )
                         if season_rating not in ["暂无", "", None] and season_rating_people not in ["暂无", "", None]:
+                            print(f"豆瓣提取到第{season_number}季评分成功")
                             break
-                            
                     except Exception as e:
                         print(f"豆瓣第{attempt + 1}次尝试获取第{season_number}季评分失败: {e}")
                         if attempt < 2:
@@ -5082,22 +5072,6 @@ async def extract_douban_rating(page, media_type, matched_results, tmdb_info=Non
                             await page.wait_for_load_state("domcontentloaded", timeout=5000)
                             season_content = await page.content()
                             continue
-                
-                if season_rating in ["暂无", "", None] or season_rating_people in ["暂无", "", None]:
-                    json_match = re.search(r'"aggregateRating":\s*{\s*"@type":\s*"AggregateRating",\s*"ratingCount":\s*"([^"]+)",\s*"bestRating":\s*"([^"]+)",\s*"worstRating":\s*"([^"]+)",\s*"ratingValue":\s*"([^"]+)"', season_content)
-                    if json_match:
-                        season_rating_people = json_match.group(1)
-                        season_rating = json_match.group(4)
-                        print(f"豆瓣从页面 JSON 提取到第{season_number}季评分成功")
-                    else:
-                        rating_match = re.search(r'<strong[^>]*class="ll rating_num"[^>]*>([^<]*)</strong>', season_content)
-                        if rating_match and rating_match.group(1).strip():
-                            season_rating = rating_match.group(1).strip()
-                        people_match = re.search(r'<span[^>]*property="v:votes">(\d+)</span>', season_content)
-                        if people_match:
-                            season_rating_people = people_match.group(1)
-                        if season_rating not in ["暂无", "", None] and season_rating_people not in ["暂无", "", None]:
-                            print(f"豆瓣从页面 HTML 提取到第{season_number}季评分成功")
                 matched_rating = season_rating not in ["暂无", "", None] and season_rating_people not in ["暂无", "", None]
                 print(f"豆瓣第{season_number}季: 匹配到评分元素={matched_rating}, rating={season_rating}, rating_people={season_rating_people}")
                 
