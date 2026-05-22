@@ -18,7 +18,8 @@ import {
   getRottenTomatoesUrl, 
   getMetacriticUrl, 
   getTmdbUrl, 
-  getTraktUrl 
+  getTraktUrl,
+  buildTraktShowSeasonUrl,
 } from '../../shared/utils/platformUrls';
 import type { TVShow } from '../../shared/types/media';
 
@@ -94,10 +95,8 @@ export function TVShowRatingGrid({
       const tmdbUrl = mediaInfo ? `https://www.themoviedb.org/tv/${mediaInfo.id}/season/${selectedSeason}` : null;
       
       let traktUrl = ratingData?.trakt?.url || (mediaInfo ? getTraktUrl(mediaInfo) : null);
-      if (traktUrl && selectedSeason) {
-        if (!traktUrl.includes('/search')) {
-          traktUrl = `${traktUrl}/seasons/${selectedSeason}`;
-        }
+      if (traktUrl && selectedSeason && !traktUrl.includes('/search')) {
+        traktUrl = buildTraktShowSeasonUrl(traktUrl, selectedSeason);
       }
       
       return {
