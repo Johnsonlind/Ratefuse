@@ -16,6 +16,37 @@ export interface DoubanRatingLike {
   seasons?: Array<{ season_number: number; url?: string | null }>;
 }
 
+export const TRAKT_WEB_BASE = 'https://app.trakt.tv';
+
+export function buildTraktUrl(mediaType: 'movie' | 'tv', slug: string): string | null {
+  const clean = (slug || '').trim();
+  if (!clean || clean === '-' || /^-?\d{4}$/.test(clean)) {
+    return null;
+  }
+  const segment = mediaType === 'tv' ? 'shows' : 'movies';
+  return `${TRAKT_WEB_BASE}/${segment}/${clean}`;
+}
+
+export function buildTraktShowSeasonUrl(showUrl: string, seasonNumber: number): string {
+  if (!showUrl?.trim() || seasonNumber <= 0) {
+    return showUrl;
+  }
+
+  try {
+    const url = new URL(showUrl);
+    const showPath = url.pathname.match(/^(\/shows\/[^/]+)/);
+    if (showPath) {
+      url.pathname = showPath[1];
+    }
+    url.searchParams.set('season', String(seasonNumber));
+    url.searchParams.delete('mode');
+    return url.toString();
+  } catch {
+    const base = showUrl.replace(/\/seasons\/\d+.*$/i, '').split('?')[0].trim();
+    return `${base}?season=${seasonNumber}`;
+  }
+}
+
 export function getDoubanTvAggregatedRatingCardUrl(
   douban: DoubanRatingLike | null | undefined,
   media?: MediaInfo | null
@@ -81,21 +112,29 @@ export function getTmdbUrl(media: MediaInfo): string | null {
   return `https://www.themoviedb.org/${mediaType}/${media.id}`;
 }
 
-export function getTraktUrl(media: MediaInfo): string | null {
-  if (!media.title && !media.originalTitle && !media.enTitle) return null;
-  
-  const mediaType = media.type === 'tv' ? 'shows' : 'movies';
-  const title = media.enTitle || media.originalTitle || media.title || '';
-  
-  let slug = title.toLowerCase()
+export function getTraktUrl(media: MediaInfo, slug?: string | null): string | null {
+  if (slug) {
+    return buildTraktUrl(media.type === 'tv' ? 'tv' : 'movie', slug);
+  }
+
+  const title = (media.enTitle || media.originalTitle || '').trim();
+  if (!title || !/[a-zA-Z]/.test(title)) {
+    return null;
+  }
+
+  let guessed = title.toLowerCase()
     .replace(/[^\w\s-]/g, '')
     .replace(/\s+/g, '-')
     .replace(/--+/g, '-')
-    .trim();
-  
-  if (media.type === 'movie' && media.year) {
-    slug = `${slug}-${media.year}`;
+    .replace(/^-+|-+$/g, '');
+
+  if (!guessed) {
+    return null;
   }
-  
-  return `https://trakt.tv/${mediaType}/${slug}`;
+
+  if (media.type === 'movie' && media.year) {
+    guessed = `${guessed}-${media.year}`;
+  }
+
+  return buildTraktUrl(media.type === 'tv' ? 'tv' : 'movie', guessed);
 }
