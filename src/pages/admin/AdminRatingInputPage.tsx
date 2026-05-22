@@ -308,7 +308,7 @@ export default function AdminRatingInputPage() {
                   <div className="grid gap-3 sm:grid-cols-2">
                     <Input label="评分" name="rating" placeholder="如 8.2" type="number" step="0.1" required={ratingDataStatus === 'successful'} />
                     <Input label="投票数" name="votes" placeholder="如 10000" type="number" />
-                    <Input label="评分链接" name="url" placeholder="如 https://trakt.tv/movies/xxxxxx" />
+                    <Input label="评分链接" name="url" placeholder="如 https://app.trakt.tv/movies/xxxxxx" />
                   </div>
                 )}
                 {selectedMedia.type === 'tv' && SEASON_PLATFORMS.includes(activePlatform) && (
@@ -559,7 +559,7 @@ export default function AdminRatingInputPage() {
                                     p.map((x, i) => (i === idx ? { ...x, url: e.target.value } : x))
                                   )
                                 }
-                                placeholder="https://trakt.tv/shows/xxxxxx/seasons/1"
+                                placeholder="https://app.trakt.tv/shows/xxxxxx?season=1"
                               />
                             </>
                           )}
