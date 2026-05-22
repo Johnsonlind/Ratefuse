@@ -36,7 +36,9 @@ export async function fetchTraktRating(mediaType: 'movies' | 'shows', tmdbId: st
     const result: any = {
       rating: parseFloat(data.rating) || 0,
       votes: parseInt(data.votes) || 0,
-      distribution: data.distribution || {}
+      distribution: data.distribution || {},
+      url: typeof data.url === 'string' && data.url.trim() ? data.url.trim() : undefined,
+      slug: typeof data.slug === 'string' && data.slug.trim() ? data.slug.trim() : undefined,
     };
     
     if (type === 'tv' && data.seasons) {
