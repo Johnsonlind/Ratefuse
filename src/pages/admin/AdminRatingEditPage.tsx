@@ -542,7 +542,7 @@ export default function AdminRatingEditPage() {
                       <Input
                         label="评分链接"
                         name="url"
-                        placeholder="如 https://trakt.tv/movies/xxxxxx"
+                        placeholder="如 https://app.trakt.tv/movies/xxxxxx"
                         defaultValue={extractValue(platformData, 'url')}
                       />
                     </div>
@@ -798,7 +798,7 @@ export default function AdminRatingEditPage() {
                                     const src = seasons.length ? seasons : initialSeasons;
                                     setSeasons(src.map((x, i) => (i === idx ? { ...x, url: e.target.value } : x)));
                                   }}
-                                  placeholder="https://trakt.tv/shows/xxxxxx/seasons/1"
+                                  placeholder="https://app.trakt.tv/shows/xxxxxx?season=1"
                                 />
                               </>
                             )}
