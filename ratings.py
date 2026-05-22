@@ -3825,6 +3825,7 @@ async def extract_rating_info(media_type, platform, tmdb_info, search_results, r
                             "votes": str(trakt_data.get("votes", "暂无")),
                             "distribution": trakt_data.get("distribution", {}),
                             "url": trakt_data.get("url", ""),
+                            "slug": trakt_data.get("slug", ""),
                             "status": RATING_STATUS["SUCCESSFUL"]
                         }
                         
