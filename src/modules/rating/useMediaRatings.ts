@@ -80,6 +80,25 @@ function createTraktDistribution(data: any) {
   };
 }
 
+function mapTraktApiToRating(data: any, mediaType: 'movie' | 'tv'): TraktRating {
+  return {
+    rating: Number(data.rating),
+    votes: Number(data.votes || 0),
+    distribution: createTraktDistribution(data),
+    ...(typeof data.url === 'string' && data.url.trim() ? { url: data.url.trim() } : {}),
+    ...(mediaType === 'tv' && data.seasons
+      ? {
+          seasons: data.seasons.map((season: any) => ({
+            season_number: Number(season.season_number),
+            rating: Number(season.rating),
+            votes: Number(season.votes || season.voteCount || 0),
+            distribution: season.distribution,
+          })),
+        }
+      : {}),
+  };
+}
+
 export function useMediaRatings({ mediaId, mediaType }: UseMediaRatingsOptions): UseMediaRatingsReturn {
   const [platformStatuses, setPlatformStatuses] = useState<PlatformStatuses>({
     douban: { status: 'pending', data: null },
@@ -208,21 +227,7 @@ export function useMediaRatings({ mediaId, mediaType }: UseMediaRatingsOptions):
               return;
             }
 
-            const traktData: TraktRating = {
-              rating: Number(data.rating),
-              votes: Number(data.votes || 0),
-              distribution: createTraktDistribution(data),
-              ...(mediaType === 'tv' && data.seasons ? {
-                seasons: data.seasons.map((season: any) => ({
-                  season_number: Number(season.season_number),
-                  rating: Number(season.rating),
-                  votes: Number(season.votes || season.voteCount || 0),
-                  distribution: season.distribution
-                }))
-              } : {})
-            };
-
-            setTraktRating(traktData);
+            setTraktRating(mapTraktApiToRating(data, mediaType));
             setTraktStatus('successful');
           })
           .catch(() => {
@@ -297,21 +302,7 @@ export function useMediaRatings({ mediaId, mediaType }: UseMediaRatingsOptions):
           return;
         }
 
-        const traktData: TraktRating = {
-          rating: Number(data.rating),
-          votes: Number(data.votes || 0),
-          distribution: createTraktDistribution(data),
-          ...(mediaType === 'tv' && data.seasons ? {
-            seasons: data.seasons.map((season: any) => ({
-              season_number: Number(season.season_number),
-              rating: Number(season.rating),
-              votes: Number(season.votes || season.voteCount || 0),
-              distribution: season.distribution
-            }))
-          } : {})
-        };
-
-        setTraktRating(traktData);
+        setTraktRating(mapTraktApiToRating(data, mediaType));
         setTraktStatus('successful');
       } catch (error) {
         setTraktStatus('error');
