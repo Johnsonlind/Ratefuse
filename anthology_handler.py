@@ -14,6 +14,15 @@ TMDB_API_KEY = os.getenv("TMDB_API_KEY", "")
 TMDB_API_BASE_URL = os.getenv("TMDB_API_BASE_URL", "").rstrip("/")
 TRAKT_CLIENT_ID = os.getenv("TRAKT_CLIENT_ID", "")
 TRAKT_BASE_URL = os.getenv("TRAKT_BASE_URL", "").rstrip("/")
+TRAKT_WEB_BASE = "https://app.trakt.tv"
+
+def build_trakt_web_url(media_type: str, slug: str) -> str:
+    """构建 Trakt 网页 URL"""
+    clean = (slug or "").strip()
+    if not clean:
+        return ""
+    segment = "shows" if media_type == "show" else "movies"
+    return f"{TRAKT_WEB_BASE}/{segment}/{clean}"
 
 ANTHOLOGY_TITLE_PATTERNS = [
     r'^(.+?):\s*(?:The\s+)?(.+?)\s+Story',
@@ -431,8 +440,26 @@ class AnthologyHandler:
         
         return None
     
+    def _count_regular_tmdb_seasons(self, tmdb_info: Optional[Dict[str, Any]]) -> int:
+        """统计常规季（season_number > 0）从TMDB元数据"""
+        if not tmdb_info:
+            return 0
+        seasons = tmdb_info.get("seasons") or []
+        regular = [s for s in seasons if int(s.get("season_number") or 0) > 0]
+        if regular:
+            return len(regular)
+        try:
+            return int(tmdb_info.get("number_of_seasons") or 0)
+        except (TypeError, ValueError):
+            return 0
+
     async def _get_trakt_rating(self, slug: str, media_type: str, tmdb_info: Dict[str, Any] = None, series_info: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         """获取Trakt评分"""
+        slug = (slug or "").strip()
+        if not slug:
+            logger.error("Trakt slug 为空，无法获取评分")
+            return None
+
         try:
             headers = {
                 "Content-Type": "application/json",
@@ -453,43 +480,32 @@ class AnthologyHandler:
                         "votes": overall_data.get("votes", "暂无"),
                         "distribution": overall_data.get("distribution", {}),
                         "slug": slug,
-                        "url": f"https://trakt.tv/{media_type}s/{slug}"
+                        "url": build_trakt_web_url(media_type, slug),
                     }
                     
                     if media_type == "show":
                         is_anthology = series_info is not None
-                        tmdb_seasons = tmdb_info.get("number_of_seasons", 0) if tmdb_info else 0
-                        
-                        if is_anthology or tmdb_seasons == 1:
+                        seasons_ratings = await self._get_trakt_seasons_ratings(slug, session, headers)
+
+                        if seasons_ratings:
+                            result["seasons"] = seasons_ratings
+                            logger.info(f"成功获取 {len(seasons_ratings)} 季 Trakt 评分")
+                        elif is_anthology or self._count_regular_tmdb_seasons(tmdb_info) <= 1:
                             show_type = "选集剧" if is_anthology else "单季剧"
-                            logger.info(f"[{show_type}] 获取整体评分 + 第1季评分")
+                            logger.info(f"[{show_type}] 分季列表无数据，尝试第1季 ratings 接口")
                             season_rating = await self._get_single_season_rating(slug, 1, session, headers)
                             if season_rating:
                                 result["seasons"] = [season_rating]
-                                logger.info(f"[{show_type}] 成功获取第1季评分: {season_rating['rating']}/10")
                             else:
                                 logger.warning(f"[{show_type}] 未能获取第1季评分，使用整体评分作为兜底")
                                 result["seasons"] = [{
                                     "season_number": 1,
                                     "rating": result["rating"],
                                     "votes": result["votes"],
-                                    "distribution": result["distribution"]
+                                    "distribution": result["distribution"],
                                 }]
-                        
                         else:
-                            logger.info(f"[多季剧] 获取整体评分 + 所有季评分")
-                            seasons_ratings = await self._get_trakt_seasons_ratings(slug, session, headers)
-                            if seasons_ratings:
-                                result["seasons"] = seasons_ratings
-                                logger.info(f"[多季剧] 成功获取 {len(seasons_ratings)} 季的评分")
-                            else:
-                                logger.warning(f"[多季剧] 未能获取分季评分，尝试只获取第1季")
-                                season_rating = await self._get_single_season_rating(slug, 1, session, headers)
-                                if season_rating:
-                                    result["seasons"] = [season_rating]
-                                    logger.info(f"[多季剧] 兜底成功：获取到第1季评分")
-                                else:
-                                    logger.warning(f"[多季剧] 完全失败，无法获取任何分季评分")
+                            logger.warning("[多季剧] 未能从 Trakt 获取分季评分")
                     
                     return result
                     
@@ -535,17 +551,20 @@ class AnthologyHandler:
         return None
     
     async def _get_trakt_seasons_ratings(self, slug: str, session: aiohttp.ClientSession, headers: Dict[str, str]) -> Optional[List[Dict[str, Any]]]:
-        """获取剧集所有季的评分"""
+        """获取剧集所有季的评分（GET /shows/{slug}/seasons + 单季 ratings 兜底）"""
         try:
-            seasons_url = f"{TRAKT_BASE_URL}/shows/{slug}/seasons?extended=episodes"
-            async with session.get(seasons_url, headers=headers) as response:
+            seasons_url = f"{TRAKT_BASE_URL}/shows/{slug}/seasons"
+            params = {"extended": "full"}
+            async with session.get(seasons_url, params=params, headers=headers) as response:
                 if response.status != 200:
                     logger.error(f"获取剧集季信息失败: HTTP {response.status}")
                     return None
                 
                 seasons_info = await response.json()
+                if not isinstance(seasons_info, list):
+                    return None
                 
-                regular_seasons = [s for s in seasons_info if s.get("number", 0) > 0]
+                regular_seasons = [s for s in seasons_info if int(s.get("number") or 0) > 0]
                 
                 if not regular_seasons:
                     logger.warning(f"剧集 {slug} 没有常规季")
@@ -554,28 +573,26 @@ class AnthologyHandler:
                 logger.info(f"找到 {len(regular_seasons)} 个常规季")
                 
                 seasons_ratings = []
-                for season in regular_seasons:
-                    season_number = season.get("number")
-                    if season_number is None or season_number == 0:
+                for season in sorted(regular_seasons, key=lambda s: int(s.get("number") or 0)):
+                    season_number = int(season.get("number") or 0)
+                    if season_number <= 0:
                         continue
-                    
-                    season_rating_url = f"{TRAKT_BASE_URL}/shows/{slug}/seasons/{season_number}/ratings"
-                    try:
-                        async with session.get(season_rating_url, headers=headers) as rating_response:
-                            if rating_response.status == 200:
-                                rating_data = await rating_response.json()
-                                seasons_ratings.append({
-                                    "season_number": season_number,
-                                    "rating": rating_data.get("rating", 0),
-                                    "votes": rating_data.get("votes", 0),
-                                    "distribution": rating_data.get("distribution", {})
-                                })
-                                logger.info(f"  第 {season_number} 季: {rating_data.get('rating', 0)}/10 ({rating_data.get('votes', 0)} 票)")
-                            else:
-                                logger.warning(f"  第 {season_number} 季评分获取失败: HTTP {rating_response.status}")
-                    except Exception as e:
-                        logger.error(f"  获取第 {season_number} 季评分失败: {e}")
+
+                    rating_val = season.get("rating")
+                    votes_val = season.get("votes")
+                    if rating_val is not None and float(rating_val or 0) > 0:
+                        seasons_ratings.append({
+                            "season_number": season_number,
+                            "rating": float(rating_val),
+                            "votes": int(votes_val or 0),
+                            "distribution": {},
+                        })
+                        logger.info(f"  第 {season_number} 季(extended): {rating_val}/10 ({votes_val or 0} 票)")
                         continue
+
+                    season_rating = await self._get_single_season_rating(slug, season_number, session, headers)
+                    if season_rating:
+                        seasons_ratings.append(season_rating)
                 
                 return seasons_ratings if seasons_ratings else None
                 
