@@ -6,17 +6,20 @@ import { transformTMDBMovie } from './transformers';
 import type { Movie } from '../shared/types/media';
 import { fetchTMDBWithLanguageFallback } from './tmdbLanguageHelper';
 import { TMDB } from './api';
-import { getPreferredPosterUrlForMedia } from './preferredPoster';
+import { applyPreferredPosterToMediaData, getPreferredPosterUrlForMedia } from './preferredPoster';
+import { TMDB_POSTER_FETCH_LANGUAGES } from './tmdbImagePriority';
 
 export async function getMovie(id: string): Promise<Movie> {
   const data = await fetchTMDBWithLanguageFallback(
     `${TMDB.baseUrl}/movie/${id}`,
     {
-      include_image_language: 'zh-CN,zh,zh-SG,zh-TW,zh-HK,en,null',
+      include_image_language: TMDB_POSTER_FETCH_LANGUAGES,
     },
     'credits,release_dates,images'
   );
-  
+
+  await applyPreferredPosterToMediaData('movie', id, data);
+
   return transformTMDBMovie(data, { posterSize: '原始' });
 }
 
