@@ -76,7 +76,7 @@ export default function TVShowPage() {
   const [posterBase64, setPosterBase64] = useState<string | null>(null);
 
   const { data: tvShow, isLoading, error: queryError } = useQuery({
-    queryKey: ['tvshow', id],
+    queryKey: ['tvshow', id, 'poster-priority-v2'],
     queryFn: () => getTVShow(id!),
     enabled: !!id,
     staleTime: Infinity
