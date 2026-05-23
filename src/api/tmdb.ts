@@ -19,10 +19,28 @@ export async function searchByImdbId(imdbId: string): Promise<{ movies: Movie[],
     
     console.log('TMDB find response:', data);
     
-    return {
-      movies: (data.movie_results || []).map(transformTMDBMovie),
-      tvShows: (data.tv_results || []).map(transformTMDBTVShow)
-    };
+    const movies = await Promise.all(
+      (data.movie_results || []).map(async (item: any) => {
+        const preferredPoster = await getPreferredPosterUrlForMedia(
+          'movie',
+          item.id,
+          item.poster_path || ''
+        );
+        return transformTMDBMovie({ ...item, poster_path: preferredPoster || item.poster_path });
+      })
+    );
+    const tvShows = await Promise.all(
+      (data.tv_results || []).map(async (item: any) => {
+        const preferredPoster = await getPreferredPosterUrlForMedia(
+          'tv',
+          item.id,
+          item.poster_path || ''
+        );
+        return transformTMDBTVShow({ ...item, poster_path: preferredPoster || item.poster_path });
+      })
+    );
+
+    return { movies, tvShows };
   } catch (error) {
     console.error('通过IMDB ID搜索失败:', error);
     return { movies: [], tvShows: [] };
@@ -30,22 +48,16 @@ export async function searchByImdbId(imdbId: string): Promise<{ movies: Movie[],
 }
 
 export async function getMediaDetails(mediaType: string, mediaId: string) {
+  const type = mediaType as 'movie' | 'tv';
   const data = await fetchTMDBWithLanguageFallback(
     `${TMDB.baseUrl}/${mediaType}/${mediaId}`
   );
-  
-  let posterPath = '';
-  if (data.poster_path) {
-    posterPath = await getPreferredPosterUrlForMedia(
-      mediaType as 'movie' | 'tv',
-      mediaId,
-      data.poster_path,
-      'w500'
-    );
-    if (!posterPath) {
-      posterPath = posterPathToSiteUrl(data.poster_path, 'w500');
-    }
-  }
+
+  const posterPath = data.poster_path
+    ? await getPreferredPosterUrlForMedia(type, mediaId, data.poster_path, 'w500').then(
+        (url) => url || posterPathToSiteUrl(data.poster_path, 'w500')
+      )
+    : '';
   
   return {
     media_id: mediaId,
