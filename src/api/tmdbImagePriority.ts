@@ -75,11 +75,12 @@ export function getTmdbImageLanguagePriority(
   if (matchesZhLocale(image, 'SG')) return 1;
   if (matchesZhLocale(image, 'TW')) return 2;
   if (matchesZhLocale(image, 'HK')) return 3;
-  if (matchesEnUS(image)) return 4;
 
   const original = normalizeLanguageTag(originalLanguage);
   const lang = normalizeLanguageTag(image.iso_639_1);
-  if (original && matchesLanguage(lang, original)) return 5;
+  if (original && matchesLanguage(lang, original)) return 4;
+
+  if (matchesEnUS(image)) return 5;
 
   if (isUndefinedLanguage(image)) return 7;
 
@@ -88,9 +89,30 @@ export function getTmdbImageLanguagePriority(
 
 export function pickStandardPosterPath<T extends TmdbLocalizedImage>(
   images: T[],
-  originalLanguage: string | null | undefined
+  originalLanguage: string | null | undefined,
+  defaultPosterPath?: string | null
 ): string | undefined {
-  return pickPreferredTmdbImagePath(images, originalLanguage, 'default');
+  if (!Array.isArray(images) || images.length === 0) return undefined;
+
+  const normalizedDefault = (defaultPosterPath || '').trim();
+  const sorted = images.filter((image) => !!image.file_path).sort((a, b) => {
+    const pa = getTmdbImageLanguagePriority(a, originalLanguage, 'default');
+    const pb = getTmdbImageLanguagePriority(b, originalLanguage, 'default');
+    if (pa !== pb) return pa - pb;
+
+    if (normalizedDefault) {
+      const aIsDefault = a.file_path === normalizedDefault;
+      const bIsDefault = b.file_path === normalizedDefault;
+      if (aIsDefault !== bIsDefault) return aIsDefault ? -1 : 1;
+    }
+
+    const aHasRegion = !!normalizeRegionTag(a.iso_3166_1);
+    const bHasRegion = !!normalizeRegionTag(b.iso_3166_1);
+    if (aHasRegion !== bHasRegion) return aHasRegion ? -1 : 1;
+    return 0;
+  });
+
+  return sorted[0]?.file_path;
 }
 
 export function pickHeroCarouselPosterPath<T extends TmdbLocalizedImage>(
@@ -124,6 +146,7 @@ export const TMDB_POSTER_FETCH_LANGUAGES = 'zh-CN,zh,en-US,en,null' as const;
 
 export const TMDB_HERO_POSTER_FETCH_LANGUAGES = 'null,zh-CN,zh,en-US,en' as const;
 
+/** @deprecated 请使用 fetchMergedPostersForSelection 分次拉取并合并 */
 export function buildPosterIncludeImageLanguages(originalLanguage?: string | null): string {
   const langs = TMDB_POSTER_FETCH_LANGUAGES.split(',');
   const orig = (originalLanguage || '').trim().toLowerCase();
