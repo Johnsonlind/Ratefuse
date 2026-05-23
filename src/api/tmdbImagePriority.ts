@@ -27,36 +27,50 @@ function matchesLanguage(candidate: string | null | undefined, target: string): 
   return candidateBase === targetBase;
 }
 
+function matchesZhLocale(image: TmdbLocalizedImage, regionCode: string): boolean {
+  const lang = normalizeLanguageTag(image.iso_639_1);
+  const region = normalizeRegionTag(image.iso_3166_1);
+  const targetRegion = regionCode.toUpperCase();
+  const targetTag = `zh-${targetRegion.toLowerCase()}`;
+
+  if (lang === targetTag) return true;
+  if (!matchesLanguage(lang, 'zh')) return false;
+  return region === targetRegion;
+}
+
+function matchesEnUS(image: TmdbLocalizedImage): boolean {
+  const lang = normalizeLanguageTag(image.iso_639_1);
+  const region = normalizeRegionTag(image.iso_3166_1);
+  if (lang === 'en-us') return true;
+  if (!matchesLanguage(lang, 'en')) return false;
+  return region === 'US';
+}
+
+function isUndefinedLanguage(image: TmdbLocalizedImage): boolean {
+  const lang = image.iso_639_1;
+  return lang === null || lang === undefined || lang === '';
+}
+
 export function getTmdbImageLanguagePriority(
   image: TmdbLocalizedImage,
   originalLanguage: string | null | undefined,
-  mode: TmdbImagePriorityMode = 'default'
+  _mode: TmdbImagePriorityMode = 'default'
 ): number {
-  const lang = normalizeLanguageTag(image.iso_639_1);
-  const region = normalizeRegionTag(image.iso_3166_1);
-  const original = normalizeLanguageTag(originalLanguage);
-
   if (!image.file_path) return 999;
 
-  if (mode === 'heroPoster') {
-    if (image.iso_639_1 === null) return 0;
-    if (matchesLanguage(lang, 'zh') && region === 'CN') return 1;
-    if (matchesLanguage(lang, 'zh') && region === 'SG') return 2;
-    if (matchesLanguage(lang, 'zh') && region === 'TW') return 3;
-    if (matchesLanguage(lang, 'zh') && region === 'HK') return 4;
-    if (matchesLanguage(lang, 'en') && region === 'US') return 5;
-    if (original && matchesLanguage(lang, original)) return 6;
-    return 7;
-  }
+  if (matchesZhLocale(image, 'CN')) return 0;
+  if (matchesZhLocale(image, 'SG')) return 1;
+  if (matchesZhLocale(image, 'TW')) return 2;
+  if (matchesZhLocale(image, 'HK')) return 3;
+  if (matchesEnUS(image)) return 4;
 
-  if (matchesLanguage(lang, 'zh') && region === 'CN') return 0;
-  if (matchesLanguage(lang, 'zh') && region === 'SG') return 1;
-  if (matchesLanguage(lang, 'zh') && region === 'TW') return 2;
-  if (matchesLanguage(lang, 'zh') && region === 'HK') return 3;
-  if (matchesLanguage(lang, 'en') && region === 'US') return 4;
+  const original = normalizeLanguageTag(originalLanguage);
+  const lang = normalizeLanguageTag(image.iso_639_1);
   if (original && matchesLanguage(lang, original)) return 5;
-  if (image.iso_639_1 === null) return 6;
-  return 7;
+
+  if (isUndefinedLanguage(image)) return 7;
+
+  return 6;
 }
 
 export function pickPreferredTmdbImagePath<T extends TmdbLocalizedImage>(
@@ -77,4 +91,15 @@ export function pickPreferredTmdbImagePath<T extends TmdbLocalizedImage>(
   });
 
   return sorted[0]?.file_path;
+}
+
+export const TMDB_POSTER_FETCH_LANGUAGES = 'zh-CN,zh,en-US,en,null' as const;
+
+export function buildPosterIncludeImageLanguages(originalLanguage?: string | null): string {
+  const langs = TMDB_POSTER_FETCH_LANGUAGES.split(',');
+  const orig = (originalLanguage || '').trim().toLowerCase();
+  if (orig && !langs.includes(orig)) {
+    langs.push(orig);
+  }
+  return langs.join(',');
 }
