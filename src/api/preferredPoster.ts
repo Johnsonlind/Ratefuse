@@ -4,11 +4,11 @@
 import { buildTmdbApiUrl } from './api';
 import { posterPathToSiteUrl } from './image';
 import {
-  buildPosterIncludeImageLanguages,
   pickStandardPosterPath,
+  TMDB_POSTER_FETCH_LANGUAGES,
 } from './tmdbImagePriority';
 
-export const STANDARD_POSTER_PRIORITY_VERSION = 'v3';
+export const STANDARD_POSTER_PRIORITY_VERSION = 'v5';
 
 type MediaType = 'movie' | 'tv';
 
@@ -55,9 +55,49 @@ async function fetchJsonWithRetry(url: string, attempts = 5): Promise<any | null
 
 function pickPreferredPosterPath(
   posters: TmdbPoster[],
-  originalLanguage: string | null | undefined
+  originalLanguage: string | null | undefined,
+  defaultPosterPath?: string | null
 ): string | undefined {
-  return pickStandardPosterPath(posters, originalLanguage);
+  return pickStandardPosterPath(posters, originalLanguage, defaultPosterPath);
+}
+
+function mergePostersByFilePath(...groups: Array<TmdbPoster[] | undefined>): TmdbPoster[] {
+  const byPath = new Map<string, TmdbPoster>();
+  for (const group of groups) {
+    for (const poster of group || []) {
+      if (poster?.file_path) {
+        byPath.set(poster.file_path, poster);
+      }
+    }
+  }
+  return Array.from(byPath.values());
+}
+
+export async function fetchMergedPostersForSelection(
+  mediaType: MediaType,
+  mediaId: string | number,
+  originalLanguage?: string | null
+): Promise<TmdbPoster[]> {
+  const basePayload = await fetchJsonWithRetry(
+    buildTmdbApiUrl(`${mediaType}/${mediaId}/images`, {
+      include_image_language: TMDB_POSTER_FETCH_LANGUAGES,
+    }),
+    3
+  );
+  const basePosters: TmdbPoster[] = Array.isArray(basePayload?.posters) ? basePayload.posters : [];
+
+  const orig = (originalLanguage || '').trim().toLowerCase();
+  if (!orig) return basePosters;
+
+  const origPayload = await fetchJsonWithRetry(
+    buildTmdbApiUrl(`${mediaType}/${mediaId}/images`, {
+      include_image_language: `${orig},null`,
+    }),
+    3
+  );
+  const origPosters: TmdbPoster[] = Array.isArray(origPayload?.posters) ? origPayload.posters : [];
+
+  return mergePostersByFilePath(basePosters, origPosters);
 }
 
 export async function resolveStandardPosterSiteUrl(
@@ -80,21 +120,14 @@ export async function applyPreferredPosterToMediaData(
     images?: { posters?: TmdbPoster[] };
   }
 ): Promise<void> {
-  const includeLangs = buildPosterIncludeImageLanguages(data.original_language);
-  const payload = await fetchJsonWithRetry(
-    buildTmdbApiUrl(`${mediaType}/${mediaId}/images`, {
-      include_image_language: includeLangs,
-    }),
-    3
-  );
-
-  const posters: TmdbPoster[] = Array.isArray(payload?.posters) ? payload.posters : [];
+  const defaultPosterPath = data.poster_path;
+  const posters = await fetchMergedPostersForSelection(mediaType, mediaId, data.original_language);
   if (posters.length === 0) return;
 
   if (!data.images) data.images = {};
   data.images.posters = posters;
 
-  const preferredPath = pickPreferredPosterPath(posters, data.original_language);
+  const preferredPath = pickPreferredPosterPath(posters, data.original_language, defaultPosterPath);
   if (preferredPath) {
     data.poster_path = preferredPath;
   }
@@ -125,17 +158,9 @@ export async function getPreferredPosterUrlForMedia(
       2
     );
     const originalLanguage = detailPayload?.original_language;
-    const includeLangs = buildPosterIncludeImageLanguages(originalLanguage);
-
-    const imagesPayload = await fetchJsonWithRetry(
-      buildTmdbApiUrl(`${mediaType}/${mediaId}/images`, {
-        include_image_language: includeLangs,
-      }),
-      2
-    );
-
-    const posters: TmdbPoster[] = Array.isArray(imagesPayload?.posters) ? imagesPayload.posters : [];
-    const preferredPath = pickPreferredPosterPath(posters, originalLanguage);
+    const defaultPosterPath = detailPayload?.poster_path;
+    const posters = await fetchMergedPostersForSelection(mediaType, mediaId, originalLanguage);
+    const preferredPath = pickPreferredPosterPath(posters, originalLanguage, defaultPosterPath);
     const resolved = preferredPath
       ? posterPathToSiteUrl(preferredPath, size)
       : (strictPreferred ? '' : fallbackUrl);
