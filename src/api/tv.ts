@@ -6,17 +6,20 @@ import { transformTMDBTVShow } from './transformers';
 import type { TVShow } from '../shared/types/media';
 import { fetchTMDBWithLanguageFallback } from './tmdbLanguageHelper';
 import { TMDB } from './api';
-import { getPreferredPosterUrlForMedia } from './preferredPoster';
+import { applyPreferredPosterToMediaData, getPreferredPosterUrlForMedia } from './preferredPoster';
+import { TMDB_POSTER_FETCH_LANGUAGES } from './tmdbImagePriority';
 
 export async function getTVShow(id: string): Promise<TVShow> {
   const data = await fetchTMDBWithLanguageFallback(
     `${TMDB.baseUrl}/tv/${id}`,
     {
-      include_image_language: 'zh-CN,zh,zh-SG,zh-TW,zh-HK,en,null',
+      include_image_language: TMDB_POSTER_FETCH_LANGUAGES,
     },
     'credits,external_ids,images'
   );
-  
+
+  await applyPreferredPosterToMediaData('tv', id, data);
+
   return transformTMDBTVShow(data, { posterSize: '原始', seasonPosterSize: '原始' });
 }
 
