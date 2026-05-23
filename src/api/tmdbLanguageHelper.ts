@@ -1,7 +1,7 @@
 // ==========================================
 // 多语言数据回退工具(API侧)
 // ==========================================
-import { pickPreferredTmdbImagePath } from './tmdbImagePriority';
+import { pickStandardPosterPath } from './tmdbImagePriority';
 
 const LANGUAGE_PRIORITY = ['zh-CN', 'zh', 'zh-SG', 'zh-TW', 'zh-HK', 'en'] as const;
 
@@ -61,7 +61,7 @@ function pickPreferredPosterPath(data: any, dataList?: Array<{ data: any }>): st
   const posters = dataList?.length
     ? collectPostersFromDataList(dataList)
     : (Array.isArray(data?.images?.posters) ? data.images.posters : []);
-  return pickPreferredTmdbImagePath(posters, data?.original_language);
+  return pickStandardPosterPath(posters, data?.original_language);
 }
 
 export function mergeMultiLanguageData(dataList: Array<{ data: any; lang: LanguageCode }>): any {
