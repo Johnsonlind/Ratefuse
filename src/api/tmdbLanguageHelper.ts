@@ -61,7 +61,7 @@ function pickPreferredPosterPath(data: any, dataList?: Array<{ data: any }>): st
   const posters = dataList?.length
     ? collectPostersFromDataList(dataList)
     : (Array.isArray(data?.images?.posters) ? data.images.posters : []);
-  return pickStandardPosterPath(posters, data?.original_language);
+  return pickStandardPosterPath(posters, data?.original_language, data?.poster_path);
 }
 
 export function mergeMultiLanguageData(dataList: Array<{ data: any; lang: LanguageCode }>): any {
