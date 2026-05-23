@@ -3,7 +3,12 @@
 // ==========================================
 import { buildTmdbApiUrl } from './api';
 import { posterPathToSiteUrl } from './image';
-import { pickPreferredTmdbImagePath } from './tmdbImagePriority';
+import {
+  buildPosterIncludeImageLanguages,
+  pickStandardPosterPath,
+} from './tmdbImagePriority';
+
+export const STANDARD_POSTER_PRIORITY_VERSION = 'v3';
 
 type MediaType = 'movie' | 'tv';
 
@@ -52,7 +57,47 @@ function pickPreferredPosterPath(
   posters: TmdbPoster[],
   originalLanguage: string | null | undefined
 ): string | undefined {
-  return pickPreferredTmdbImagePath(posters, originalLanguage);
+  return pickStandardPosterPath(posters, originalLanguage);
+}
+
+export async function resolveStandardPosterSiteUrl(
+  mediaType: MediaType,
+  mediaId: string | number,
+  fallbackPosterPath: string | null | undefined,
+  size: string = 'w500'
+): Promise<string> {
+  if (!fallbackPosterPath) return '';
+  const preferred = await getPreferredPosterUrlForMedia(mediaType, mediaId, fallbackPosterPath, size);
+  return preferred || posterPathToSiteUrl(fallbackPosterPath, size);
+}
+
+export async function applyPreferredPosterToMediaData(
+  mediaType: MediaType,
+  mediaId: string | number,
+  data: {
+    original_language?: string | null;
+    poster_path?: string | null;
+    images?: { posters?: TmdbPoster[] };
+  }
+): Promise<void> {
+  const includeLangs = buildPosterIncludeImageLanguages(data.original_language);
+  const payload = await fetchJsonWithRetry(
+    buildTmdbApiUrl(`${mediaType}/${mediaId}/images`, {
+      include_image_language: includeLangs,
+    }),
+    3
+  );
+
+  const posters: TmdbPoster[] = Array.isArray(payload?.posters) ? payload.posters : [];
+  if (posters.length === 0) return;
+
+  if (!data.images) data.images = {};
+  data.images.posters = posters;
+
+  const preferredPath = pickPreferredPosterPath(posters, data.original_language);
+  if (preferredPath) {
+    data.poster_path = preferredPath;
+  }
 }
 
 export async function getPreferredPosterUrlForMedia(
@@ -64,7 +109,7 @@ export async function getPreferredPosterUrlForMedia(
 ): Promise<string> {
   const strictPreferred = !!options?.strictPreferred;
   const fallbackUrl = fallbackPoster ? posterPathToSiteUrl(fallbackPoster, size) : '';
-  const key = `${mediaType}:${mediaId}:${size}:${fallbackUrl}:strict=${strictPreferred ? 1 : 0}`;
+  const key = `${STANDARD_POSTER_PRIORITY_VERSION}:${mediaType}:${mediaId}:${size}:${fallbackUrl}:strict=${strictPreferred ? 1 : 0}`;
   const cached = posterPromiseCache.get(key);
   if (cached) return cached;
 
@@ -75,15 +120,22 @@ export async function getPreferredPosterUrlForMedia(
       if (fromLs) return fromLs;
     }
 
-    const payload = await fetchJsonWithRetry(
-      buildTmdbApiUrl(`${mediaType}/${mediaId}`, {
-        append_to_response: 'images',
+    const detailPayload = await fetchJsonWithRetry(
+      buildTmdbApiUrl(`${mediaType}/${mediaId}`),
+      2
+    );
+    const originalLanguage = detailPayload?.original_language;
+    const includeLangs = buildPosterIncludeImageLanguages(originalLanguage);
+
+    const imagesPayload = await fetchJsonWithRetry(
+      buildTmdbApiUrl(`${mediaType}/${mediaId}/images`, {
+        include_image_language: includeLangs,
       }),
       2
     );
 
-    const posters: TmdbPoster[] = Array.isArray(payload?.images?.posters) ? payload.images.posters : [];
-    const preferredPath = pickPreferredPosterPath(posters, payload?.original_language);
+    const posters: TmdbPoster[] = Array.isArray(imagesPayload?.posters) ? imagesPayload.posters : [];
+    const preferredPath = pickPreferredPosterPath(posters, originalLanguage);
     const resolved = preferredPath
       ? posterPathToSiteUrl(preferredPath, size)
       : (strictPreferred ? '' : fallbackUrl);
