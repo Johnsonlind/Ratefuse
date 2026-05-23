@@ -23,7 +23,12 @@ import { ConfirmDialog } from '../shared/ui/ConfirmDialog';
 import { toSiteTmdbImageUrl } from '../api/image';
 import { buildTmdbApiUrl, TMDB } from '../api/api';
 import { getPreferredPosterUrlForMedia } from '../api/preferredPoster';
-import { pickPreferredTmdbImagePath } from '../api/tmdbImagePriority';
+import {
+  buildHeroPosterIncludeImageLanguages,
+  pickHeroCarouselPosterPath,
+  pickStandardPosterPath,
+  TMDB_HERO_POSTER_FETCH_LANGUAGES,
+} from '../api/tmdbImagePriority';
 const DOWNSCALE_SIZE = 'w500';
 const HERO_IMAGE_SIZE = 'original';
 const HERO_BG_SIZE = 'w780';
@@ -90,7 +95,7 @@ function pickLogo(
   logos: Array<{ file_path?: string; iso_639_1?: string | null; iso_3166_1?: string | null }> = [],
   originalLanguage?: string | null
 ) {
-  const preferredPath = pickPreferredTmdbImagePath(logos, originalLanguage);
+  const preferredPath = pickStandardPosterPath(logos, originalLanguage);
   return toTmdbImagePath(preferredPath, HERO_IMAGE_SIZE);
 }
 
@@ -104,7 +109,7 @@ function pickHeroPosterImage(
   const anyPoster = images.posters?.find((p) => !!p.file_path);
   return (
     toTmdbImagePath(
-      pickPreferredTmdbImagePath(images.posters || [], originalLanguage, 'heroPoster'),
+      pickHeroCarouselPosterPath(images.posters || [], originalLanguage),
       HERO_IMAGE_SIZE
     ) ||
     toTmdbImagePath(anyPoster?.file_path, HERO_IMAGE_SIZE) ||
@@ -627,17 +632,34 @@ function HeroCarousel({
 
   const detailsQueries = useQueries({
     queries: items.map((item) => ({
-      queryKey: ['hero-detail', item.type, item.id, 'poster-hero-v2'],
+      queryKey: ['hero-detail', item.type, item.id, 'poster-hero-v3'],
       queryFn: async () => {
         const res = await fetch(
           buildTmdbApiUrl(`${item.type}/${item.id}`, {
             language: 'zh-CN',
             append_to_response: 'images',
-            include_image_language: 'null,zh,en',
+            include_image_language: TMDB_HERO_POSTER_FETCH_LANGUAGES,
           })
         );
         if (!res.ok) throw new Error('加载轮播详情失败');
         const data = await res.json();
+
+        const orig = (data.original_language || '').trim().toLowerCase();
+        const baseLangs = TMDB_HERO_POSTER_FETCH_LANGUAGES.split(',');
+        if (orig && !baseLangs.includes(orig)) {
+          const imagesRes = await fetch(
+            buildTmdbApiUrl(`${item.type}/${item.id}/images`, {
+              include_image_language: buildHeroPosterIncludeImageLanguages(data.original_language),
+            })
+          );
+          if (imagesRes.ok) {
+            const imagesData = await imagesRes.json();
+            if (Array.isArray(imagesData?.posters) && imagesData.posters.length > 0) {
+              data.images = { ...(data.images || {}), posters: imagesData.posters };
+            }
+          }
+        }
+
         const title = item.type === 'movie' ? data.title : data.name;
         return {
           id: item.id,
