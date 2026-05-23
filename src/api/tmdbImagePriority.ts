@@ -54,9 +54,22 @@ function isUndefinedLanguage(image: TmdbLocalizedImage): boolean {
 export function getTmdbImageLanguagePriority(
   image: TmdbLocalizedImage,
   originalLanguage: string | null | undefined,
-  _mode: TmdbImagePriorityMode = 'default'
+  mode: TmdbImagePriorityMode = 'default'
 ): number {
   if (!image.file_path) return 999;
+
+  if (mode === 'heroPoster') {
+    if (isUndefinedLanguage(image)) return 0;
+    if (matchesZhLocale(image, 'CN')) return 1;
+    if (matchesZhLocale(image, 'SG')) return 2;
+    if (matchesZhLocale(image, 'TW')) return 3;
+    if (matchesZhLocale(image, 'HK')) return 4;
+    if (matchesEnUS(image)) return 5;
+    const original = normalizeLanguageTag(originalLanguage);
+    const lang = normalizeLanguageTag(image.iso_639_1);
+    if (original && matchesLanguage(lang, original)) return 6;
+    return 7;
+  }
 
   if (matchesZhLocale(image, 'CN')) return 0;
   if (matchesZhLocale(image, 'SG')) return 1;
@@ -71,6 +84,20 @@ export function getTmdbImageLanguagePriority(
   if (isUndefinedLanguage(image)) return 7;
 
   return 6;
+}
+
+export function pickStandardPosterPath<T extends TmdbLocalizedImage>(
+  images: T[],
+  originalLanguage: string | null | undefined
+): string | undefined {
+  return pickPreferredTmdbImagePath(images, originalLanguage, 'default');
+}
+
+export function pickHeroCarouselPosterPath<T extends TmdbLocalizedImage>(
+  images: T[],
+  originalLanguage: string | null | undefined
+): string | undefined {
+  return pickPreferredTmdbImagePath(images, originalLanguage, 'heroPoster');
 }
 
 export function pickPreferredTmdbImagePath<T extends TmdbLocalizedImage>(
@@ -95,8 +122,19 @@ export function pickPreferredTmdbImagePath<T extends TmdbLocalizedImage>(
 
 export const TMDB_POSTER_FETCH_LANGUAGES = 'zh-CN,zh,en-US,en,null' as const;
 
+export const TMDB_HERO_POSTER_FETCH_LANGUAGES = 'null,zh-CN,zh,en-US,en' as const;
+
 export function buildPosterIncludeImageLanguages(originalLanguage?: string | null): string {
   const langs = TMDB_POSTER_FETCH_LANGUAGES.split(',');
+  const orig = (originalLanguage || '').trim().toLowerCase();
+  if (orig && !langs.includes(orig)) {
+    langs.push(orig);
+  }
+  return langs.join(',');
+}
+
+export function buildHeroPosterIncludeImageLanguages(originalLanguage?: string | null): string {
+  const langs = TMDB_HERO_POSTER_FETCH_LANGUAGES.split(',');
   const orig = (originalLanguage || '').trim().toLowerCase();
   if (orig && !langs.includes(orig)) {
     langs.push(orig);
