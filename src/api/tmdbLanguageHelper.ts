@@ -44,8 +44,23 @@ function getNestedValue(obj: any, path: string): any {
   return path.split('.').reduce((current, key) => current?.[key], obj);
 }
 
-function pickPreferredPosterPath(data: any): string | undefined {
-  const posters: TmdbImageItem[] = Array.isArray(data?.images?.posters) ? data.images.posters : [];
+function collectPostersFromDataList(dataList: Array<{ data: any }>): TmdbImageItem[] {
+  const byPath = new Map<string, TmdbImageItem>();
+  for (const { data } of dataList) {
+    const posters: TmdbImageItem[] = Array.isArray(data?.images?.posters) ? data.images.posters : [];
+    for (const poster of posters) {
+      if (poster?.file_path) {
+        byPath.set(poster.file_path, poster);
+      }
+    }
+  }
+  return Array.from(byPath.values());
+}
+
+function pickPreferredPosterPath(data: any, dataList?: Array<{ data: any }>): string | undefined {
+  const posters = dataList?.length
+    ? collectPostersFromDataList(dataList)
+    : (Array.isArray(data?.images?.posters) ? data.images.posters : []);
   return pickPreferredTmdbImagePath(posters, data?.original_language);
 }
 
@@ -106,7 +121,7 @@ export function mergeMultiLanguageData(dataList: Array<{ data: any; lang: Langua
     });
   }
 
-  const preferredPosterPath = pickPreferredPosterPath(merged);
+  const preferredPosterPath = pickPreferredPosterPath(merged, dataList);
   if (preferredPosterPath) {
     merged.poster_path = preferredPosterPath;
   }
