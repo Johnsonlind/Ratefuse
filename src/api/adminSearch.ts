@@ -2,8 +2,8 @@
 // 管理端检索 API 模块
 // ==========================================
 import { buildTmdbApiUrl } from './api';
-import { posterPathToSiteUrl } from './image';
 import { calendarYearFromIsoDate } from '../shared/utils/time';
+import { resolveStandardPosterSiteUrl } from './preferredPoster';
 
 export interface AdminMediaItem {
   id: number;
@@ -20,8 +20,36 @@ export interface AdminSearchResult {
 
 const ADMIN_POSTER_SIZE = 'w185';
 
-function adminPoster(path: string | null | undefined): string {
-  return path ? posterPathToSiteUrl(path, ADMIN_POSTER_SIZE) : '';
+async function toAdminPoster(
+  type: 'movie' | 'tv',
+  id: number,
+  posterPath: string | null | undefined
+): Promise<string> {
+  return resolveStandardPosterSiteUrl(type, id, posterPath, ADMIN_POSTER_SIZE);
+}
+
+async function mapMovieResults(results: any[]): Promise<AdminMediaItem[]> {
+  return Promise.all(
+    results.slice(0, 12).map(async (r) => ({
+      id: r.id,
+      type: 'movie' as const,
+      title: r.title || '',
+      poster: await toAdminPoster('movie', r.id, r.poster_path),
+      year: calendarYearFromIsoDate(r.release_date),
+    }))
+  );
+}
+
+async function mapTvResults(results: any[]): Promise<AdminMediaItem[]> {
+  return Promise.all(
+    results.slice(0, 12).map(async (r) => ({
+      id: r.id,
+      type: 'tv' as const,
+      title: r.name || '',
+      poster: await toAdminPoster('tv', r.id, r.poster_path),
+      year: calendarYearFromIsoDate(r.first_air_date),
+    }))
+  );
 }
 
 function parseSearchQuery(query: string): {
@@ -60,20 +88,8 @@ export async function adminSearchMedia(q: string): Promise<AdminSearchResult> {
         buildTmdbApiUrl(`find/${formattedId}`, { external_source: 'imdb_id' })
       );
       const data = await res.json();
-      const movies = (data.movie_results || []).slice(0, 12).map((r: any) => ({
-        id: r.id,
-        type: 'movie' as const,
-        title: r.title || '',
-        poster: adminPoster(r.poster_path),
-        year: calendarYearFromIsoDate(r.release_date),
-      }));
-      const tvs = (data.tv_results || []).slice(0, 12).map((r: any) => ({
-        id: r.id,
-        type: 'tv' as const,
-        title: r.name || '',
-        poster: adminPoster(r.poster_path),
-        year: calendarYearFromIsoDate(r.first_air_date),
-      }));
+      const movies = await mapMovieResults(data.movie_results || []);
+      const tvs = await mapTvResults(data.tv_results || []);
       return { movies: { results: movies }, tvShows: { results: tvs } };
     } catch {
       return { movies: { results: [] }, tvShows: { results: [] } };
@@ -96,7 +112,7 @@ export async function adminSearchMedia(q: string): Promise<AdminSearchResult> {
             id: m.id,
             type: 'movie',
             title: m.title || '',
-            poster: adminPoster(m.poster_path),
+            poster: await toAdminPoster('movie', m.id, m.poster_path),
             year: calendarYearFromIsoDate(m.release_date),
           });
         }
@@ -108,7 +124,7 @@ export async function adminSearchMedia(q: string): Promise<AdminSearchResult> {
             id: t.id,
             type: 'tv',
             title: t.name || '',
-            poster: adminPoster(t.poster_path),
+            poster: await toAdminPoster('tv', t.id, t.poster_path),
             year: calendarYearFromIsoDate(t.first_air_date),
           });
         }
@@ -149,20 +165,8 @@ export async function adminSearchMedia(q: string): Promise<AdminSearchResult> {
       ]);
       const movieData = movieRes.ok ? await movieRes.json() : { results: [] };
       const tvData = tvRes.ok ? await tvRes.json() : { results: [] };
-      const movies = (movieData.results || []).slice(0, 12).map((r: any) => ({
-        id: r.id,
-        type: 'movie' as const,
-        title: r.title || '',
-        poster: adminPoster(r.poster_path),
-        year: calendarYearFromIsoDate(r.release_date),
-      }));
-      const tvs = (tvData.results || []).slice(0, 12).map((r: any) => ({
-        id: r.id,
-        type: 'tv' as const,
-        title: r.name || '',
-        poster: adminPoster(r.poster_path),
-        year: calendarYearFromIsoDate(r.first_air_date),
-      }));
+      const movies = await mapMovieResults(movieData.results || []);
+      const tvs = await mapTvResults(tvData.results || []);
       return { movies: { results: movies }, tvShows: { results: tvs } };
     }
 
@@ -172,27 +176,12 @@ export async function adminSearchMedia(q: string): Promise<AdminSearchResult> {
     const data = await res.json();
     const rawResults = data.results || [];
 
-    const movies = rawResults
-      .filter((r: any) => r.media_type === 'movie')
-      .slice(0, 12)
-      .map((r: any) => ({
-        id: r.id,
-        type: 'movie' as const,
-        title: r.title || '',
-        poster: adminPoster(r.poster_path),
-        year: calendarYearFromIsoDate(r.release_date),
-      }));
-
-    const tvs = rawResults
-      .filter((r: any) => r.media_type === 'tv')
-      .slice(0, 12)
-      .map((r: any) => ({
-        id: r.id,
-        type: 'tv' as const,
-        title: r.name || '',
-        poster: adminPoster(r.poster_path),
-        year: calendarYearFromIsoDate(r.first_air_date),
-      }));
+    const movies = await mapMovieResults(
+      rawResults.filter((r: any) => r.media_type === 'movie')
+    );
+    const tvs = await mapTvResults(
+      rawResults.filter((r: any) => r.media_type === 'tv')
+    );
 
     return { movies: { results: movies }, tvShows: { results: tvs } };
   } catch {
