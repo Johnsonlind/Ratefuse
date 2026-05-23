@@ -69,7 +69,7 @@ export default function MoviePage() {
   } = useMediaRatings({ mediaId: id, mediaType: 'movie' });
 
   const { data: movie, isLoading, error: queryError } = useQuery({
-    queryKey: ['movie', id, 'poster-priority-v2'],
+    queryKey: ['movie', id, 'poster-priority-v5'],
     queryFn: () => getMovie(id!),
     enabled: !!id,
     staleTime: Infinity
