@@ -3098,8 +3098,17 @@ def _resolve_douban_cookie(
         return default_cookie, "admin_user"
     return None, "none"
 
-async def _notify_douban_rate_limit_for_admin(cookie_source: str, reason: str) -> None:
+async def _notify_douban_rate_limit_for_admin(
+    cookie_source: str,
+    reason: str,
+    rating_info: Optional[dict] = None,
+) -> None:
     if cookie_source != "admin_user":
+        return
+    exhausted = isinstance(rating_info, dict) and bool(
+        rating_info.get("_douban_captcha_exhausted")
+    )
+    if not exhausted:
         return
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_ADMIN_CHAT_IDS:
         return
@@ -3110,9 +3119,10 @@ async def _notify_douban_rate_limit_for_admin(cookie_source: str, reason: str) -
             return
         _douban_rate_limit_notified_until["admin_user"] = now + 600.0
     text = (
-        "⚠️ 未登录模式豆瓣抓取触发风控\n\n"
-        "请管理员访问豆瓣完成人机验证，或更新默认 Cookie。\n"
-        f"原因：{reason or '访问频率限制'}"
+        "⚠️ 豆瓣图形点选验证自动破解失败\n\n"
+        "Playwright 与 ddddocr 均未通过验证。请管理员在浏览器打开 douban.com 完成验证，"
+        "或更新系统默认 Cookie 后重试。\n"
+        f"原因：{reason or '图形验证未通过'}"
     )
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -3134,6 +3144,8 @@ def _decorate_rate_limit_popup(
         return rating_info
     status = str(rating_info.get("status") or "")
     if status != RATING_STATUS["RATE_LIMIT"]:
+        return rating_info
+    if not rating_info.get("_douban_captcha_exhausted"):
         return rating_info
     if cookie_source == "user":
         popup = "豆瓣触发访问限制，请先访问 douban.com 完成人机验证，或更新你的豆瓣 Cookie 后重试。"
@@ -3512,6 +3524,7 @@ async def get_batch_ratings(
                                 await _notify_douban_rate_limit_for_admin(
                                     douban_cookie_source,
                                     str(db_rating.get("status_reason") or ""),
+                                    db_rating,
                                 )
                     
                     cache_key = f"ratings:all:{media_type}:{media_id}"
@@ -3648,6 +3661,7 @@ async def get_all_platform_ratings(
                         await _notify_douban_rate_limit_for_admin(
                             douban_cookie_source,
                             str(db_rating.get("status_reason") or ""),
+                            db_rating,
                         )
         except asyncio.TimeoutError:
             logger.error("获取评分超时（>30秒）")
@@ -3821,6 +3835,7 @@ async def get_platform_rating(
                 await _notify_douban_rate_limit_for_admin(
                     douban_cookie_source,
                     str(data.get("status_reason") or ""),
+                    data,
                 )
         return data
 
@@ -7116,9 +7131,14 @@ def _build_updater_registry(scraper: Any) -> dict[str, dict[str, Any]]:
         "trakt_shows_weekly": {"fn": scraper.update_trakt_shows_weekly, "media_type": "tv"},
     }
 
+def _is_batch_chart_update_mode(update_mode: Optional[str]) -> bool:
+    return str(update_mode or "all").strip().lower() != "single"
+
 def _configured_updater_keys(
     db: Session,
     platform: Optional[str] = None,
+    *,
+    batch_only: bool = True,
 ) -> list[tuple[str, str, str, int]]:
     q = db.query(
         ChartConfig.platform,
@@ -7137,14 +7157,14 @@ def _configured_updater_keys(
     result: list[tuple[str, str, str, int]] = []
     seen: set[tuple[str, str]] = set()
     for r in rows:
-        if str(getattr(r, "update_mode", "") or "").strip().lower() == "single":
+        if batch_only and not _is_batch_chart_update_mode(getattr(r, "update_mode", None)):
             continue
         plat = canonical_platform_name(r.platform)
         chart = canonical_chart_name(r.chart_name)
         key = str(r.updater_key or "").strip() or (_infer_updater_key(plat, chart) or "")
-        if not key or not plat:
+        if not key or not plat or not chart:
             continue
-        dedup_key = (plat, key)
+        dedup_key = (plat, chart)
         if dedup_key in seen:
             continue
         seen.add(dedup_key)
@@ -7920,9 +7940,12 @@ async def auto_update_platform_charts(
             cancel_check=(lambda: bool(operation_key) and _update_cancel_events.get(operation_key, asyncio.Event()).is_set()),
         )
         updater_registry = _build_updater_registry(scraper)
-        configured_keys = _configured_updater_keys(db, platform=platform)
+        configured_keys = _configured_updater_keys(db, platform=platform, batch_only=True)
         if not configured_keys:
-            raise HTTPException(status_code=400, detail=f"{platform} 平台未配置可执行的 updater_key")
+            raise HTTPException(
+                status_code=400,
+                detail=f"{platform} 平台没有可批量更新的榜单（单独更新榜单请使用各榜单的「更新」按钮）",
+            )
         
         results = {}
         for i, (platform_name, chart_name, updater_key, _) in enumerate(configured_keys):
@@ -7998,6 +8021,20 @@ async def update_single_chart(
             resolved_key = updater_key
         if not resolved_key:
             resolved_key = _resolve_config_updater_key(db, platform, chart_name)
+        cfg_row = (
+            db.query(ChartConfig)
+            .filter(ChartConfig.platform == platform, ChartConfig.chart_name == chart_name)
+            .first()
+        )
+        if cfg_row and not _is_batch_chart_update_mode(cfg_row.update_mode):
+            cfg_key = str(cfg_row.updater_key or "").strip() or (_infer_updater_key(platform, chart_name) or "")
+            if resolved_key and cfg_key and resolved_key != cfg_key:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"榜单 {chart_name} 的 updater_key 与配置不一致，请刷新后重试",
+                )
+            resolved_key = resolved_key or cfg_key
+
         resolved = updater_registry.get(resolved_key or "")
         if not resolved or not resolved_key:
             raise HTTPException(
