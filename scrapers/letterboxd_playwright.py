@@ -21,14 +21,12 @@ _CF_BLOCK_PHRASES = (
     "cf_chl_opt",
 )
 
-
 async def _has_cf_clearance(page) -> bool:
     try:
         cookies = await page.context.cookies()
         return any(c.get("name") == "cf_clearance" for c in cookies)
     except Exception:
         return False
-
 
 async def _letterboxd_film_page_ready(page) -> bool:
     url = (getattr(page, "url", "") or "").lower()
@@ -44,7 +42,6 @@ async def _letterboxd_film_page_ready(page) -> bool:
         )
     except Exception:
         return False
-
 
 async def _letterboxd_content_visible(page, *, url: str = "") -> bool:
     if await _letterboxd_film_page_ready(page):
@@ -63,7 +60,6 @@ async def _letterboxd_content_visible(page, *, url: str = "") -> bool:
         except Exception:
             continue
     return False
-
 
 async def is_cloudflare_challenge(page) -> bool:
     try:
@@ -94,7 +90,6 @@ async def is_cloudflare_challenge(page) -> bool:
     except Exception:
         return True
 
-
 async def _wait_challenge_widget(page, timeout_sec: float = 8.0) -> bool:
     deadline = time.monotonic() + timeout_sec
     while time.monotonic() < deadline:
@@ -114,7 +109,6 @@ async def _wait_challenge_widget(page, timeout_sec: float = 8.0) -> bool:
                 pass
         await asyncio.sleep(0.3)
     return False
-
 
 async def _click_turnstile_in_frame(frame) -> bool:
     selectors = (
@@ -139,7 +133,6 @@ async def _click_turnstile_in_frame(frame) -> bool:
         except Exception:
             continue
     return False
-
 
 async def _click_cf_by_iframe_position(page) -> bool:
     for sel in (
@@ -166,7 +159,6 @@ async def _click_cf_by_iframe_position(page) -> bool:
         except Exception:
             continue
     return False
-
 
 async def _click_cf_checkbox(page) -> bool:
     if await _click_cf_by_iframe_position(page):
@@ -202,7 +194,6 @@ async def _click_cf_checkbox(page) -> bool:
 
     return False
 
-
 async def _wait_cf_resolved(page, timeout_sec: float) -> bool:
     deadline = time.monotonic() + timeout_sec
     while time.monotonic() < deadline:
@@ -217,7 +208,6 @@ async def _wait_cf_resolved(page, timeout_sec: float) -> bool:
             return True
         await asyncio.sleep(0.45)
     return False
-
 
 async def bypass_cloudflare(
     page,
@@ -258,7 +248,6 @@ async def bypass_cloudflare(
         logger.warning("Letterboxd CF: %.1fs 内未通过验证（点击 %s 次）", budget_sec, click_attempts)
     return ok
 
-
 async def wait_letterboxd_film_redirect(page, *, timeout_sec: float = 12.0) -> bool:
     deadline = time.monotonic() + timeout_sec
     while time.monotonic() < deadline:
@@ -266,7 +255,6 @@ async def wait_letterboxd_film_redirect(page, *, timeout_sec: float = 12.0) -> b
             return True
         await asyncio.sleep(0.35)
     return False
-
 
 async def goto_and_settle(
     page,
@@ -313,7 +301,6 @@ async def goto_and_settle(
     logger.info("Letterboxd: 影片页就绪 %s", getattr(page, "url", ""))
     return True
 
-
 async def goto_letterboxd_film_by_ids(
     page,
     *,
@@ -337,7 +324,6 @@ async def goto_letterboxd_film_by_ids(
                 return final
 
     return None
-
 
 async def fetch_html_with_browser(
     browser,
@@ -365,7 +351,6 @@ async def fetch_html_with_browser(
         return await page.content(), False
     finally:
         await ctx.close()
-
 
 async def ensure_page_ready(
     page,
