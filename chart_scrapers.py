@@ -67,7 +67,7 @@ async def _letterboxd_goto_and_pass_cf(page, url: str, *, timeout_ms: int = 1500
 async def _douban_goto_and_pass_captcha(page, url: str, *, timeout_ms: int = 15000) -> bool:
     await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
     if await is_douban_captcha_page(page):
-        ok, _ = await ensure_douban_access(page, budget_sec=12.0)
+        ok, _ = await ensure_douban_access(page, budget_sec=20.0)
         return ok
     return True
 
@@ -4048,34 +4048,13 @@ class AutoUpdateScheduler:
         error_occurred = False
         
         try:
-            scraper = ChartScraper(db)
-            
-            update_tasks = [
-                ("Rotten Tomatoes 本周热门流媒体电影", scraper.update_rotten_movies),
-                ("Rotten Tomatoes 本周热门剧集 ", scraper.update_rotten_tv),
-                ("Letterboxd 本周热门影视", scraper.update_letterboxd_popular),
-                ("Metacritic 本周趋势电影", scraper.update_metacritic_movies),
-                ("Metacritic 本周趋势剧集", scraper.update_metacritic_shows),
-                ("TMDB 本周趋势影视", scraper.update_tmdb_trending_all_week),
-                ("Trakt 上周电影 Top 榜", scraper.update_trakt_movies_weekly),
-                ("Trakt 上周剧集 Top 榜", scraper.update_trakt_shows_weekly),
-                ("IMDb 本周 Top 10", scraper.update_imdb_top10),
-                ("豆瓣 一周口碑榜", scraper.update_douban_weekly_movie),
-                ("豆瓣 一周华语剧集口碑榜", scraper.update_douban_weekly_chinese_tv),
-                ("豆瓣 一周全球剧集口碑榜", scraper.update_douban_weekly_global_tv)
-            ]
-            
-            for platform_name, update_func in update_tasks:
-                try:
-                    logger.info(f"开始更新 {platform_name}...")
-                    count = await update_func()
-                    results[platform_name] = count
-                    logger.info(f"{platform_name} 更新完成，获得 {count} 条记录")
-                except Exception as e:
-                    logger.error(f"{platform_name} 更新失败: {e}")
-                    results[platform_name] = 0
-                    error_occurred = True
-                    await telegram_notifier.send_update_error(str(e), platform_name)
+            from main import execute_batch_chart_updates
+
+            results, error_occurred = await execute_batch_chart_updates(db)
+            if not results:
+                logger.warning(
+                    "定时更新：没有可执行的榜单（需 update_mode=跟随全部更新 且 ChartConfig 中已配置 updater_key）"
+                )
             
             beijing_tz = _TZ_SHANGHAI
             now_beijing = datetime.now(beijing_tz)
