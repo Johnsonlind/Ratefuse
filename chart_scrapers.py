@@ -18,6 +18,12 @@ from sqlalchemy.orm import Session
 
 from browser_pool import browser_pool, wait_turn
 from models import ChartEntry, SessionLocal
+from scrapers.douban_captcha import ensure_douban_access, is_douban_captcha_page
+from scrapers.letterboxd_playwright import (
+    bypass_cloudflare as letterboxd_bypass_cloudflare,
+    is_cloudflare_challenge as letterboxd_is_cloudflare_challenge,
+)
+from scrapers.playwright_common import apply_stealth
 
 _TZ_SHANGHAI = ZoneInfo("Asia/Shanghai")
 
@@ -48,53 +54,22 @@ except ImportError:
     logger.warning("requests库未安装，TMDB API调用功能将不可用")
 
 async def _is_cloudflare_challenge(page) -> bool:
-    """检测当前页面是否为 Cloudflare 安全验证"""
-    try:
-        title = await page.title()
-        if title and "Just a moment" in title:
-            return True
-        content = await page.content()
-        if "Enable JavaScript and cookies to continue" in content or "cf_chl_opt" in content or "challenge-platform" in content:
-            return True
-        return False
-    except Exception:
-        return False
+    return await letterboxd_is_cloudflare_challenge(page)
 
-async def _letterboxd_flaresolverr(url: str) -> Optional[Dict]:
-    """调用 FlareSolverr"""
-    fs_url = os.environ.get("FLARESOLVERR_URL", "").strip()
-    if not fs_url:
-        return None
-    if not fs_url.endswith("/v1"):
-        fs_url = fs_url.rstrip("/") + "/v1"
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                fs_url,
-                json={"cmd": "request.get", "url": url, "maxTimeout": 120000},
-                timeout=aiohttp.ClientTimeout(total=135),
-            ) as resp:
-                data = await resp.json()
-        if data.get("status") != "ok" or not data.get("solution"):
-            msg = data.get("message") or data.get("error") or "unknown"
-            logger.warning(f"Letterboxd FlareSolverr 返回异常: status={data.get('status')}, message={msg}")
-            return None
-        sol = data["solution"]
-        cookies = sol.get("cookies") or []
-        ua = sol.get("userAgent") or ""
-        if not cookies or not ua:
-            return None
-        pw = [
-            {"name": c.get("name"), "value": c.get("value"), "domain": c.get("domain", ".letterboxd.com"), "path": c.get("path", "/")}
-            for c in cookies
-            if c.get("name") and c.get("value")
-        ]
-        if not pw:
-            return None
-        return {"cookies": pw, "userAgent": ua}
-    except Exception as e:
-        logger.warning(f"Letterboxd FlareSolverr 请求失败: {type(e).__name__}: {e}")
-        return None
+async def _letterboxd_goto_and_pass_cf(page, url: str, *, timeout_ms: int = 15000) -> bool:
+    """Playwright 导航并自动通过 Cloudflare（含复选框）。"""
+    await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+    if await _is_cloudflare_challenge(page):
+        logger.info("Letterboxd: 检测到 Cloudflare，Playwright 自动处理…")
+        return await letterboxd_bypass_cloudflare(page, budget_sec=25.0)
+    return True
+
+async def _douban_goto_and_pass_captcha(page, url: str, *, timeout_ms: int = 15000) -> bool:
+    await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+    if await is_douban_captcha_page(page):
+        ok, _ = await ensure_douban_access(page, budget_sec=12.0)
+        return ok
+    return True
 
 def _parse_letterboxd_cookie_string(s: str) -> list:
     """解析 .env 中的 LETTERBOXD_COOKIE"""
@@ -260,12 +235,12 @@ class ChartScraper:
         async def scrape_with_browser(browser):
             page = await browser.new_page()
             try:
-                await page.goto("https://movie.douban.com/", wait_until="domcontentloaded")
-                await asyncio.sleep(3)
-                
+                await apply_stealth(page)
+                if not await _douban_goto_and_pass_captcha(page, "https://movie.douban.com/", timeout_ms=15000):
+                    logger.warning("豆瓣一周口碑榜: 验证未通过")
+                    return []
+
                 await page.wait_for_load_state("domcontentloaded")
-                
-                await asyncio.sleep(3)
                 
                 try:
                     await page.wait_for_selector('#billboard .billboard-bd table tr', timeout=10000)
@@ -627,6 +602,7 @@ class ChartScraper:
         async def scrape_with_browser(browser):
             ctx_to_close = None
             page = await browser.new_page()
+            await apply_stealth(page)
             try:
                 logger.info(f"Letterboxd 本周热门影视: 开始抓取 {films_url}")
                 letterboxd_cookie = os.environ.get("LETTERBOXD_COOKIE", "").strip()
@@ -635,28 +611,9 @@ class ChartScraper:
                     if cookies:
                         await page.context.add_cookies(cookies)
                         logger.info("Letterboxd 本周热门影视: 已注入 LETTERBOXD_COOKIE")
-                await page.goto(films_url, wait_until="domcontentloaded")
-                await asyncio.sleep(2)
-                if await _is_cloudflare_challenge(page):
-                    logger.warning("Letterboxd 本周热门影视: 检测到 Cloudflare 验证，尝试 FlareSolverr…")
-                    if not os.environ.get("FLARESOLVERR_URL", "").strip():
-                        logger.warning("Letterboxd 本周热门影视: 未配置 FLARESOLVERR_URL")
-                    fs = await _letterboxd_flaresolverr(films_url)
-                    if not fs:
-                        logger.warning("Letterboxd 本周热门影视: 未配置或 FlareSolverr 失败，返回空")
-                        return []
-                    logger.info(
-                        f"Letterboxd 本周热门影视: FlareSolverr 成功返回 cookies={len(fs.get('cookies', []))} ua_len={len(fs.get('userAgent', ''))}"
-                    )
-                    await page.close()
-                    ctx_to_close = await browser.new_context(viewport={"width": 1280, "height": 720}, user_agent=fs["userAgent"])
-                    await ctx_to_close.add_cookies(fs["cookies"])
-                    page = await ctx_to_close.new_page()
-                    await page.goto(films_url, wait_until="domcontentloaded", timeout=15000)
-                    await asyncio.sleep(2)
-                    if await _is_cloudflare_challenge(page):
-                        logger.warning("Letterboxd 本周热门影视: FlareSolverr 后仍为 CF，返回空")
-                        return []
+                if not await _letterboxd_goto_and_pass_cf(page, films_url):
+                    logger.warning("Letterboxd 本周热门影视: Cloudflare 未通过，返回空")
+                    return []
                 popular_items = await page.query_selector_all('#popular-films .poster-list li')
                 logger.info(f"Letterboxd 本周热门影视: 选择器命中 {len(popular_items)} 项")
                 if not popular_items:
@@ -1834,7 +1791,7 @@ class ChartScraper:
             try:
                 context_options = {
                     'viewport': {'width': 1280, 'height': 720},
-                    'user_agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+                    'user_agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                     'bypass_csp': True,
                     'ignore_https_errors': True,
                     'java_script_enabled': True,
@@ -1859,6 +1816,7 @@ class ChartScraper:
                 context = await browser.new_context(**context_options)
                 page = await context.new_page()
                 page.set_default_timeout(60000)
+                await apply_stealth(page)
                 
                 if douban_cookie:
                     cookies = []
@@ -1878,10 +1836,9 @@ class ChartScraper:
                 
                 logger.info("访问豆瓣首页建立会话...")
                 try:
-                    await page.goto("https://www.douban.com/", wait_until="domcontentloaded", timeout=30000)
-                    await asyncio.sleep(2)
-                    await page.evaluate("window.scrollTo(0, Math.random() * 500)")
-                    await asyncio.sleep(1)
+                    await _douban_goto_and_pass_captcha(page, "https://www.douban.com/", timeout_ms=12000)
+                    await page.evaluate("window.scrollTo(0, Math.random() * 300)")
+                    await asyncio.sleep(0.5)
                 except Exception as e:
                     logger.warning(f"访问豆瓣首页失败: {e}")
                 
@@ -1894,14 +1851,14 @@ class ChartScraper:
                     logger.info(f"访问豆瓣 Top 250 第 {page_num + 1} 页: {url}")
                     
                     if page_num > 0:
-                        delay = random.uniform(3, 8)
-                        logger.debug(f"随机延迟 {delay:.2f} 秒")
-                        await asyncio.sleep(delay)
-                    
-                    await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-                    
+                        await asyncio.sleep(random.uniform(0.8, 1.5))
+
+                    if not await _douban_goto_and_pass_captcha(page, url, timeout_ms=20000):
+                        logger.error(f"第 {page_num + 1} 页豆瓣验证未通过")
+                        raise Exception("ANTI_SCRAPING_DETECTED")
+
                     await page.evaluate("window.scrollTo(0, Math.random() * 300)")
-                    await asyncio.sleep(random.uniform(1, 3))
+                    await asyncio.sleep(random.uniform(0.3, 0.8))
                     
                     try:
                         await page.wait_for_load_state("domcontentloaded", timeout=30000)
@@ -2246,6 +2203,7 @@ class ChartScraper:
         async def scrape_with_browser(browser):
             ctx_to_close = None
             page = await browser.new_page()
+            await apply_stealth(page)
             try:
                 letterboxd_cookie = os.environ.get("LETTERBOXD_COOKIE", "").strip()
                 if letterboxd_cookie:
@@ -2264,25 +2222,9 @@ class ChartScraper:
                     
                     logger.info(f"访问 Letterboxd Top 250 第 {page_num} 页: {url}")
                     
-                    await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-                    await asyncio.sleep(2)
-                    if await _is_cloudflare_challenge(page):
-                        logger.warning(f"Letterboxd Top 250 第 {page_num} 页: 检测到 Cloudflare，尝试 FlareSolverr…")
-                        fs = await _letterboxd_flaresolverr(url)
-                        if not fs:
-                            logger.warning("Letterboxd Top 250: FlareSolverr 未配置或失败，返回空")
-                            return []
-                        await page.close()
-                        if ctx_to_close:
-                            await ctx_to_close.close()
-                        ctx_to_close = await browser.new_context(viewport={"width": 1280, "height": 720}, user_agent=fs["userAgent"])
-                        await ctx_to_close.add_cookies(fs["cookies"])
-                        page = await ctx_to_close.new_page()
-                        await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-                        await asyncio.sleep(2)
-                        if await _is_cloudflare_challenge(page):
-                            logger.warning("Letterboxd Top 250: FlareSolverr 后仍为 CF，返回空")
-                            return []
+                    if not await _letterboxd_goto_and_pass_cf(page, url, timeout_ms=60000):
+                        logger.warning(f"Letterboxd Top 250 第 {page_num} 页: Cloudflare 未通过，返回空")
+                        return []
                     
                     try:
                         await page.wait_for_selector('ul.js-list-entries li.posteritem', timeout=10000)
@@ -2455,21 +2397,9 @@ class ChartScraper:
                     if cookies:
                         await page.context.add_cookies(cookies)
                         logger.debug("Letterboxd 详情: 已注入 LETTERBOXD_COOKIE")
-                await page.goto(letterboxd_url, wait_until="domcontentloaded", timeout=20000)
-                await asyncio.sleep(1)
-                if await _is_cloudflare_challenge(page):
-                    logger.warning(f"Letterboxd 详情页 CF: {letterboxd_url}，尝试 FlareSolverr…")
-                    fs = await _letterboxd_flaresolverr(letterboxd_url)
-                    if not fs:
-                        return None
-                    await page.close()
-                    ctx_to_close = await browser.new_context(viewport={"width": 1280, "height": 720}, user_agent=fs["userAgent"])
-                    await ctx_to_close.add_cookies(fs["cookies"])
-                    page = await ctx_to_close.new_page()
-                    await page.goto(letterboxd_url, wait_until="domcontentloaded", timeout=20000)
-                    await asyncio.sleep(1)
-                    if await _is_cloudflare_challenge(page):
-                        return None
+                if not await _letterboxd_goto_and_pass_cf(page, letterboxd_url, timeout_ms=20000):
+                    logger.warning(f"Letterboxd 详情页 Cloudflare 未通过: {letterboxd_url}")
+                    return None
                 content = await page.content()
                 m = re.search(r'data-tmdb-id=["\']?(\d+)', content)
                 if m:
