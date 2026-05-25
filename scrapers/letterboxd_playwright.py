@@ -21,6 +21,7 @@ _CF_BLOCK_PHRASES = (
     "cf_chl_opt",
 )
 
+
 async def _has_cf_clearance(page) -> bool:
     try:
         cookies = await page.context.cookies()
@@ -28,16 +29,30 @@ async def _has_cf_clearance(page) -> bool:
     except Exception:
         return False
 
-async def _letterboxd_content_visible(page) -> bool:
+
+async def _letterboxd_film_page_ready(page) -> bool:
+    url = (getattr(page, "url", "") or "").lower()
+    if "/film/" in url:
+        return True
+    try:
+        return bool(
+            await page.evaluate(
+                """() => !!(
+                    document.querySelector('.film-header, #content-nav, .film-poster')
+                )"""
+            )
+        )
+    except Exception:
+        return False
+
+
+async def _letterboxd_content_visible(page, *, url: str = "") -> bool:
+    if await _letterboxd_film_page_ready(page):
+        return True
+
     selectors = (
-        "li.search-result",
-        ".results li",
-        "div[data-item-link][data-item-name]",
-        "div[data-item-link]",
-        "#search-table-body ul.results",
         "#content-nav",
         ".poster-list",
-        "header.site-header",
         ".film-header",
     )
     for sel in selectors:
@@ -49,11 +64,12 @@ async def _letterboxd_content_visible(page) -> bool:
             continue
     return False
 
+
 async def is_cloudflare_challenge(page) -> bool:
     try:
-        if await _has_cf_clearance(page):
-            return False
         if await _letterboxd_content_visible(page):
+            return False
+        if await _has_cf_clearance(page):
             return False
 
         title = (await page.title()) or ""
@@ -78,6 +94,7 @@ async def is_cloudflare_challenge(page) -> bool:
     except Exception:
         return True
 
+
 async def _wait_challenge_widget(page, timeout_sec: float = 8.0) -> bool:
     deadline = time.monotonic() + timeout_sec
     while time.monotonic() < deadline:
@@ -97,6 +114,7 @@ async def _wait_challenge_widget(page, timeout_sec: float = 8.0) -> bool:
                 pass
         await asyncio.sleep(0.3)
     return False
+
 
 async def _click_turnstile_in_frame(frame) -> bool:
     selectors = (
@@ -121,6 +139,7 @@ async def _click_turnstile_in_frame(frame) -> bool:
         except Exception:
             continue
     return False
+
 
 async def _click_cf_by_iframe_position(page) -> bool:
     for sel in (
@@ -147,6 +166,7 @@ async def _click_cf_by_iframe_position(page) -> bool:
         except Exception:
             continue
     return False
+
 
 async def _click_cf_checkbox(page) -> bool:
     if await _click_cf_by_iframe_position(page):
@@ -182,6 +202,7 @@ async def _click_cf_checkbox(page) -> bool:
 
     return False
 
+
 async def _wait_cf_resolved(page, timeout_sec: float) -> bool:
     deadline = time.monotonic() + timeout_sec
     while time.monotonic() < deadline:
@@ -196,6 +217,7 @@ async def _wait_cf_resolved(page, timeout_sec: float) -> bool:
             return True
         await asyncio.sleep(0.45)
     return False
+
 
 async def bypass_cloudflare(
     page,
@@ -236,6 +258,16 @@ async def bypass_cloudflare(
         logger.warning("Letterboxd CF: %.1fs 内未通过验证（点击 %s 次）", budget_sec, click_attempts)
     return ok
 
+
+async def wait_letterboxd_film_redirect(page, *, timeout_sec: float = 12.0) -> bool:
+    deadline = time.monotonic() + timeout_sec
+    while time.monotonic() < deadline:
+        if await _letterboxd_film_page_ready(page):
+            return True
+        await asyncio.sleep(0.35)
+    return False
+
+
 async def goto_and_settle(
     page,
     url: str,
@@ -247,9 +279,9 @@ async def goto_and_settle(
     await apply_stealth(page)
 
     start = time.monotonic()
-    await page.goto(url, wait_until=wait_until, timeout=min(15000, int(budget_sec * 1000)))
+    await page.goto(url, wait_until="load", timeout=min(20000, int(budget_sec * 1000)))
 
-    cf_remain = max(6.0, budget_sec * 0.7)
+    cf_remain = max(6.0, budget_sec * 0.55)
     ok = await bypass_cloudflare(page, budget_sec=cf_remain)
     if not ok:
         return False
@@ -269,10 +301,43 @@ async def goto_and_settle(
 
     remain = max(1.0, budget_sec - (time.monotonic() - start))
     try:
-        await page.wait_for_load_state("domcontentloaded", timeout=int(remain * 1000))
+        await page.wait_for_load_state("load", timeout=int(min(remain, 8) * 1000))
     except Exception:
         pass
+
+    film_remain = max(4.0, budget_sec - (time.monotonic() - start))
+    if not await wait_letterboxd_film_redirect(page, timeout_sec=film_remain):
+        logger.warning("Letterboxd: %.1fs 内未进入 /film/ 页面", film_remain)
+        return False
+
+    logger.info("Letterboxd: 影片页就绪 %s", getattr(page, "url", ""))
     return True
+
+
+async def goto_letterboxd_film_by_ids(
+    page,
+    *,
+    imdb_id: str = "",
+    tmdb_id: str = "",
+    budget_sec: float = 28.0,
+) -> Optional[str]:
+    """直接访问 /imdb/tt… 或 /tmdb/…（302 到 /film/slug/）。"""
+    candidates: list[str] = []
+    if imdb_id:
+        imdb_norm = imdb_id if str(imdb_id).startswith("tt") else f"tt{imdb_id}"
+        candidates.append(f"https://letterboxd.com/imdb/{imdb_norm}/")
+    if tmdb_id:
+        candidates.append(f"https://letterboxd.com/tmdb/{tmdb_id}/")
+
+    for url in candidates:
+        if await goto_and_settle(page, url, block_images=False, budget_sec=budget_sec):
+            final = (getattr(page, "url", "") or "").split("?")[0].rstrip("/")
+            if "/film/" in final:
+                logger.info("Letterboxd: 直连 ID 命中 %s -> %s", url, final)
+                return final
+
+    return None
+
 
 async def fetch_html_with_browser(
     browser,
@@ -300,6 +365,7 @@ async def fetch_html_with_browser(
         return await page.content(), False
     finally:
         await ctx.close()
+
 
 async def ensure_page_ready(
     page,
