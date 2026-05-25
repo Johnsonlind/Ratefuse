@@ -167,14 +167,16 @@ export function useMediaRatings({ mediaId, mediaType }: UseMediaRatingsOptions):
               }
             }));
             try {
-              if (String(data?.status || '') === 'RateLimit') {
+              if (
+                platform === 'douban' &&
+                String(data?.status || '') === 'RateLimit' &&
+                Boolean((data as { _douban_captcha_exhausted?: boolean })?._douban_captcha_exhausted)
+              ) {
                 const message = String(data?.popup_message || data?.status_reason || '').trim();
                 if (message && lastPopupRef.current[platform] !== message) {
                   lastPopupRef.current[platform] = message;
-                  if (platform === 'douban') {
-                    setDoubanLimitDialogMessage(message);
-                    setDoubanLimitDialogOpen(true);
-                  }
+                  setDoubanLimitDialogMessage(message);
+                  setDoubanLimitDialogOpen(true);
                 }
               }
             } catch {
