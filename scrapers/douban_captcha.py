@@ -1,431 +1,369 @@
 # ==========================================
-# 豆瓣图形点选验证码识别模块
+# 豆瓣图形点选验证码（通义千问 Qwen3.6-Flash 版）
 # ==========================================
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import random
 import time
-from typing import Optional
+import base64
+import json
+from datetime import datetime
+from typing import Any, Optional, Union
 
-import cv2
-import numpy as np
+import dashscope
+from dashscope import MultiModalConversation
 
 logger = logging.getLogger(__name__)
 
-_ddddocr_det = None
+DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY", "")
+dashscope.base_http_api_url = "https://dashscope.aliyuncs.com/api/v1"
+MODEL_ID = "qwen3.6-flash"
 
-_CV2_MATCH_MIN_SCORE = 0.55
+CAPTURE_SAVE_DIR = "./douban_captcha_snapshot"
+CAPTURE_IMG_TYPE = "png"
 
-def _deadline(budget_sec: float) -> float:
-    return time.monotonic() + budget_sec
+NORM_RANGE = 1000
 
-def is_douban_captcha_html(html: str, url: str = "", title: str = "") -> bool:
-    """仅识别真实验证页，避免搜索页脚本里的「安全验证」字样误判。"""
-    u = (url or "").lower()
-    if "sec.douban.com" in u:
-        return True
-    h = html or ""
-    if "你访问豆瓣的方式有点像机器人程序" in h and "点击证明" in h:
-        return True
-    if "请依次点击" in h or "请依次点击对应的" in h:
-        return True
-    if "geetest" in h.lower() and ("captcha" in h.lower() or "点选" in h):
-        return True
-    t = (title or "").strip()
-    if t in ("豆瓣", "豆瓣网") and "点击证明" in h:
-        return True
-    return False
-
-def is_douban_hard_block_html(html: str, url: str = "", page_title: str = "") -> bool:
-    """明确的风控/限流页（与验证码区分）。"""
-    c = (html or "").lower()
-    u = (url or "").lower()
-    t = (page_title or "").lower()
-    hard = (
-        "error code: 008",
-        "你访问豆瓣的方式有点像机器人程序",
-        "有异常请求从你的ip发出",
-        "请求过于频繁",
-        "访问太频繁",
-    )
-    if any(s in c or s in t for s in hard):
-        return True
-    if "sec.douban.com" in u and "subject" not in u:
-        return True
-    return False
-
-async def is_douban_captcha_page(page) -> bool:
+def _save_page_snapshot(img_bytes: bytes, reason: str = "unknown") -> Optional[str]:
+    if not img_bytes:
+        return None
+    os.makedirs(CAPTURE_SAVE_DIR, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    save_path = os.path.join(CAPTURE_SAVE_DIR, f"{ts}_{reason}.{CAPTURE_IMG_TYPE}")
     try:
-        html = await page.content()
-        url = str(getattr(page, "url", "") or "")
-        title = await page.title()
-        return is_douban_captcha_html(html, url, title)
+        with open(save_path, "wb") as f:
+            f.write(img_bytes)
+        logger.info("页面截图已保存: %s", save_path)
+        return save_path
+    except Exception as e:
+        logger.error("保存截图失败: %s", e)
+        return None
+
+async def _capture_and_save(page, reason: str) -> None:
+    try:
+        root = page if hasattr(page, "screenshot") else page.page
+        img = await root.screenshot(type=CAPTURE_IMG_TYPE)
+        _save_page_snapshot(img, reason=reason)
+    except Exception as e:
+        logger.debug("截图失败(%s): %s", reason, e)
+
+def _all_contexts(page) -> list:
+    out = [page]
+    try:
+        out.extend(page.frames)
     except Exception:
-        return False
+        pass
+    return out
+
+def _root_page(ctx):
+    return ctx if hasattr(ctx, "context") else getattr(ctx, "page", ctx)
 
 async def _human_pause(min_ms: int = 120, max_ms: int = 380) -> None:
     await asyncio.sleep(random.uniform(min_ms / 1000.0, max_ms / 1000.0))
 
-def _get_ddddocr_det():
-    global _ddddocr_det
-    if _ddddocr_det is None:
-        import ddddocr
-
-        _ddddocr_det = ddddocr.DdddOcr(det=True, ocr=False, show_ad=False)
-    return _ddddocr_det
-
-def _cv2_match_score(haystack_bytes: bytes, needle_bytes: bytes) -> float:
-    """在 haystack 中查找 needle，返回 TM_CCOEFF_NORMED 最高分。"""
-    if not haystack_bytes or not needle_bytes:
-        return -1.0
-    hay = cv2.imdecode(np.frombuffer(haystack_bytes, np.uint8), cv2.IMREAD_COLOR)
-    needle = cv2.imdecode(np.frombuffer(needle_bytes, np.uint8), cv2.IMREAD_COLOR)
-    if hay is None or needle is None:
-        return -1.0
-    nh, nw = needle.shape[:2]
-    hh, hw = hay.shape[:2]
-    if nh < 8 or nw < 8:
-        return -1.0
-    if nh > hh or nw > hw:
-        scale = min(hh / nh, hw / nw) * 0.92
-        needle = cv2.resize(needle, (max(8, int(nw * scale)), max(8, int(nh * scale))))
-        nh, nw = needle.shape[:2]
-    if nh > hh or nw > hw:
-        return -1.0
-    try:
-        res = cv2.matchTemplate(hay, needle, cv2.TM_CCOEFF_NORMED)
-        return float(res.max()) if res.size else -1.0
-    except Exception:
-        return -1.0
-
-def _bboxes_from_detection(grid_bytes: bytes) -> list[tuple[float, float]]:
-    """用 ddddocr.detection 仅作宫格坐标兜底（不保证语义正确）。"""
-    try:
-        det = _get_ddddocr_det()
-        poses = det.detection(grid_bytes) or []
-    except Exception as e:
-        logger.debug("ddddocr detection 失败: %s", e)
-        return []
-    centers: list[tuple[float, float]] = []
-    for box in poses:
-        if not box or len(box) < 4:
-            continue
-        x1, y1, x2, y2 = box[:4]
-        if (x2 - x1) < 20 or (y2 - y1) < 20:
-            continue
-        centers.append(((x1 + x2) / 2, (y1 + y2) / 2))
-    return centers
-
-async def _collect_click_targets(page) -> list[dict]:
-    return await page.evaluate(
-        """() => {
-            const sel = [
-                '#captcha .captcha-pic img',
-                '.geetest_widget img.geetest_item_img',
-                '.captcha_click img',
-                '.captcha-pic-item img',
-                '#captcha img',
-                '.captcha img',
-            ].join(',');
-            const nodes = Array.from(document.querySelectorAll(sel));
-            const out = [];
-            const seen = new Set();
-            for (const el of nodes) {
-                const r = el.getBoundingClientRect();
-                if (r.width < 20 || r.height < 20) continue;
-                const key = Math.round(r.x) + ',' + Math.round(r.y);
-                if (seen.has(key)) continue;
-                seen.add(key);
-                out.push({
-                    x: r.x + r.width / 2,
-                    y: r.y + r.height / 2,
-                    src: el.src || '',
-                    w: r.width,
-                    h: r.height,
-                });
-            }
-            return out;
-        }"""
+async def _click_prove_button(page) -> bool:
+    selectors = (
+        "#tcaptcha_btn",
+        'button:has-text("点击证明")',
+        'a:has-text("点击证明")',
     )
-
-async def _collect_prompt_images(page) -> list[dict]:
-    return await page.evaluate(
-        """() => {
-            const sel = [
-                '.captcha-prompt img',
-                '#captcha .hint img',
-                '.geetest_ques_tips img',
-                '.captcha-order img',
-            ].join(',');
-            const nodes = Array.from(document.querySelectorAll(sel));
-            return nodes.map((el, i) => {
-                const r = el.getBoundingClientRect();
-                return { i, src: el.src || '', w: r.width, h: r.height };
-            }).filter(x => x.src);
-        }"""
-    )
-
-async def _element_screenshot_bytes(page, selector: str) -> Optional[bytes]:
-    try:
-        loc = page.locator(selector).first
-        if await loc.count() == 0:
-            return None
-        return await loc.screenshot(type="png")
-    except Exception:
-        return None
-
-async def _screenshot_region(page, x: float, y: float, w: float, h: float) -> Optional[bytes]:
-    try:
-        clip = {
-            "x": max(0, x - w / 2),
-            "y": max(0, y - h / 2),
-            "width": w,
-            "height": h,
-        }
-        return await page.screenshot(type="png", clip=clip)
-    except Exception:
-        return None
-
-async def _fetch_image_bytes(page, url: str) -> Optional[bytes]:
-    if not url:
-        return None
-    try:
-        resp = await page.context.request.get(url, timeout=5000)
-        if resp.ok:
-            return await resp.body()
-    except Exception:
-        pass
-    return None
-
-async def _match_prompts_to_targets(
-    page,
-    prompts: list[dict],
-    targets: list[dict],
-    grid_bytes: Optional[bytes],
-    *,
-    deadline: float,
-) -> list[tuple[float, float]]:
-    """按提示图顺序，用 OpenCV 模板匹配找到对应宫格中心坐标。"""
-    click_order: list[tuple[float, float]] = []
-    used_targets: set[int] = set()
-
-    for idx, p in enumerate(prompts):
-        if time.monotonic() > deadline:
-            break
-        prompt_bytes = await _fetch_image_bytes(page, p.get("src") or "")
-        if not prompt_bytes:
-            continue
-
-        best_i = -1
-        best_score = -1.0
-        best_xy: Optional[tuple[float, float]] = None
-
-        for ti, t in enumerate(targets):
-            if ti in used_targets:
-                continue
-            tile_bytes = await _screenshot_region(
-                page,
-                t["x"],
-                t["y"],
-                max(t.get("w") or 56, 56),
-                max(t.get("h") or 56, 56),
-            )
-            score = _cv2_match_score(tile_bytes or b"", prompt_bytes)
-            if score > best_score:
-                best_score = score
-                best_i = ti
-                best_xy = (t["x"], t["y"])
-
-        if grid_bytes and best_score < _CV2_MATCH_MIN_SCORE:
-            for ti, t in enumerate(targets):
-                if ti in used_targets:
-                    continue
-                tile_bytes = await _screenshot_region(
-                    page,
-                    t["x"],
-                    t["y"],
-                    max(t.get("w") or 56, 56),
-                    max(t.get("h") or 56, 56),
-                )
-                score = _cv2_match_score(grid_bytes, prompt_bytes)
-                if score > best_score:
-                    best_score = score
-                    best_i = ti
-                    best_xy = (t["x"], t["y"])
-
-        if best_xy and best_score >= _CV2_MATCH_MIN_SCORE and best_i >= 0:
-            used_targets.add(best_i)
-            click_order.append(best_xy)
-            logger.info(
-                "豆瓣点选匹配[%s]: score=%.3f pos=(%.0f,%.0f)",
-                idx,
-                best_score,
-                best_xy[0],
-                best_xy[1],
-            )
-        else:
-            logger.warning(
-                "豆瓣点选匹配[%s]失败: best_score=%.3f (阈值 %.2f)",
-                idx,
-                best_score,
-                _CV2_MATCH_MIN_SCORE,
-            )
-
-    return click_order
-
-async def _submit_captcha(page) -> None:
-    await _human_pause(200, 500)
-    try:
-        submit = page.locator(
-            'button:has-text("验证"), button:has-text("提交"), .geetest_commit, .captcha-submit'
-        ).first
-        if await submit.count() > 0:
-            await submit.click(timeout=2000)
-    except Exception:
-        pass
-    await asyncio.sleep(0.8)
-
-async def solve_captcha_playwright(page, *, budget_sec: float = 8.0) -> bool:
-    """按提示顺序点击宫格（OpenCV 模板匹配，不用错误 URL 对齐）。"""
-    deadline = _deadline(budget_sec)
-    if not await is_douban_captcha_page(page):
-        return True
-
-    prompts = await _collect_prompt_images(page)
-    targets = await _collect_click_targets(page)
-    if not targets:
-        logger.warning("豆瓣点选(Playwright): 未找到可点击宫格元素")
-        return False
-
-    container = page.locator("#captcha, .geetest_panel, .captcha-box, .captcha").first
-    grid_bytes = None
-    if await container.count() > 0:
+    for sel in selectors:
         try:
-            grid_bytes = await container.screenshot(type="png")
-        except Exception:
-            grid_bytes = None
-
-    if prompts:
-        click_order = await _match_prompts_to_targets(
-            page, prompts, targets, grid_bytes, deadline=deadline
-        )
-        if not click_order:
-            logger.warning("豆瓣点选(Playwright): 提示图 %s 个，无一匹配成功", len(prompts))
-            return False
-        for x, y in click_order:
-            if time.monotonic() > deadline:
-                return False
-            await _human_pause()
-            await page.mouse.click(x, y)
-        await _submit_captcha(page)
-        ok = not await is_douban_captcha_page(page)
-        logger.info("豆瓣点选(Playwright): 提交后仍验证页=%s", not ok)
-        return ok
-
-    logger.warning("豆瓣点选(Playwright): 无提示图，无法确定点击顺序，跳过盲点")
+            loc = page.locator(sel).first
+            if await loc.count() == 0:
+                continue
+            await loc.scroll_into_view_if_needed(timeout=2000)
+            await loc.click(timeout=4000, force=True)
+            await _human_pause(400, 700)
+            logger.info("已点击「点击证明」: %s", sel)
+            return True
+        except Exception as e:
+            logger.debug("点击证明(%s)失败: %s", sel, e)
+    await _capture_and_save(page, "click_prove_btn_failed")
     return False
 
-async def solve_captcha_ddddocr(page, *, budget_sec: float = 8.0) -> bool:
-    """
-    点选验证码第二道：OpenCV 模板匹配 + ddddocr.detection 仅作坐标兜底。
-    不再使用 slide_match（官方文档明确仅用于滑块）。
-    """
-    deadline = _deadline(budget_sec)
-    if not await is_douban_captcha_page(page):
-        return True
-
-    container = page.locator("#captcha, .geetest_panel, .captcha-box, .captcha").first
-    grid_bytes = None
-    if await container.count() > 0:
+async def _capture_verification_panel(ctx) -> Optional[bytes]:
+    for selector in ["#bodyWrap", "#slideBg"]:
         try:
-            grid_bytes = await container.screenshot(type="png")
+            loc = ctx.locator(selector).first
+            if await loc.count() > 0 and await loc.is_visible():
+                img_bytes = await loc.screenshot(type="png")
+                if img_bytes:
+                    logger.info("已截取验证码面板: %s", selector)
+                    return img_bytes
         except Exception:
-            grid_bytes = None
-    if not grid_bytes:
-        grid_bytes = await page.screenshot(type="png", full_page=False)
+            continue
+    return None
 
-    prompts = await _collect_prompt_images(page)
-    targets = await _collect_click_targets(page)
+async def _call_qwen_for_captcha(image_bytes: bytes) -> Optional[list[tuple[int, int]]]:
+    base64_image = base64.b64encode(image_bytes).decode('utf-8')
+    image_url = f"data:image/png;base64,{base64_image}"
 
-    if not prompts:
-        logger.warning("豆瓣点选(ddddocr路径): 页面上无提示图，ddddocr 无法推断点击顺序")
-        return False
-    if not targets and grid_bytes:
-        for cx, cy in _bboxes_from_detection(grid_bytes)[:12]:
-            targets.append({"x": cx, "y": cy, "w": 48, "h": 48, "src": ""})
-        if targets:
-            logger.info("豆瓣点选: 用 ddddocr.detection 兜底得到 %s 个候选格", len(targets))
+    prompt = f"""
+你是一个验证码识别助手。下面是一张点选验证码图片，上方有一排提示图标（或文字），下方是包含多个图标的网格。
+请按顺序点击与提示图标完全匹配的网格位置。
+- 输出格式：仅返回一个 JSON 对象，格式为 {{"clicks": [[x1,y1], [x2,y2], ...]}}
+- 坐标归一化到 0-{NORM_RANGE}，左上角为 (0,0)，右下角为 ({NORM_RANGE},{NORM_RANGE})
+- 不要输出任何解释或额外文字，只输出 JSON
+- 注意：提示图标可能为图形或数字，请仔细匹配
+"""
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"image": image_url},
+                {"text": prompt}
+            ]
+        }
+    ]
 
-    if not targets:
-        logger.warning("豆瓣点选(ddddocr路径): 无宫格坐标")
-        return False
-
-    click_order = await _match_prompts_to_targets(
-        page, prompts, targets, grid_bytes, deadline=deadline
-    )
-
-    if not click_order and grid_bytes:
-        logger.warning(
-            "豆瓣点选: OpenCV 全未命中，拒绝用 detection 盲点（会误触）"
+    try:
+        response = MultiModalConversation.call(
+            api_key=DASHSCOPE_API_KEY,
+            model=MODEL_ID,
+            messages=messages,
+            temperature=0.1,
         )
+
+        if response.status_code == 200:
+            content = response.output.choices[0].message.content[0]["text"]
+            content = content.replace('```json', '').replace('```', '').strip()
+            data = json.loads(content)
+            clicks = data.get("clicks", [])
+            if clicks and len(clicks) > 0:
+                normalized = []
+                for x, y in clicks:
+                    nx = max(0, min(NORM_RANGE, int(x)))
+                    ny = max(0, min(NORM_RANGE, int(y)))
+                    normalized.append((nx, ny))
+                logger.info("模型返回归一化坐标: %s", normalized)
+                return normalized
+            else:
+                logger.warning("模型返回的坐标列表为空")
+                return None
+        else:
+            logger.error("API 调用失败: %s - %s", response.status_code, response.message)
+            return None
+    except Exception as e:
+        logger.exception("调用通义千问时发生异常: %s", e)
+        return None
+
+async def _click_on_slide_bg_by_norm(
+    ctx,
+    norm_coords: list[tuple[int, int]],
+    page
+) -> None:
+    slide = ctx.locator("#slideBg").first
+    box = await slide.bounding_box()
+    if not box:
+        raise RuntimeError("无法获取 #slideBg 的位置信息")
+
+    w, h = box["width"], box["height"]
+    mouse_page = _root_page(page)
+
+    for i, (nx, ny) in enumerate(norm_coords):
+        px = int(nx / NORM_RANGE * w)
+        py = int(ny / NORM_RANGE * h)
+        px = max(5, min(px, int(w) - 5))
+        py = max(5, min(py, int(h) - 5))
+        abs_x = box["x"] + px
+        abs_y = box["y"] + py
+
+        logger.info("点击 %d: 归一化(%d,%d) -> 实际(%d,%d) -> 绝对(%.1f,%.1f)",
+                    i+1, nx, ny, px, py, abs_x, abs_y)
+
+        await mouse_page.mouse.move(abs_x, abs_y)
+        await _human_pause(80, 160)
+        await mouse_page.mouse.click(abs_x, abs_y, delay=random.randint(60, 140))
+        await _human_pause(280, 520)
+
+        try:
+            marks = await ctx.locator(".tc-click-mark").count()
+            logger.info("点击后 .tc-click-mark 数量: %s", marks)
+        except Exception:
+            pass
+
+async def _submit_tencent(ctx, page) -> bool:
+    await _human_pause(300, 500)
+    root = _root_page(page)
+    targets = [ctx, root, *_all_contexts(root)]
+
+    selectors = (
+        ".verify-btn.show",
+        ".verify-btn",
+        "#bodyWrap .verify-btn",
+        ".tcaptcha-embed .verify-btn",
+        'div.verify-btn:has-text("确定")',
+        'button:has-text("确定")',
+        "#verifyBtn",
+    )
+    for target in targets:
+        for sel in selectors:
+            try:
+                loc = target.locator(sel).first
+                if await loc.count() == 0:
+                    continue
+                await loc.scroll_into_view_if_needed(timeout=1500)
+                await loc.click(timeout=4000, force=True)
+                logger.info("已点击确定: %s @ %s", sel, getattr(target, "url", "main"))
+                await asyncio.sleep(1.2)
+                return True
+            except Exception as e:
+                logger.debug("提交(%s)失败: %s", sel, e)
+
+        try:
+            clicked = await target.evaluate(
+                """() => {
+                    const candidates = document.querySelectorAll(
+                        '.verify-btn, #verifyBtn, button, div[role="button"]'
+                    );
+                    for (const el of candidates) {
+                        const t = (el.textContent || '').trim();
+                        if (t === '确定' || t.includes('确定')) {
+                            el.click();
+                            return true;
+                        }
+                    }
+                    const btn = document.querySelector('.verify-btn');
+                    if (btn) { btn.click(); return true; }
+                    return false;
+                }"""
+            )
+            if clicked:
+                logger.info("已通过 JS 点击确定 @ %s", getattr(target, "url", "main"))
+                await asyncio.sleep(1.2)
+                return True
+        except Exception:
+            pass
+    return False
+
+async def _resolve_captcha_ctx(page, wait_sec=12.0):
+    deadline = time.monotonic() + wait_sec
+    while time.monotonic() < deadline:
+        for ctx in _all_contexts(page):
+            try:
+                loc = ctx.locator("#slideBg").first
+                if await loc.count() > 0 and await loc.is_visible():
+                    logger.info("找到验证码上下文")
+                    return ctx
+            except Exception:
+                continue
+        await asyncio.sleep(0.25)
+    return None
+
+async def is_douban_captcha_page(page) -> bool:
+    try:
+        for ctx in _all_contexts(page):
+            for sel in ("#bodyWrap", "#slideBg", ".tc-instruction-icon", "#tcaptcha_btn"):
+                loc = ctx.locator(sel).first
+                if await loc.count() > 0 and await loc.is_visible():
+                    return True
+        html = await page.content()
+        url = str(getattr(page, "url", "") or "")
+        title = await page.title()
+        if "sec.douban.com" in url:
+            return True
+        if "turing.captcha.qcloud.com" in html or "tcaptcha" in html.lower():
+            return True
+        if "你访问豆瓣的方式有点像机器人程序" in html and ("点击证明" in html or "tcaptcha_btn" in html):
+            return True
+        if "请依次点击" in html:
+            return True
+        return False
+    except Exception:
         return False
 
-    for x, y in click_order:
-        if time.monotonic() > deadline:
-            return False
-        await _human_pause()
-        await page.mouse.click(x, y)
+async def _solve_tencent_click_captcha(page, *, budget_sec: float) -> bool:
+    deadline = time.monotonic() + budget_sec
+    root = _root_page(page)
 
-    if click_order:
-        await _submit_captcha(page)
+    ctx = await _resolve_captcha_ctx(page, wait_sec=2.0)
+    if ctx is None:
+        logger.info("未检测到验证码面板，尝试点击「点击证明」")
+        if not await _click_prove_button(page):
+            return False
+        remain = max(3.0, deadline - time.monotonic())
+        ctx = await _resolve_captcha_ctx(page, wait_sec=min(remain, 14.0))
+        if ctx is None:
+            await _capture_and_save(root, "tencent_captcha_timeout")
+            return False
+
+    panel_bytes = await _capture_verification_panel(ctx)
+    if not panel_bytes:
+        await _capture_and_save(root, "no_captcha_panel")
+        return False
+
+    _save_page_snapshot(panel_bytes, "captcha_panel")
+
+    norm_coords = await _call_qwen_for_captcha(panel_bytes)
+    if not norm_coords or len(norm_coords) < 2:
+        logger.warning("模型未返回有效坐标，可能识别失败")
+        await _capture_and_save(root, "qwen_no_coords")
+        return False
+
+    try:
+        await _click_on_slide_bg_by_norm(ctx, norm_coords, page)
+    except Exception as e:
+        logger.warning("点击过程异常: %s", e)
+        await _capture_and_save(root, "click_failed")
+        return False
+
+    submitted = await _submit_tencent(ctx, page)
+    if not submitted:
+        logger.warning("未找到确定按钮，尝试刷新")
+        try:
+            refresh = ctx.locator(".tc-refresh, .tc-refresh-icon").first
+            if await refresh.count() > 0:
+                await refresh.click(timeout=2000, force=True)
+                await asyncio.sleep(1.0)
+        except Exception:
+            pass
+
+    await asyncio.sleep(1.5)
     ok = not await is_douban_captcha_page(page)
-    logger.info("豆瓣点选(ddddocr路径): 点击 %s 次，仍验证页=%s", len(click_order), not ok)
+    logger.info("点选完成: submitted=%s access_ok=%s", submitted, ok)
+    if not ok:
+        await _capture_and_save(root, "captcha_final_failed")
     return ok
 
-async def ensure_douban_access(
-    page,
-    *,
-    budget_sec: float = 18.0,
-) -> tuple[bool, bool]:
-    """
-    先 Playwright 路径（OpenCV 模板匹配），再尝试 ddddocr.detection 补宫格坐标后重试。
-    Returns (access_ok, captcha_exhausted).
-    captcha_exhausted=True only when both solvers failed while still on captcha.
-    """
+async def solve_douban_click_captcha(page, *, budget_sec: float = 18.0) -> bool:
+    return await _solve_tencent_click_captcha(page, budget_sec=budget_sec)
+
+async def ensure_douban_access(page, *, budget_sec: float = 28.0) -> tuple[bool, bool]:
     if not await is_douban_captcha_page(page):
         return True, False
 
-    total = budget_sec
     t0 = time.monotonic()
-    pw_budget = min(8.0, total * 0.45)
-    if await solve_captcha_playwright(page, budget_sec=pw_budget):
+    if await solve_douban_click_captcha(page, budget_sec=max(16.0, budget_sec * 0.88)):
         if not await is_douban_captcha_page(page):
             return True, False
 
-    remain = max(2.0, total - (time.monotonic() - t0))
-    if await solve_captcha_ddddocr(page, budget_sec=min(8.0, remain)):
+    remain = max(3.0, budget_sec - (time.monotonic() - t0))
+    if remain > 2.0 and await solve_douban_click_captcha(page, budget_sec=remain):
         if not await is_douban_captcha_page(page):
             return True, False
 
     still = await is_douban_captcha_page(page)
+    if still:
+        await _capture_and_save(page, "final_access_blocked")
     return (not still), still
 
 async def goto_douban_and_ensure(
     page,
     url: str,
     *,
-    budget_sec: float = 18.0,
+    budget_sec: float = 28.0,
     wait_until: str = "domcontentloaded",
 ) -> tuple[bool, bool, Optional[str]]:
-    """Navigate and solve captcha if needed. Returns (ok, captcha_exhausted, html)."""
     from scrapers.playwright_common import apply_stealth
-
     await apply_stealth(page)
+    
     start = time.monotonic()
-    await page.goto(url, wait_until=wait_until, timeout=min(12000, int(budget_sec * 1000)))
-    remain = max(3.0, budget_sec - (time.monotonic() - start))
+    await page.goto(url, wait_until=wait_until, timeout=min(15000, int(budget_sec * 1000)))
+    remain = max(6.0, budget_sec - (time.monotonic() - start))
     ok, exhausted = await ensure_douban_access(page, budget_sec=remain)
     html = await page.content() if ok else None
     return ok, exhausted, html
