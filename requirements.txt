@@ -33,6 +33,7 @@ ddddocr
 opencv-python-headless
 numpy
 Pillow
+dashscope
 
 # 配置
 python-dotenv
