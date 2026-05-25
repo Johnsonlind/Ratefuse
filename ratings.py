@@ -93,13 +93,11 @@ class LogFormatter:
 
 log = LogFormatter()
 
-
 def _douban_log(stage: str, **fields) -> None:
     """豆瓣链路诊断日志，便于定位误判限流。"""
     parts = [f"{k}={v}" for k, v in fields.items()]
     extra = (" " + " ".join(parts)) if parts else ""
     print(f"[douban][{stage}]{extra}")
-
 
 def _douban_limited_signals(content: str, page_url: str = "", page_title: str = "") -> list[str]:
     from scrapers.douban_captcha import is_douban_captcha_html, is_douban_hard_block_html
@@ -1227,7 +1225,6 @@ async def _is_cloudflare_challenge(page) -> bool:
     """检测当前页面是否为 Cloudflare 安全验证"""
     return await letterboxd_is_cloudflare_challenge(page)
 
-
 def _douban_rate_limit_result(reason: str, *, captcha_exhausted: bool = False) -> dict:
     out = {"status": RATING_STATUS["RATE_LIMIT"], "status_reason": reason}
     if captcha_exhausted:
@@ -1872,12 +1869,7 @@ def _normalize_douban_detail_url(url: str) -> str:
     return "https://movie.douban.com/" + u
 
 def _normalize_douban_rating_url(url: str) -> str:
-    """
-    Normalize Douban URLs to their real destination.
-
-    Douban search results / pages may return safety redirect wrappers like:
-    https://sec.douban.com/c?r=https%3A%2F%2Fmovie.douban.com%2Fsubject%2F37070283%2F&...
-    """
+    """豆瓣评分页URL规范化"""
     u = (url or "").strip()
     if not u:
         return u
@@ -1987,7 +1979,6 @@ async def _acquire_douban_batch_slot() -> None:
                 break
         if sleep_for > 0:
             await asyncio.sleep(sleep_for)
-
 
 async def run_in_douban_request_queue(factory, *, media_type: str, queue_timeout_sec: float = 30.0):
     """豆瓣并发队列"""
@@ -3001,7 +2992,6 @@ async def _douban_parse_search_results(page) -> list:
         {"maxItems": MAX_MATCH_CANDIDATES_PER_PLATFORM},
     )
 
-
 async def handle_douban_search(
     page, search_url, fast_mode: bool = False, douban_cookie: Optional[str] = None
 ):
@@ -3540,7 +3530,7 @@ async def _letterboxd_hit_from_film_page(
     *,
     direct_url: str = "",
 ) -> Optional[list[dict]]:
-    """当前页已是 /film/… 时直接构造搜索结果条目。"""
+    """当前页已是 /film/… 时直接构造搜索结果条目"""
     url = (getattr(page, "url", "") or "").split("?")[0].rstrip("/")
     if "/film/" not in url:
         return None
@@ -3584,9 +3574,8 @@ async def _letterboxd_hit_from_film_page(
         }
     ]
 
-
 async def handle_letterboxd_search(page, direct_url, tmdb_info):
-    """通过 Letterboxd /imdb/ 或 /tmdb/ 直连页解析影片。"""
+    """通过 Letterboxd /imdb/ 或 /tmdb/ 直连页解析影片"""
     try:
         from scrapers.playwright_common import apply_stealth
 
@@ -3665,12 +3654,7 @@ def _extract_letterboxd_external_ids_from_html(html: str) -> tuple[Optional[str]
     return tmdb_id, imdb_id
 
 def _letterboxd_detail_page_matches_tmdb(tmdb_info: dict, html: str) -> tuple[bool, str]:
-    """
-    Strict identity check for Letterboxd pages.
-
-    Returns (ok, reason). If the page contains no usable external IDs, we treat it as NOT verifiable
-    (fail closed) unless LETTERBOXD_RELAX_DETAIL_VERIFY=1.
-    """
+    """Letterboxd详情页与ID匹配检查"""
     want_tmdb = str(tmdb_info.get("tmdb_id") or tmdb_info.get("id") or "").strip()
     want_imdb = str(tmdb_info.get("imdb_id") or "").strip()
     want_imdb_norm = want_imdb if want_imdb.startswith("tt") else (f"tt{want_imdb}" if want_imdb.isdigit() else want_imdb)
@@ -4025,7 +4009,7 @@ def build_direct_mapping_search_results(
     url: str,
     extra: Optional[dict] = None,
 ) -> list[dict]:
-    """把 mapping 的详情页 URL 转成 extract_rating_info 可用的搜索结果结构。"""
+    """把 mapping 的详情页 URL 转成 extract_rating_info 可用的搜索结果结构"""
     item = {
         "title": tmdb_info.get("title") or tmdb_info.get("name") or "",
         "year": tmdb_info.get("year", ""),
@@ -4045,7 +4029,7 @@ async def douban_extract_rating_from_season_urls(
     request=None,
     douban_cookie: Optional[str] = None,
 ) -> dict:
-    """使用 mapping 中保存的豆瓣分季链接直接抓取（绕开搜索）。"""
+    """使用 mapping 中保存的豆瓣分季链接直接抓取（绕开搜索）"""
     if (tmdb_info.get("type") or "").lower() != "tv":
         return create_empty_rating_data("douban", tmdb_info.get("type") or "tv", RATING_STATUS["FETCH_FAILED"])
 
@@ -4246,7 +4230,7 @@ async def rt_extract_rating_from_season_urls(
     request=None,
     douban_cookie: Optional[str] = None,
 ) -> dict:
-    """使用 mapping 中保存的 RottenTomatoes 分季链接直接抓取（绕开搜索）。"""
+    """使用 mapping 中保存的 RottenTomatoes 分季链接直接抓取（绕开搜索）"""
     if (tmdb_info.get("type") or "").lower() != "tv":
         return create_empty_rating_data("rottentomatoes", tmdb_info.get("type") or "tv", RATING_STATUS["FETCH_FAILED"])
 
@@ -4529,7 +4513,7 @@ async def metacritic_extract_rating_from_season_urls(
     request=None,
     douban_cookie: Optional[str] = None,
 ) -> dict:
-    """使用 mapping 中保存的 Metacritic 分季链接直接抓取（绕开搜索）。"""
+    """使用 mapping 中保存的 Metacritic 分季链接直接抓取（绕开搜索）"""
     if (tmdb_info.get("type") or "").lower() != "tv":
         return create_empty_rating_data("metacritic", tmdb_info.get("type") or "tv", RATING_STATUS["FETCH_FAILED"])
 
