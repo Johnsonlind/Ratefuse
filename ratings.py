@@ -422,8 +422,8 @@ def construct_search_url(title, media_type, platform, tmdb_info):
             "tv": f"https://www.imdb.com/find/?q={encoded_title}&s=tt&ttype=tv&ref_=fn_tv"
         },
         "letterboxd": {
-            "movie": _get_letterboxd_search_urls(tmdb_id, year, imdb_id),
-            "tv": _get_letterboxd_search_urls(tmdb_id, year, imdb_id)
+            "movie": _get_letterboxd_direct_urls(tmdb_id, imdb_id),
+            "tv": _get_letterboxd_direct_urls(tmdb_id, imdb_id),
         },
         "rottentomatoes": {
             "movie": f"https://www.rottentomatoes.com/search?search={encoded_title}",
@@ -437,27 +437,23 @@ def construct_search_url(title, media_type, platform, tmdb_info):
     result = search_urls[platform][media_type] if platform in search_urls and media_type in search_urls[platform] else ""
     return result
 
-def _get_letterboxd_search_urls(tmdb_id, year, imdb_id):
-    """为 Letterboxd 生成搜索 URL（IMDb/TMDB 精确搜索优先，year 限定最后尝试）。"""
+def _get_letterboxd_direct_urls(tmdb_id, imdb_id):
+    """Letterboxd 仅通过 IMDb/TMDB 直连页解析（/imdb/tt… → /film/…）。"""
     urls = []
     if imdb_id:
         imdb_norm = imdb_id if str(imdb_id).startswith("tt") else f"tt{imdb_id}"
-        urls.append(f"https://letterboxd.com/search/imdb:{imdb_norm}/")
+        urls.append(f"https://letterboxd.com/imdb/{imdb_norm}/")
     if tmdb_id:
-        urls.append(f"https://letterboxd.com/search/tmdb:{tmdb_id}/")
-    if tmdb_id and year:
-        urls.append(f"https://letterboxd.com/search/tmdb:{tmdb_id} year:{year}/")
+        urls.append(f"https://letterboxd.com/tmdb/{tmdb_id}/")
     return urls if urls else [""]
 
-def _letterboxd_ids_from_search_url(search_url: str) -> tuple[Optional[str], Optional[str]]:
-    u = search_url or ""
-    imdb_m = re.search(r"/search/imdb:(tt\d+)", u, re.I)
-    tmdb_m = re.search(r"/search/tmdb:(\d+)", u, re.I)
-    return (
-        imdb_m.group(1).lower() if imdb_m else None,
-        tmdb_m.group(1) if tmdb_m else None,
-    )
-        
+def _letterboxd_verify_from_direct_url(direct_url: str) -> str:
+    if re.search(r"/imdb/", direct_url, re.I):
+        return "imdb_id"
+    if re.search(r"/tmdb/", direct_url, re.I):
+        return "tmdb_id"
+    return "direct_film_page"
+
 def _is_empty(value):
     """检查值是否为空"""
     if value is None:
@@ -1436,6 +1432,8 @@ async def search_platform(platform, tmdb_info, request=None, douban_cookie=None)
             try:
                 selected_user_agent = random.choice(USER_AGENTS)
 
+                lb_locale = 'en-US' if platform == 'letterboxd' else 'zh-CN'
+                lb_tz = 'America/Los_Angeles' if platform == 'letterboxd' else 'Asia/Shanghai'
                 context_options = {
                     'viewport': {'width': 1280, 'height': 720},
                     'user_agent': selected_user_agent,
@@ -1444,11 +1442,15 @@ async def search_platform(platform, tmdb_info, request=None, douban_cookie=None)
                     'java_script_enabled': True,
                     'has_touch': False,
                     'is_mobile': False,
-                    'locale': 'zh-CN',
-                    'timezone_id': 'Asia/Shanghai',
+                    'locale': lb_locale,
+                    'timezone_id': lb_tz,
                     'extra_http_headers': {
                         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-                        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+                        'Accept-Language': (
+                            'en-US,en;q=0.9'
+                            if platform == 'letterboxd'
+                            else 'zh-CN,zh;q=0.9,en;q=0.8'
+                        ),
                         'Accept-Encoding': 'gzip, deflate, br',
                         'DNT': '1',
                         'Connection': 'keep-alive',
@@ -1464,6 +1466,11 @@ async def search_platform(platform, tmdb_info, request=None, douban_cookie=None)
 
                 if platform == "douban":
                     await _apply_douban_light_blocking_routes(context)
+                elif platform == "letterboxd":
+                    await context.route("**/(analytics|tracking|advertisement)", lambda route: route.abort())
+                    await context.route("**/beacon/**", lambda route: route.abort())
+                    await context.route("**/telemetry/**", lambda route: route.abort())
+                    await context.route("**/stats/**", lambda route: route.abort())
                 else:
                     await context.route("**/*.{png,jpg,jpeg,gif,svg,woff,woff2,ttf}", lambda route: route.abort())
                     await context.route("**/(analytics|tracking|advertisement)", lambda route: route.abort())
@@ -1513,7 +1520,7 @@ async def search_platform(platform, tmdb_info, request=None, douban_cookie=None)
                         for idx, search_url in enumerate(search_urls):
                             if not search_url:
                                 continue
-                            print(f"{platform} 搜索URL [{idx+1}/{len(search_urls)}]: {search_url}")
+                            print(f"{platform} 直连URL [{idx+1}/{len(search_urls)}]: {search_url}")
                             await check_request()
                             results = await handle_letterboxd_search(page, search_url, tmdb_info)
                             
@@ -1521,7 +1528,7 @@ async def search_platform(platform, tmdb_info, request=None, douban_cookie=None)
                                 break
                         
                         if results and isinstance(results, dict) and results.get("status") == RATING_STATUS["NO_FOUND"]:
-                            print(f"Letterboxd所有搜索方式都未找到结果，确认未收录")
+                            print("Letterboxd 直连 IMDb/TMDB 均未命中，确认未收录")
                             return {"status": RATING_STATUS["NO_FOUND"], "status_reason": "平台未收录"}
                     else:
                         if not search_urls:
@@ -3018,7 +3025,7 @@ async def handle_douban_search(
                 exhausted=exhausted,
             )
             reason = (
-                "豆瓣图形点选验证失败（已尝试 Playwright 与 ddddocr），请完成验证或更新 Cookie"
+                "豆瓣点选验证失败，请完成验证或更新 Cookie"
                 if exhausted
                 else "豆瓣人机验证：请在本地浏览器打开 douban.com 完成验证后，更新账号中的豆瓣 Cookie 再试"
             )
@@ -3055,12 +3062,12 @@ async def handle_douban_search(
                     raw, current_url, title
                 ):
                     _douban_log("search.retry_captcha", url=current_url[:80])
-                    ok2, exhausted2 = await ensure_douban_access(page, budget_sec=12.0)
+                    ok2, exhausted2 = await ensure_douban_access(page, budget_sec=28.0)
                     if ok2:
                         results = await _douban_parse_search_results(page)
                     else:
                         return _douban_rate_limit_result(
-                            "豆瓣图形点选验证失败（已尝试 Playwright 与 ddddocr），请完成验证或更新 Cookie",
+                            "豆瓣点选验证失败，请完成验证或更新 Cookie",
                             captcha_exhausted=exhausted2,
                         )
                 if not results and _looks_like_douban_access_limited(raw, current_url, title):
@@ -3527,65 +3534,59 @@ async def handle_metacritic_search(page, search_url, tmdb_info=None):
             return {"status": RATING_STATUS["TIMEOUT"], "status_reason": "请求超时"}
         return {"status": RATING_STATUS["FETCH_FAILED"], "status_reason": "获取失败"}
 
-async def _extract_letterboxd_search_hits(page) -> list[dict]:
-    """从 Letterboxd 搜索结果页提取条目"""
+async def _letterboxd_hit_from_film_page(
+    page,
+    tmdb_info: dict,
+    *,
+    direct_url: str = "",
+) -> Optional[list[dict]]:
+    """当前页已是 /film/… 时直接构造搜索结果条目。"""
+    url = (getattr(page, "url", "") or "").split("?")[0].rstrip("/")
+    if "/film/" not in url:
+        return None
+    title = ""
+    year = str(tmdb_info.get("year") or "").strip()
     try:
-        await page.wait_for_function(
+        meta = await page.evaluate(
             """() => {
-                return document.querySelectorAll(
-                    'li.search-result div[data-item-link][data-item-name], div[data-item-link][data-item-name]'
-                ).length > 0
-            }""",
-            timeout=15000,
+                const h = document.querySelector('h1.headline, h1[class*="headline"], h1');
+                const y = document.querySelector('.releaseyear, [class*="releaseyear"]');
+                return {
+                    title: h ? (h.textContent || '').trim() : '',
+                    year: y ? (y.textContent || '').replace(/[^0-9]/g, '') : '',
+                };
+            }"""
         )
+        title = str((meta or {}).get("title") or "").strip()
+        year = str((meta or {}).get("year") or year).strip()[:4]
     except Exception:
         pass
-
-    raw = await page.evaluate(
-        """() => {
-            const nodes = document.querySelectorAll(
-                'li.search-result div[data-item-link][data-item-name], div[data-item-link][data-item-name]'
-            );
-            const seen = new Set();
-            const out = [];
-            for (const el of nodes) {
-                const link = (el.getAttribute('data-item-link') || '').trim();
-                const name = (el.getAttribute('data-item-name') || '').trim();
-                const year = (el.getAttribute('data-item-year') || '').trim();
-                if (!link || !name || seen.has(link)) continue;
-                seen.add(link);
-                out.push({ link, name, year });
-            }
-            if (out.length) return out;
-            for (const a of document.querySelectorAll('ul.results a[href^="/film/"]')) {
-                const link = (a.getAttribute('href') || '').trim();
-                if (!link || seen.has(link)) continue;
-                const name = (a.textContent || '').replace(/\\s+/g, ' ').trim();
-                if (!name) continue;
-                seen.add(link);
-                out.push({ link, name, year: '' });
-            }
-            return out;
-        }"""
+    if not title:
+        slug = url.rstrip("/").split("/film/")[-1]
+        title = slug.replace("-", " ").title()
+    verify = _letterboxd_verify_from_direct_url(direct_url)
+    want_tmdb = str(tmdb_info.get("tmdb_id") or tmdb_info.get("id") or "").strip()
+    want_imdb = str(tmdb_info.get("imdb_id") or "").strip()
+    want_imdb_norm = (
+        want_imdb
+        if want_imdb.startswith("tt")
+        else (f"tt{want_imdb}" if want_imdb.isdigit() else want_imdb)
     )
-    hits: list[dict] = []
-    for row in raw or []:
-        link = str(row.get("link") or "").strip()
-        if not link:
-            continue
-        detail_url = link if link.startswith("http") else f"https://letterboxd.com{link}"
-        hits.append(
-            {
-                "title": str(row.get("name") or "").strip(),
-                "year": str(row.get("year") or "").strip(),
-                "url": detail_url,
-            }
-        )
-    return hits
+    return [
+        {
+            "title": title,
+            "year": year,
+            "url": url if url.startswith("http") else f"https://letterboxd.com{url}",
+            "match_score": 100,
+            "tmdb_id": want_tmdb or None,
+            "imdb_id": want_imdb_norm or None,
+            "_letterboxd_verify": verify,
+        }
+    ]
 
-async def handle_letterboxd_search(page, search_url, tmdb_info):
-    """处理Letterboxd搜索"""
-    new_ctx = None
+
+async def handle_letterboxd_search(page, direct_url, tmdb_info):
+    """通过 Letterboxd /imdb/ 或 /tmdb/ 直连页解析影片。"""
     try:
         from scrapers.playwright_common import apply_stealth
 
@@ -3603,186 +3604,45 @@ async def handle_letterboxd_search(page, search_url, tmdb_info):
         except Exception as e:
             print(f"Letterboxd: 首页预热失败: {e}")
 
-        print(f"访问 Letterboxd 搜索页面: {search_url}")
-        if not await letterboxd_goto_and_settle(page, search_url, block_images=False, budget_sec=22.0):
-            return {
-                "status": RATING_STATUS["RATE_LIMIT"],
-                "status_reason": "Cloudflare 安全验证拦截，请稍后重试",
-            }
+        print(f"访问 Letterboxd 直连页面: {direct_url}")
+        if not await letterboxd_goto_and_settle(
+            page, direct_url, block_images=False, budget_sec=32.0
+        ):
+            if await letterboxd_is_cloudflare_challenge(page):
+                return {
+                    "status": RATING_STATUS["RATE_LIMIT"],
+                    "status_reason": "Cloudflare 安全验证拦截，请稍后重试",
+                }
+            print("Letterboxd: 直连页未跳转到 /film/")
+            return {"status": RATING_STATUS["NO_FOUND"], "status_reason": "平台未收录"}
+
+        if await letterboxd_is_cloudflare_challenge(page):
+            if not await letterboxd_bypass_cloudflare(page, budget_sec=18.0):
+                return {
+                    "status": RATING_STATUS["RATE_LIMIT"],
+                    "status_reason": "Cloudflare 安全验证拦截，请稍后重试",
+                }
 
         rate_limit = await check_rate_limit(page, "letterboxd")
         if rate_limit:
             print("检测到Letterboxd访问限制")
             return rate_limit
 
-        query_imdb, query_tmdb = _letterboxd_ids_from_search_url(search_url)
-        want_tmdb = str(tmdb_info.get("tmdb_id") or tmdb_info.get("id") or "").strip()
-        want_imdb = str(tmdb_info.get("imdb_id") or "").strip()
-        want_imdb_norm = (
-            want_imdb
-            if want_imdb.startswith("tt")
-            else (f"tt{want_imdb}" if want_imdb.isdigit() else want_imdb)
+        film_hits = await _letterboxd_hit_from_film_page(
+            page, tmdb_info, direct_url=direct_url
         )
+        if film_hits:
+            print(f"Letterboxd: 直连命中 -> {film_hits[0].get('url')}")
+            return film_hits
 
-        try:
-            hits = await _extract_letterboxd_search_hits(page)
-            if not hits:
-                if await _is_cloudflare_challenge(page):
-                    print("Letterboxd: 无结果且仍为 Cloudflare 验证页")
-                    return {
-                        "status": RATING_STATUS["RATE_LIMIT"],
-                        "status_reason": "Cloudflare 安全验证拦截，请稍后重试",
-                    }
-                print("Letterboxd未找到搜索结果")
-                return {"status": RATING_STATUS["NO_FOUND"], "status_reason": "平台未收录"}
+        print("Letterboxd: 直连页未解析到影片")
+        return {"status": RATING_STATUS["NO_FOUND"], "status_reason": "平台未收录"}
 
-            print(f"Letterboxd: 解析到 {len(hits)} 条搜索结果")
-
-            if query_imdb and want_imdb_norm and query_imdb.lower() == want_imdb_norm.lower():
-                first = hits[0]
-                print(f"Letterboxd: IMDb 精确搜索命中 -> {first.get('url')}")
-                return [
-                    {
-                        "title": first.get("title"),
-                        "year": first.get("year") or tmdb_info.get("year", ""),
-                        "url": first["url"],
-                        "match_score": 100,
-                        "imdb_id": want_imdb_norm,
-                        "tmdb_id": want_tmdb or None,
-                        "_letterboxd_verify": "imdb_query",
-                    }
-                ]
-            if query_tmdb and want_tmdb and query_tmdb == want_tmdb:
-                first = hits[0]
-                print(f"Letterboxd: TMDB 精确搜索命中 -> {first.get('url')}")
-                return [
-                    {
-                        "title": first.get("title"),
-                        "year": first.get("year") or tmdb_info.get("year", ""),
-                        "url": first["url"],
-                        "match_score": 100,
-                        "tmdb_id": want_tmdb,
-                        "imdb_id": want_imdb_norm or None,
-                        "_letterboxd_verify": "tmdb_query",
-                    }
-                ]
-
-            async def _letterboxd_extract_external_ids_from_html(html: str) -> dict:
-                if not html:
-                    return {"tmdb_id": "", "imdb_id": ""}
-                try:
-                    tmdb_m = re.search(r"themoviedb\.org/(?:movie|tv)/(\d+)\b", html, flags=re.IGNORECASE)
-                    imdb_m = re.search(r"imdb\.com/title/(tt\d+)\b", html, flags=re.IGNORECASE)
-                    return {"tmdb_id": (tmdb_m.group(1) if tmdb_m else ""), "imdb_id": (imdb_m.group(1) if imdb_m else "")}
-                except Exception:
-                    return {"tmdb_id": "", "imdb_id": ""}
-
-            async def _letterboxd_score_candidate(detail_url: str, title: str, year_text: str) -> Optional[dict]:
-                """
-                Letterboxd search can return irrelevant first hits (especially for TV / unlisted titles).
-                We only accept a candidate if external IDs match TMDB/IMDb, or fuzzy match clears a higher bar.
-                """
-                try:
-                    resp = await page.context.request.get(detail_url, timeout=15000)
-                    if resp.status != 200:
-                        return None
-                    html = await resp.text()
-                except Exception:
-                    return None
-
-                ids = await _letterboxd_extract_external_ids_from_html(html)
-                want_tmdb = str(tmdb_info.get("tmdb_id") or tmdb_info.get("id") or "").strip()
-                want_imdb = str(tmdb_info.get("imdb_id") or "").strip()
-                want_imdb_norm = want_imdb if want_imdb.startswith("tt") else (f"tt{want_imdb}" if want_imdb.isdigit() else want_imdb)
-
-                got_tmdb = str(ids.get("tmdb_id") or "").strip()
-                got_imdb = str(ids.get("imdb_id") or "").strip()
-
-                if want_tmdb and got_tmdb and want_tmdb == got_tmdb:
-                    return {
-                        "title": title,
-                        "year": year_text or tmdb_info.get("year", ""),
-                        "url": detail_url,
-                        "match_score": 100,
-                        "tmdb_id": got_tmdb,
-                        "imdb_id": got_imdb or None,
-                        "_letterboxd_verify": "tmdb_id",
-                    }
-
-                if want_imdb_norm and got_imdb and want_imdb_norm.lower() == got_imdb.lower():
-                    return {
-                        "title": title,
-                        "year": year_text or tmdb_info.get("year", ""),
-                        "url": detail_url,
-                        "match_score": 100,
-                        "tmdb_id": got_tmdb or None,
-                        "imdb_id": got_imdb,
-                        "_letterboxd_verify": "imdb_id",
-                    }
-
-                allow_fuzzy = str(os.environ.get("LETTERBOXD_ALLOW_FUZZY_MATCH", "0")).strip().lower() in (
-                    "1",
-                    "true",
-                    "yes",
-                    "on",
-                )
-                if not allow_fuzzy:
-                    return None
-
-                cand = {"title": title, "year": year_text or tmdb_info.get("year", ""), "url": detail_url}
-                if got_imdb:
-                    cand["imdb_id"] = got_imdb
-                score = await calculate_match_degree(tmdb_info, cand, "letterboxd")
-                min_score = int(os.environ.get("LETTERBOXD_MIN_ACCEPT_SCORE", "98"))
-                if score and score >= min_score:
-                    cand["match_score"] = score
-                    cand["_letterboxd_verify"] = "fuzzy_high"
-                    return cand
-
-                return None
-
-            scored: list[dict] = []
-            for hit in hits[:MAX_MATCH_CANDIDATES_PER_PLATFORM]:
-                try:
-                    c = await _letterboxd_score_candidate(
-                        hit["url"],
-                        hit.get("title") or "Unknown",
-                        hit.get("year") or "",
-                    )
-                    if c:
-                        scored.append(c)
-                except Exception:
-                    continue
-
-            if scored:
-                scored.sort(key=lambda x: int(x.get("match_score") or 0), reverse=True)
-                best = scored[0]
-                print(
-                    f"Letterboxd: 选中候选（{best.get('_letterboxd_verify')}，score={best.get('match_score')}）: "
-                    f"{best.get('title')} -> {best.get('url')}"
-                )
-                return [best]
-
-            print("Letterboxd: 搜索结果存在，但无法通过外部ID/高置信度校验，视为无可靠匹配")
-            return {"status": RATING_STATUS["NO_FOUND"], "status_reason": "平台未收录或无可靠匹配"}
-            
-        except Exception as e:
-            print(f"处理Letterboxd搜索结果时出错: {e}")
-            if "Timeout" in str(e):
-                return {"status": RATING_STATUS["TIMEOUT"], "status_reason": "请求超时"}
-            return {"status": RATING_STATUS["FETCH_FAILED"], "status_reason": "获取失败"}
-            
     except Exception as e:
-        print(f"访问Letterboxd搜索页面失败: {e}")
+        print(f"访问 Letterboxd 直连页失败: {e}")
         if "Timeout" in str(e):
             return {"status": RATING_STATUS["TIMEOUT"], "status_reason": "请求超时"}
         return {"status": RATING_STATUS["FETCH_FAILED"], "status_reason": "获取失败"}
-    finally:
-        if new_ctx:
-            try:
-                await new_ctx.close()
-            except Exception:
-                pass
 
 _LETTERBOXD_EXTERNAL_IDS_RE = re.compile(
     r"(?:https?:)?//(?:www\.)?themoviedb\.org/(?:movie|tv)/(\d+)\b|(?:https?:)?//(?:www\.)?imdb\.com/title/(tt\d+)\b",
@@ -4032,10 +3892,10 @@ async def extract_rating_info(media_type, platform, tmdb_info, search_results, r
                     elif platform == "douban":
                         await page.goto(detail_url, wait_until="domcontentloaded", timeout=12000)
                         if await is_douban_captcha_page(page):
-                            ok, exhausted = await ensure_douban_access(page, budget_sec=10.0)
+                            ok, exhausted = await ensure_douban_access(page, budget_sec=28.0)
                             if not ok:
                                 return _douban_rate_limit_result(
-                                    "豆瓣图形点选验证失败（已尝试 Playwright 与 ddddocr）",
+                                    "豆瓣点选验证失败",
                                     captcha_exhausted=exhausted,
                                 )
                         rl_d = await check_rate_limit(page, "douban")
@@ -4831,13 +4691,13 @@ async def extract_douban_rating(page, media_type, matched_results, tmdb_info=Non
             or "点击证明" in content
             or await is_douban_captcha_page(page)
         ):
-            ok, exhausted = await ensure_douban_access(page, budget_sec=10.0)
+            ok, exhausted = await ensure_douban_access(page, budget_sec=28.0)
             if ok:
                 content = await page.content()
             else:
                 ret = create_empty_rating_data("douban", media_type, RATING_STATUS["RATE_LIMIT"])
                 ret["status_reason"] = (
-                    "豆瓣图形点选验证失败（已尝试 Playwright 与 ddddocr），请完成验证或更新 Cookie"
+                    "豆瓣点选验证失败，请完成验证或更新 Cookie"
                     if exhausted
                     else "豆瓣人机验证：请在本地浏览器打开 douban.com 完成验证后，更新账号中的豆瓣 Cookie 再试"
                 )
@@ -4855,7 +4715,7 @@ async def extract_douban_rating(page, media_type, matched_results, tmdb_info=Non
         except Exception:
             current_host = ""
         if current_host.startswith("sec.douban.com") or "/b?r=" in (initial_page_url or ""):
-            ok, exhausted = await ensure_douban_access(page, budget_sec=10.0)
+            ok, exhausted = await ensure_douban_access(page, budget_sec=28.0)
             if ok:
                 content = await page.content()
                 try:
@@ -4865,7 +4725,7 @@ async def extract_douban_rating(page, media_type, matched_results, tmdb_info=Non
             else:
                 ret = create_empty_rating_data("douban", media_type, RATING_STATUS["RATE_LIMIT"])
                 ret["status_reason"] = (
-                    "豆瓣图形点选验证失败（已尝试 Playwright 与 ddddocr），请完成验证或更新 Cookie"
+                    "豆瓣点选验证失败，请完成验证或更新 Cookie"
                     if exhausted
                     else "豆瓣安全验证拦截（sec.douban.com）：请在本地浏览器完成验证后重试，或稍后再试"
                 )
