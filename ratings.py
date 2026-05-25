@@ -30,6 +30,16 @@ from browser_pool import (
     report_douban_result,
 )
 from anthology_handler import anthology_handler
+from scrapers.letterboxd_playwright import (
+    bypass_cloudflare as letterboxd_bypass_cloudflare,
+    goto_and_settle as letterboxd_goto_and_settle,
+    is_cloudflare_challenge as letterboxd_is_cloudflare_challenge,
+)
+from scrapers.douban_captcha import (
+    ensure_douban_access,
+    goto_douban_and_ensure,
+    is_douban_captcha_page,
+)
 
 class LogFormatter:
     """结构化日志输出"""
@@ -92,26 +102,17 @@ def _douban_log(stage: str, **fields) -> None:
 
 
 def _douban_limited_signals(content: str, page_url: str = "", page_title: str = "") -> list[str]:
-    c = (content or "").lower()
-    t = (page_title or "").lower()
-    u = (page_url or "").lower()
-    signals = (
-        "error code: 008",
-        "你访问豆瓣的方式有点像机器人程序",
-        "点击证明",
-        "有异常请求从你的ip发出",
-        "请求过于频繁",
-        "访问受限",
-        "访问太频繁",
-        "异常请求",
-        "安全验证",
-    )
+    from scrapers.douban_captcha import is_douban_captcha_html, is_douban_hard_block_html
+
     hits: list[str] = []
-    for s in signals:
-        sl = s.lower()
-        if sl in c or sl in t:
-            hits.append(s)
-    if "sec.douban.com" in u:
+    if is_douban_captcha_html(content, page_url, page_title):
+        hits.append("captcha-page")
+    if is_douban_hard_block_html(content, page_url, page_title):
+        hits.append("hard-block")
+    c = (content or "").lower()
+    if "error code: 008" in c:
+        hits.append("error code: 008")
+    if "sec.douban.com" in (page_url or "").lower() and "/subject/" not in (page_url or "").lower():
         hits.append("sec.douban.com(url)")
     return hits
 
@@ -437,15 +438,25 @@ def construct_search_url(title, media_type, platform, tmdb_info):
     return result
 
 def _get_letterboxd_search_urls(tmdb_id, year, imdb_id):
-    """为Letterboxd生成多种搜索URL"""
+    """为 Letterboxd 生成搜索 URL（IMDb/TMDB 精确搜索优先，year 限定最后尝试）。"""
     urls = []
-    if tmdb_id and year:
-        urls.append(f"https://letterboxd.com/search/tmdb:{tmdb_id} year:{year}/")
     if imdb_id:
-        urls.append(f"https://letterboxd.com/search/imdb:{imdb_id}/")
+        imdb_norm = imdb_id if str(imdb_id).startswith("tt") else f"tt{imdb_id}"
+        urls.append(f"https://letterboxd.com/search/imdb:{imdb_norm}/")
     if tmdb_id:
         urls.append(f"https://letterboxd.com/search/tmdb:{tmdb_id}/")
+    if tmdb_id and year:
+        urls.append(f"https://letterboxd.com/search/tmdb:{tmdb_id} year:{year}/")
     return urls if urls else [""]
+
+def _letterboxd_ids_from_search_url(search_url: str) -> tuple[Optional[str], Optional[str]]:
+    u = search_url or ""
+    imdb_m = re.search(r"/search/imdb:(tt\d+)", u, re.I)
+    tmdb_m = re.search(r"/search/tmdb:(\d+)", u, re.I)
+    return (
+        imdb_m.group(1).lower() if imdb_m else None,
+        tmdb_m.group(1) if tmdb_m else None,
+    )
         
 def _is_empty(value):
     """检查值是否为空"""
@@ -1133,7 +1144,6 @@ async def check_rate_limit(page, platform: str) -> dict | None:
             "phrases": [
                 "rate limit exceeded",
                 "too many requests",
-                "Just a moment",
                 "you are being rate limited",
                 "access denied",
                 "please wait and try again",
@@ -1161,32 +1171,38 @@ async def check_rate_limit(page, platform: str) -> dict | None:
     rules = rate_limit_rules[platform]
     
     if platform == "douban":
+        from scrapers.douban_captcha import is_douban_captcha_html, is_douban_hard_block_html
+
         page_html = await page.content()
+        page_url = str(getattr(page, "url", "") or "")
+        try:
+            page_title = await page.title()
+        except Exception:
+            page_title = ""
         if "error code: 008" in page_html:
             print("豆瓣访问频率限制: error code 008")
             _douban_log("rl.check", source="check_rate_limit", reason="error code: 008")
             return {"status": RATING_STATUS["RATE_LIMIT"], "status_reason": "访问频率限制"}
-        if (
-            "你访问豆瓣的方式有点像机器人程序" in page_html
-            or "点击证明" in page_html
-        ):
-            print("豆瓣人机验证页（机器人拦截）")
-            _douban_log("rl.check", source="check_rate_limit", reason="robot-challenge")
+        if is_douban_captcha_html(page_html, page_url, page_title):
+            print("豆瓣人机验证页（图形点选）")
+            _douban_log("rl.check", source="check_rate_limit", reason="captcha-page")
             return {
                 "status": RATING_STATUS["RATE_LIMIT"],
                 "status_reason": "豆瓣人机验证：请在本地浏览器打开 douban.com 完成验证后，更新账号中的豆瓣 Cookie 再试",
             }
-    
+        if is_douban_hard_block_html(page_html, page_url, page_title):
+            print("豆瓣访问限制（风控页）")
+            _douban_log("rl.check", source="check_rate_limit", reason="hard-block")
+            return {"status": RATING_STATUS["RATE_LIMIT"], "status_reason": "访问频率限制"}
+
     if platform == "letterboxd":
         try:
-            title = await page.title()
-            content = await page.content()
-            if title and "Just a moment" in title:
-                print("Letterboxd: 检测到 Cloudflare 安全验证页 (title)")
-                return {"status": RATING_STATUS["RATE_LIMIT"], "status_reason": "Cloudflare 安全验证拦截，请稍后重试"}
-            if "Enable JavaScript and cookies to continue" in content or "cf_chl_opt" in content or "challenge-platform" in content:
-                print("Letterboxd: 检测到 Cloudflare 安全验证页 (content)")
-                return {"status": RATING_STATUS["RATE_LIMIT"], "status_reason": "Cloudflare 安全验证拦截，请稍后重试"}
+            if await letterboxd_is_cloudflare_challenge(page):
+                print("Letterboxd: 仍处于 Cloudflare 验证页")
+                return {
+                    "status": RATING_STATUS["RATE_LIMIT"],
+                    "status_reason": "Cloudflare 安全验证拦截，请稍后重试",
+                }
         except Exception as e:
             print(f"Letterboxd Cloudflare 检测异常: {e}")
     
@@ -1213,16 +1229,14 @@ async def check_rate_limit(page, platform: str) -> dict | None:
 
 async def _is_cloudflare_challenge(page) -> bool:
     """检测当前页面是否为 Cloudflare 安全验证"""
-    try:
-        title = await page.title()
-        if title and "Just a moment" in title:
-            return True
-        content = await page.content()
-        if "Enable JavaScript and cookies to continue" in content or "cf_chl_opt" in content or "challenge-platform" in content:
-            return True
-        return False
-    except Exception:
-        return False
+    return await letterboxd_is_cloudflare_challenge(page)
+
+
+def _douban_rate_limit_result(reason: str, *, captcha_exhausted: bool = False) -> dict:
+    out = {"status": RATING_STATUS["RATE_LIMIT"], "status_reason": reason}
+    if captcha_exhausted:
+        out["_douban_captcha_exhausted"] = True
+    return out
 
 def _looks_like_douban_access_limited(content: str, page_url: str = "", page_title: str = "") -> bool:
     return len(_douban_limited_signals(content, page_url, page_title)) > 0
@@ -1819,7 +1833,9 @@ async def _new_douban_browser_context(browser, request=None, douban_cookie=None)
     await _apply_douban_light_blocking_routes(context)
     page = await context.new_page()
     page.set_default_timeout(20000)
-    await _playwright_stealth_optional(page)
+    from scrapers.playwright_common import apply_stealth
+
+    await apply_stealth(page)
 
     headers = {}
     if douban_cookie:
@@ -2676,7 +2692,7 @@ async def douban_search_and_extract_rating(
             merged_results = None
             winning_variant = None
 
-            fast_mode = True
+            fast_mode = False
 
             for variant in search_variants:
                 await check_req()
@@ -2699,6 +2715,14 @@ async def douban_search_and_extract_rating(
                     st = results["status"]
                     if st == RATING_STATUS["RATE_LIMIT"]:
                         reason = results.get("status_reason") or "访问频率限制"
+                        _douban_log(
+                            "pipeline.search.rate_limit",
+                            tmdb_id=tmdb_id,
+                            reason=reason[:80],
+                            variant=search_title,
+                        )
+                        if tmdb_info.get("imdb_id") and search_title != tmdb_info.get("imdb_id"):
+                            continue
                         mark_douban_rate_limited(None, cookie=douban_cookie)
                         report_douban_result(douban_cookie, "rate_limit")
                         return create_rating_data(RATING_STATUS["RATE_LIMIT"], reason)
@@ -2918,6 +2942,59 @@ async def douban_search_and_extract_rating(
 
     return await _await_same_douban_fetch(sf_key, run_exclusive)
 
+async def _douban_parse_search_results(page) -> list:
+    try:
+        await page.wait_for_selector('a[href*="/subject/"]', timeout=5000)
+    except Exception:
+        pass
+    return await page.evaluate(
+        """(args) => {
+            const maxItems = args.maxItems || 5;
+            const anchors = Array.from(document.querySelectorAll('a[href*="/subject/"]'));
+            const seen = new Set();
+            const out = [];
+            const titleRe = /(.*?)\\s*\\((\\d{4})\\)/;
+
+            function rowTitleFromAnchor(a) {
+                let t = (a.textContent || '').replace(/\\s+/g, ' ').trim();
+                if (t) return t;
+                const tt = a.querySelector && a.querySelector('.title-text');
+                if (tt && tt.textContent) return tt.textContent.replace(/\\s+/g, ' ').trim();
+                let p = a;
+                for (let d = 0; d < 6 && p; d++) {
+                    const x = p.closest && p.closest('.item-root, .sc-bZQynM, li, .subject-item, [class*=\"item\"]');
+                    if (x) {
+                        const titleEl = x.querySelector('.title-text, .title, h3, [class*=\"title\"]');
+                        if (titleEl && titleEl.textContent) return titleEl.textContent.replace(/\\s+/g, ' ').trim();
+                    }
+                    p = p.parentElement;
+                }
+                const img = a.querySelector && a.querySelector('img[alt]');
+                if (img && img.getAttribute('alt')) return (img.getAttribute('alt') || '').trim();
+                return '';
+            }
+
+            for (const a of anchors) {
+                if (out.length >= maxItems) break;
+                let href = (a.getAttribute('href') || '').trim();
+                if (!href || !/subject\\/\\d+/.test(href)) continue;
+                if (href.startsWith('//')) href = 'https:' + href;
+                if (seen.has(href)) continue;
+                seen.add(href);
+                const text = rowTitleFromAnchor(a);
+                if (!text) continue;
+                const m = text.match(titleRe);
+                const title = (m ? (m[1] || '').trim() : text).trim();
+                const year = m ? (m[2] || '') : '';
+                if (!title) continue;
+                out.push({ title, year, url: href });
+            }
+            return out;
+        }""",
+        {"maxItems": MAX_MATCH_CANDIDATES_PER_PLATFORM},
+    )
+
+
 async def handle_douban_search(
     page, search_url, fast_mode: bool = False, douban_cookie: Optional[str] = None
 ):
@@ -2927,12 +3004,26 @@ async def handle_douban_search(
             await douban_human_wait("before_search_nav")
         await wait_before_douban_request_async(douban_cookie, "search")
         print(f"访问豆瓣搜索页面: {search_url}")
-        await page.goto(
+        captcha_budget = 14.0 if fast_mode else 16.0
+        ok, exhausted, _html = await goto_douban_and_ensure(
+            page,
             search_url,
+            budget_sec=captcha_budget,
             wait_until="domcontentloaded",
-            timeout=(12000 if fast_mode else 20000),
         )
-        
+        if not ok:
+            _douban_log(
+                "search.blocked",
+                url=search_url,
+                exhausted=exhausted,
+            )
+            reason = (
+                "豆瓣图形点选验证失败（已尝试 Playwright 与 ddddocr），请完成验证或更新 Cookie"
+                if exhausted
+                else "豆瓣人机验证：请在本地浏览器打开 douban.com 完成验证后，更新账号中的豆瓣 Cookie 再试"
+            )
+            return _douban_rate_limit_result(reason, captcha_exhausted=exhausted)
+
         if not fast_mode:
             try:
                 await page.wait_for_load_state('domcontentloaded', timeout=3000)
@@ -2947,84 +3038,33 @@ async def handle_douban_search(
         rate_limit = await check_rate_limit(page, "douban")
         if rate_limit:
             print("检测到豆瓣访问限制")
-            return {"status": RATING_STATUS["RATE_LIMIT"], "status_reason": "访问频率限制"} 
-        
+            _douban_log("search.rate_limit", reason=rate_limit.get("status_reason"))
+            return {"status": RATING_STATUS["RATE_LIMIT"], "status_reason": "访问频率限制"}
+
         try:
-            try:
-                await page.wait_for_selector('a[href*="/subject/"]', timeout=(6000 if fast_mode else 4000))
-            except Exception:
-                pass
-
-            results = await page.evaluate(
-                """(args) => {
-                    const maxItems = args.maxItems || 5;
-                    const anchors = Array.from(document.querySelectorAll('a[href*="/subject/"]'));
-                    const seen = new Set();
-                    const out = [];
-                    const titleRe = /(.*?)\\s*\\((\\d{4})\\)/;
-
-                    function rowTitleFromAnchor(a) {
-                        let t = (a.textContent || '').replace(/\\s+/g, ' ').trim();
-                        if (t) return t;
-                        const tt = a.querySelector && a.querySelector('.title-text');
-                        if (tt && tt.textContent) return tt.textContent.replace(/\\s+/g, ' ').trim();
-                        let p = a;
-                        for (let d = 0; d < 6 && p; d++) {
-                            const x = p.closest && p.closest('.item-root, .sc-bZQynM, li, .subject-item, [class*=\"item\"]');
-                            if (x) {
-                                const titleEl = x.querySelector('.title-text, .title, h3, [class*=\"title\"]');
-                                if (titleEl && titleEl.textContent) return titleEl.textContent.replace(/\\s+/g, ' ').trim();
-                            }
-                            p = p.parentElement;
-                        }
-                        const img = a.querySelector && a.querySelector('img[alt]');
-                        if (img && img.getAttribute('alt')) return (img.getAttribute('alt') || '').trim();
-                        return '';
-                    }
-
-                    for (const a of anchors) {
-                        if (out.length >= maxItems) break;
-                        let href = (a.getAttribute('href') || '').trim();
-                        if (!href || !/subject\\/\\d+/.test(href)) continue;
-                        if (href.startsWith('//')) href = 'https:' + href;
-                        if (seen.has(href)) continue;
-                        seen.add(href);
-
-                        const text = rowTitleFromAnchor(a);
-                        if (!text) continue;
-
-                        const m = text.match(titleRe);
-                        const title = (m ? (m[1] || '').trim() : text).trim();
-                        const year = m ? (m[2] || '') : '';
-                        if (!title) continue;
-                        out.push({ title, year, url: href });
-                    }
-                    return out;
-                }""",
-                {"maxItems": MAX_MATCH_CANDIDATES_PER_PLATFORM},
-            )
+            results = await _douban_parse_search_results(page)
 
             if not results:
                 raw = await page.content()
-                current_url = ""
-                title = ""
-                try:
-                    current_url = str(getattr(page, "url", "") or "")
-                except Exception:
-                    current_url = ""
+                current_url = str(getattr(page, "url", "") or "")
                 try:
                     title = await page.title()
                 except Exception:
                     title = ""
-                if (
-                    "你访问豆瓣的方式有点像机器人程序" in raw
-                    or "点击证明" in raw
+                if await is_douban_captcha_page(page) or _looks_like_douban_access_limited(
+                    raw, current_url, title
                 ):
-                    return {
-                        "status": RATING_STATUS["RATE_LIMIT"],
-                        "status_reason": "豆瓣人机验证：请在本地浏览器打开 douban.com 完成验证后，更新账号中的豆瓣 Cookie 再试",
-                    }
-                if _looks_like_douban_access_limited(raw, current_url, title):
+                    _douban_log("search.retry_captcha", url=current_url[:80])
+                    ok2, exhausted2 = await ensure_douban_access(page, budget_sec=12.0)
+                    if ok2:
+                        results = await _douban_parse_search_results(page)
+                    else:
+                        return _douban_rate_limit_result(
+                            "豆瓣图形点选验证失败（已尝试 Playwright 与 ddddocr），请完成验证或更新 Cookie",
+                            captcha_exhausted=exhausted2,
+                        )
+                if not results and _looks_like_douban_access_limited(raw, current_url, title):
+                    _douban_log("search.limited", hits="|".join(_douban_limited_signals(raw, current_url, title)))
                     return {
                         "status": RATING_STATUS["RATE_LIMIT"],
                         "status_reason": "豆瓣访问限制或安全验证拦截",
@@ -3487,20 +3527,69 @@ async def handle_metacritic_search(page, search_url, tmdb_info=None):
             return {"status": RATING_STATUS["TIMEOUT"], "status_reason": "请求超时"}
         return {"status": RATING_STATUS["FETCH_FAILED"], "status_reason": "获取失败"}
 
+async def _extract_letterboxd_search_hits(page) -> list[dict]:
+    """从 Letterboxd 搜索结果页提取条目"""
+    try:
+        await page.wait_for_function(
+            """() => {
+                return document.querySelectorAll(
+                    'li.search-result div[data-item-link][data-item-name], div[data-item-link][data-item-name]'
+                ).length > 0
+            }""",
+            timeout=15000,
+        )
+    except Exception:
+        pass
+
+    raw = await page.evaluate(
+        """() => {
+            const nodes = document.querySelectorAll(
+                'li.search-result div[data-item-link][data-item-name], div[data-item-link][data-item-name]'
+            );
+            const seen = new Set();
+            const out = [];
+            for (const el of nodes) {
+                const link = (el.getAttribute('data-item-link') || '').trim();
+                const name = (el.getAttribute('data-item-name') || '').trim();
+                const year = (el.getAttribute('data-item-year') || '').trim();
+                if (!link || !name || seen.has(link)) continue;
+                seen.add(link);
+                out.push({ link, name, year });
+            }
+            if (out.length) return out;
+            for (const a of document.querySelectorAll('ul.results a[href^="/film/"]')) {
+                const link = (a.getAttribute('href') || '').trim();
+                if (!link || seen.has(link)) continue;
+                const name = (a.textContent || '').replace(/\\s+/g, ' ').trim();
+                if (!name) continue;
+                seen.add(link);
+                out.push({ link, name, year: '' });
+            }
+            return out;
+        }"""
+    )
+    hits: list[dict] = []
+    for row in raw or []:
+        link = str(row.get("link") or "").strip()
+        if not link:
+            continue
+        detail_url = link if link.startswith("http") else f"https://letterboxd.com{link}"
+        hits.append(
+            {
+                "title": str(row.get("name") or "").strip(),
+                "year": str(row.get("year") or "").strip(),
+                "url": detail_url,
+            }
+        )
+    return hits
+
 async def handle_letterboxd_search(page, search_url, tmdb_info):
     """处理Letterboxd搜索"""
     new_ctx = None
-    letterboxd_fs = None
     try:
-        async def block_resources(route):
-            resource_type = route.request.resource_type
-            if resource_type in ["image", "stylesheet", "font", "media"]:
-                await route.abort()
-            else:
-                await route.continue_()
-        
-        await page.route("**/*", block_resources)
-        
+        from scrapers.playwright_common import apply_stealth
+
+        await apply_stealth(page)
         await random_delay()
         letterboxd_cookie = os.environ.get("LETTERBOXD_COOKIE", "").strip()
         if letterboxd_cookie:
@@ -3508,131 +3597,75 @@ async def handle_letterboxd_search(page, search_url, tmdb_info):
             if cookies:
                 await page.context.add_cookies(cookies)
                 print("Letterboxd: 已注入 .env 中的 LETTERBOXD_COOKIE")
+        try:
+            await page.goto("https://letterboxd.com/", wait_until="domcontentloaded", timeout=12000)
+            await asyncio.sleep(0.5)
+        except Exception as e:
+            print(f"Letterboxd: 首页预热失败: {e}")
+
         print(f"访问 Letterboxd 搜索页面: {search_url}")
-        await page.goto(search_url, wait_until='domcontentloaded', timeout=10000)
-        await asyncio.sleep(0.2)
-    
-        if await _is_cloudflare_challenge(page):
-            print("Letterboxd: 检测到 Cloudflare 安全验证页，短暂等待后尝试自动通过…")
-            await asyncio.sleep(0.2)
-            fs_url = os.environ.get("FLARESOLVERR_URL", "").strip()
-            if fs_url:
-                if not fs_url.endswith("/v1"):
-                    fs_url = fs_url.rstrip("/") + "/v1"
-                try:
-                    print("Letterboxd: 使用 FlareSolverr 尝试绕过 Cloudflare…")
-                    cached = None
-                    async with _letterboxd_flaresolverr_cache_lock:
-                        if _letterboxd_flaresolverr_cache.get("expires_at", 0.0) > time.time():
-                            cached = {
-                                "cookies": _letterboxd_flaresolverr_cache.get("cookies"),
-                                "userAgent": _letterboxd_flaresolverr_cache.get("userAgent"),
-                            }
+        if not await letterboxd_goto_and_settle(page, search_url, block_images=False, budget_sec=22.0):
+            return {
+                "status": RATING_STATUS["RATE_LIMIT"],
+                "status_reason": "Cloudflare 安全验证拦截，请稍后重试",
+            }
 
-                    if cached and cached.get("cookies") and cached.get("userAgent"):
-                        pw = cached["cookies"]
-                        ua = cached["userAgent"]
-                        browser = page.context.browser
-                        new_ctx = await browser.new_context(
-                            viewport={"width": 1280, "height": 720},
-                            user_agent=ua,
-                        )
-                        await new_ctx.add_cookies(pw)
-                        new_page = await new_ctx.new_page()
-                        await new_page.route("**/*", block_resources)
-                        await new_page.goto(search_url, wait_until="domcontentloaded", timeout=10000)
-                        await asyncio.sleep(0.2)
-                        if await _is_cloudflare_challenge(new_page):
-                            await new_ctx.close()
-                            new_ctx = None
-                            print("Letterboxd: 使用缓存 cookie 后仍为验证页，返回 RateLimit")
-                            return {"status": RATING_STATUS["RATE_LIMIT"], "status_reason": "Cloudflare 安全验证拦截，请稍后重试"}
-                        print("Letterboxd: 缓存 cookie 绕过 Cloudflare，继续解析")
-                        page = new_page
-                        letterboxd_fs = {"cookies": pw, "userAgent": ua}
-                    else:
-                        async with aiohttp.ClientSession() as session:
-                            async with session.post(
-                                fs_url,
-                                json={"cmd": "request.get", "url": search_url, "maxTimeout": 120000},
-                                timeout=aiohttp.ClientTimeout(total=135),
-                            ) as resp:
-                                data = await resp.json()
-
-                        if data.get("status") == "ok" and data.get("solution"):
-                            sol = data["solution"]
-                            cookies = sol.get("cookies") or []
-                            ua = sol.get("userAgent") or ""
-
-                            if cookies and ua:
-                                pw = [
-                                    {
-                                        "name": c.get("name"),
-                                        "value": c.get("value"),
-                                        "domain": c.get("domain", ".letterboxd.com"),
-                                        "path": c.get("path", "/"),
-                                    }
-                                    for c in cookies
-                                    if c.get("name") and c.get("value")
-                                ]
-                                if pw:
-                                    async with _letterboxd_flaresolverr_cache_lock:
-                                        _letterboxd_flaresolverr_cache["expires_at"] = time.time() + _LETTERBOXD_FLARESOVERR_CACHE_TTL_SEC
-                                        _letterboxd_flaresolverr_cache["cookies"] = pw
-                                        _letterboxd_flaresolverr_cache["userAgent"] = ua
-
-                                    browser = page.context.browser
-                                    new_ctx = await browser.new_context(
-                                        viewport={"width": 1280, "height": 720},
-                                        user_agent=ua,
-                                    )
-                                    await new_ctx.add_cookies(pw)
-                                    new_page = await new_ctx.new_page()
-                                    await new_page.route("**/*", block_resources)
-                                    await new_page.goto(search_url, wait_until="domcontentloaded", timeout=10000)
-                                    await asyncio.sleep(0.2)
-                                    if await _is_cloudflare_challenge(new_page):
-                                        await new_ctx.close()
-                                        new_ctx = None
-                                        print("Letterboxd: FlareSolverr 注入 cookie 后仍为验证页，返回 RateLimit")
-                                        return {"status": RATING_STATUS["RATE_LIMIT"], "status_reason": "Cloudflare 安全验证拦截，请稍后重试"}
-                                    print("Letterboxd: FlareSolverr 成功绕过 Cloudflare，继续解析")
-                                    page = new_page
-                                    letterboxd_fs = {"cookies": pw, "userAgent": ua}
-                            else:
-                                return {"status": RATING_STATUS["RATE_LIMIT"], "status_reason": "Cloudflare 安全验证拦截，请稍后重试"}
-                        else:
-                            msg = data.get("message") or data.get("error") or "unknown"
-                            print(f"Letterboxd: FlareSolverr 返回异常: status={data.get('status')}, message={msg}")
-                            return {"status": RATING_STATUS["RATE_LIMIT"], "status_reason": "Cloudflare 安全验证拦截，请稍后重试"}
-                except Exception as e:
-                    print(f"Letterboxd: FlareSolverr 请求失败: {type(e).__name__}: {e}")
-                    return {"status": RATING_STATUS["RATE_LIMIT"], "status_reason": "Cloudflare 安全验证拦截，请稍后重试"}
-            else:
-                print("Letterboxd: 遭遇 Cloudflare 安全验证，返回 RateLimit（未配置 FLARESOLVERR_URL）")
-                return {"status": RATING_STATUS["RATE_LIMIT"], "status_reason": "Cloudflare 安全验证拦截，请稍后重试"}
-    
         rate_limit = await check_rate_limit(page, "letterboxd")
         if rate_limit:
             print("检测到Letterboxd访问限制")
             return rate_limit
-        
-        try:
-            try:
-                await page.wait_for_selector('.results li', timeout=5000)
-            except Exception as e:
-                print(f"Letterboxd等待搜索结果超时: {e}")
-            
-            items = await page.query_selector_all('div[data-item-link]')
 
-            items = items[:MAX_MATCH_CANDIDATES_PER_PLATFORM]
-            
-            if not items:
+        query_imdb, query_tmdb = _letterboxd_ids_from_search_url(search_url)
+        want_tmdb = str(tmdb_info.get("tmdb_id") or tmdb_info.get("id") or "").strip()
+        want_imdb = str(tmdb_info.get("imdb_id") or "").strip()
+        want_imdb_norm = (
+            want_imdb
+            if want_imdb.startswith("tt")
+            else (f"tt{want_imdb}" if want_imdb.isdigit() else want_imdb)
+        )
+
+        try:
+            hits = await _extract_letterboxd_search_hits(page)
+            if not hits:
                 if await _is_cloudflare_challenge(page):
-                    print("Letterboxd: 等待超时且为 Cloudflare 验证页，返回 RateLimit（非平台未收录）")
-                    return {"status": RATING_STATUS["RATE_LIMIT"], "status_reason": "Cloudflare 安全验证拦截，请稍后重试"}
+                    print("Letterboxd: 无结果且仍为 Cloudflare 验证页")
+                    return {
+                        "status": RATING_STATUS["RATE_LIMIT"],
+                        "status_reason": "Cloudflare 安全验证拦截，请稍后重试",
+                    }
                 print("Letterboxd未找到搜索结果")
                 return {"status": RATING_STATUS["NO_FOUND"], "status_reason": "平台未收录"}
+
+            print(f"Letterboxd: 解析到 {len(hits)} 条搜索结果")
+
+            if query_imdb and want_imdb_norm and query_imdb.lower() == want_imdb_norm.lower():
+                first = hits[0]
+                print(f"Letterboxd: IMDb 精确搜索命中 -> {first.get('url')}")
+                return [
+                    {
+                        "title": first.get("title"),
+                        "year": first.get("year") or tmdb_info.get("year", ""),
+                        "url": first["url"],
+                        "match_score": 100,
+                        "imdb_id": want_imdb_norm,
+                        "tmdb_id": want_tmdb or None,
+                        "_letterboxd_verify": "imdb_query",
+                    }
+                ]
+            if query_tmdb and want_tmdb and query_tmdb == want_tmdb:
+                first = hits[0]
+                print(f"Letterboxd: TMDB 精确搜索命中 -> {first.get('url')}")
+                return [
+                    {
+                        "title": first.get("title"),
+                        "year": first.get("year") or tmdb_info.get("year", ""),
+                        "url": first["url"],
+                        "match_score": 100,
+                        "tmdb_id": want_tmdb,
+                        "imdb_id": want_imdb_norm or None,
+                        "_letterboxd_verify": "tmdb_query",
+                    }
+                ]
 
             async def _letterboxd_extract_external_ids_from_html(html: str) -> dict:
                 if not html:
@@ -3709,18 +3742,14 @@ async def handle_letterboxd_search(page, search_url, tmdb_info):
                 return None
 
             scored: list[dict] = []
-            for it in items:
+            for hit in hits[:MAX_MATCH_CANDIDATES_PER_PLATFORM]:
                 try:
-                    detail_path = await it.get_attribute("data-item-link")
-                    title = (await it.get_attribute("data-item-name")) or "Unknown"
-                    year_text = (await it.get_attribute("data-item-year")) or ""
-                    if not detail_path:
-                        continue
-                    detail_url = f"https://letterboxd.com{detail_path}" if not detail_path.startswith("http") else detail_path
-                    c = await _letterboxd_score_candidate(detail_url, title, year_text)
+                    c = await _letterboxd_score_candidate(
+                        hit["url"],
+                        hit.get("title") or "Unknown",
+                        hit.get("year") or "",
+                    )
                     if c:
-                        if letterboxd_fs:
-                            c["_flaresolverr"] = letterboxd_fs
                         scored.append(c)
                 except Exception:
                     continue
@@ -3919,8 +3948,7 @@ async def extract_rating_info(media_type, platform, tmdb_info, search_results, r
             async def extract_with_browser(browser):
                 context = None
                 try:
-                    fs_data = best_match.get("_flaresolverr") if platform == "letterboxd" else None
-                    selected_user_agent = (fs_data.get("userAgent") or random.choice(USER_AGENTS)) if (platform == "letterboxd" and fs_data) else random.choice(USER_AGENTS)
+                    selected_user_agent = random.choice(USER_AGENTS)
 
                     if platform == "douban":
                         context_options = {
@@ -3976,8 +4004,9 @@ async def extract_rating_info(media_type, platform, tmdb_info, search_results, r
                         await _apply_douban_light_blocking_routes(context)
                     page = await context.new_page()
                     page.set_default_timeout(30000)
-                    if platform == "douban":
-                        await _playwright_stealth_optional(page)
+                    from scrapers.playwright_common import apply_stealth as _apply_stealth
+
+                    await _apply_stealth(page)
 
                     if platform == "douban":
                         headers = {}
@@ -4001,9 +4030,14 @@ async def extract_rating_info(media_type, platform, tmdb_info, search_results, r
                         await page.goto(detail_url, wait_until="domcontentloaded", timeout=9000)
                         await asyncio.sleep(0.3)
                     elif platform == "douban":
-                        await page.goto(detail_url, wait_until="domcontentloaded", timeout=15000)
-                        await douban_human_wait("after_detail_dom")
-                        await douban_simulate_light_browsing(page)
+                        await page.goto(detail_url, wait_until="domcontentloaded", timeout=12000)
+                        if await is_douban_captcha_page(page):
+                            ok, exhausted = await ensure_douban_access(page, budget_sec=10.0)
+                            if not ok:
+                                return _douban_rate_limit_result(
+                                    "豆瓣图形点选验证失败（已尝试 Playwright 与 ddddocr）",
+                                    captcha_exhausted=exhausted,
+                                )
                         rl_d = await check_rate_limit(page, "douban")
                         if rl_d:
                             return create_rating_data(
@@ -4016,64 +4050,9 @@ async def extract_rating_info(media_type, platform, tmdb_info, search_results, r
                             cookies = _parse_letterboxd_cookie_string(letterboxd_cookie)
                             if cookies:
                                 await context.add_cookies(cookies)
-                        if fs_data and fs_data.get("cookies"):
-                            await context.add_cookies(fs_data["cookies"])
-                        await page.goto(detail_url, wait_until="domcontentloaded", timeout=15000)
-                        await asyncio.sleep(0.3)
+                        await page.goto(detail_url, wait_until="domcontentloaded", timeout=12000)
                         if await _is_cloudflare_challenge(page):
-                            print("Letterboxd: 详情页触发 Cloudflare 安全验证，尝试用 FlareSolverr 拉取详情页…")
-                            fs_url = os.environ.get("FLARESOLVERR_URL", "").strip()
-                            if fs_url:
-                                if not fs_url.endswith("/v1"):
-                                    fs_url = fs_url.rstrip("/") + "/v1"
-                                try:
-                                    async with aiohttp.ClientSession() as session:
-                                        async with session.post(
-                                            fs_url,
-                                            json={"cmd": "request.get", "url": detail_url, "maxTimeout": 120000},
-                                            timeout=aiohttp.ClientTimeout(total=135),
-                                        ) as resp:
-                                            data = await resp.json()
-                                    if data.get("status") == "ok" and data.get("solution"):
-                                        sol = data["solution"]
-                                        cookies = sol.get("cookies") or []
-                                        ua = sol.get("userAgent") or ""
-                                        if cookies and ua:
-                                            pw = [{"name": c.get("name"), "value": c.get("value"), "domain": c.get("domain", ".letterboxd.com"), "path": c.get("path", "/")} for c in cookies if c.get("name") and c.get("value")]
-                                            if pw:
-                                                if context:
-                                                    await context.close()
-                                                opts = {**context_options, "user_agent": ua}
-                                                context = await browser.new_context(**opts)
-                                                page = await context.new_page()
-                                                page.set_default_timeout(30000)
-                                                await context.add_cookies(pw)
-                                                await page.goto(detail_url, wait_until="domcontentloaded", timeout=9000)
-                                                await asyncio.sleep(0.3)
-                                                if await _is_cloudflare_challenge(page):
-                                                    ret = create_empty_rating_data("letterboxd", media_type, RATING_STATUS["RATE_LIMIT"])
-                                                    ret["status_reason"] = "详情页触发 Cloudflare 安全验证，请稍后重试"
-                                                    return ret
-                                            else:
-                                                ret = create_empty_rating_data("letterboxd", media_type, RATING_STATUS["RATE_LIMIT"])
-                                                ret["status_reason"] = "详情页触发 Cloudflare 安全验证，请稍后重试"
-                                                return ret
-                                        else:
-                                            ret = create_empty_rating_data("letterboxd", media_type, RATING_STATUS["RATE_LIMIT"])
-                                            ret["status_reason"] = "详情页触发 Cloudflare 安全验证，请稍后重试"
-                                            return ret
-                                    else:
-                                        msg = data.get("message") or data.get("error") or "unknown"
-                                        print(f"Letterboxd 详情页 FlareSolverr 返回异常: status={data.get('status')}, message={msg}")
-                                        ret = create_empty_rating_data("letterboxd", media_type, RATING_STATUS["RATE_LIMIT"])
-                                        ret["status_reason"] = "详情页触发 Cloudflare 安全验证，请稍后重试"
-                                        return ret
-                                except Exception as e:
-                                    print(f"Letterboxd 详情页 FlareSolverr 请求失败: {type(e).__name__}: {e}")
-                                    ret = create_empty_rating_data("letterboxd", media_type, RATING_STATUS["RATE_LIMIT"])
-                                    ret["status_reason"] = "详情页触发 Cloudflare 安全验证，请稍后重试"
-                                    return ret
-                            else:
+                            if not await letterboxd_bypass_cloudflare(page, budget_sec=25.0):
                                 ret = create_empty_rating_data("letterboxd", media_type, RATING_STATUS["RATE_LIMIT"])
                                 ret["status_reason"] = "详情页触发 Cloudflare 安全验证，请稍后重试"
                                 return ret
@@ -4850,12 +4829,21 @@ async def extract_douban_rating(page, media_type, matched_results, tmdb_info=Non
         if (
             "你访问豆瓣的方式有点像机器人程序" in content
             or "点击证明" in content
+            or await is_douban_captcha_page(page)
         ):
-            ret = create_empty_rating_data("douban", media_type, RATING_STATUS["RATE_LIMIT"])
-            ret["status_reason"] = (
-                "豆瓣人机验证：请在本地浏览器打开 douban.com 完成验证后，更新账号中的豆瓣 Cookie 再试"
-            )
-            return ret
+            ok, exhausted = await ensure_douban_access(page, budget_sec=10.0)
+            if ok:
+                content = await page.content()
+            else:
+                ret = create_empty_rating_data("douban", media_type, RATING_STATUS["RATE_LIMIT"])
+                ret["status_reason"] = (
+                    "豆瓣图形点选验证失败（已尝试 Playwright 与 ddddocr），请完成验证或更新 Cookie"
+                    if exhausted
+                    else "豆瓣人机验证：请在本地浏览器打开 douban.com 完成验证后，更新账号中的豆瓣 Cookie 再试"
+                )
+                if exhausted:
+                    ret["_douban_captcha_exhausted"] = True
+                return ret
 
         try:
             initial_page_url = str(getattr(page, "url", "") or "").rstrip("/")
@@ -4867,12 +4855,24 @@ async def extract_douban_rating(page, media_type, matched_results, tmdb_info=Non
         except Exception:
             current_host = ""
         if current_host.startswith("sec.douban.com") or "/b?r=" in (initial_page_url or ""):
-            ret = create_empty_rating_data("douban", media_type, RATING_STATUS["RATE_LIMIT"])
-            ret["status_reason"] = (
-                "豆瓣安全验证拦截（sec.douban.com）：请在本地浏览器完成验证后重试，或稍后再试"
-            )
-            print(f"豆瓣详情页被安全验证重定向: {initial_page_url}")
-            return ret
+            ok, exhausted = await ensure_douban_access(page, budget_sec=10.0)
+            if ok:
+                content = await page.content()
+                try:
+                    initial_page_url = str(getattr(page, "url", "") or "").rstrip("/")
+                except Exception:
+                    pass
+            else:
+                ret = create_empty_rating_data("douban", media_type, RATING_STATUS["RATE_LIMIT"])
+                ret["status_reason"] = (
+                    "豆瓣图形点选验证失败（已尝试 Playwright 与 ddddocr），请完成验证或更新 Cookie"
+                    if exhausted
+                    else "豆瓣安全验证拦截（sec.douban.com）：请在本地浏览器完成验证后重试，或稍后再试"
+                )
+                if exhausted:
+                    ret["_douban_captcha_exhausted"] = True
+                print(f"豆瓣详情页被安全验证重定向: {initial_page_url}")
+                return ret
         
         rating, rating_people = await _douban_extract_rating_values(page, content or "")
 
