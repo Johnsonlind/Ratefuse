@@ -26,6 +26,13 @@ schedule
 
 # 浏览器自动化（browser_pool / 部分抓取）
 playwright
+playwright-stealth
+
+# 豆瓣图形点选验证码识别
+ddddocr
+opencv-python-headless
+numpy
+Pillow
 
 # 配置
 python-dotenv
