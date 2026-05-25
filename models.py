@@ -560,10 +560,37 @@ def _ensure_chart_configs_columns(engine: Engine) -> None:
                 )
             )
 
+
+_LEGACY_CHART_UPDATER_KEYS: dict[str, str] = {
+    "rotten_movies_weekly": "update_rotten_movies",
+    "rotten_tv_weekly": "update_rotten_tv",
+    "metacritic_movies_weekly": "update_metacritic_movies",
+    "metacritic_shows_weekly": "update_metacritic_shows",
+}
+
+
+def _migrate_legacy_chart_updater_keys(engine: Engine) -> None:
+    """将历史 updater_key 写成 ChartScraper 方法名（启动时一次性修正）。"""
+    with engine.begin() as conn:
+        try:
+            conn.execute(text("SELECT 1 FROM chart_configs LIMIT 1"))
+        except Exception:
+            return
+        for old_key, new_key in _LEGACY_CHART_UPDATER_KEYS.items():
+            conn.execute(
+                text(
+                    "UPDATE chart_configs SET updater_key = :new_key "
+                    "WHERE updater_key = :old_key"
+                ),
+                {"old_key": old_key, "new_key": new_key},
+            )
+
+
 def init_db():
     Base.metadata.create_all(bind=engine)
     _ensure_users_table_columns(engine)
     _ensure_chart_configs_columns(engine)
+    _migrate_legacy_chart_updater_keys(engine)
 
 if __name__ == "__main__":
     init_db()
