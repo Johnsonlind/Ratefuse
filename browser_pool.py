@@ -10,6 +10,8 @@ import time
 from typing import List, Optional
 from playwright.async_api import async_playwright, Browser, Playwright
 
+from scrapers.playwright_common import chrome_launch_kwargs
+
 logger = logging.getLogger(__name__)
 
 _DOUBAN_MIN_INTERVAL_SEC = 0.8
@@ -221,22 +223,12 @@ class BrowserPool:
             
             for i in range(self.max_browsers):
                 try:
-                    browser = await self.playwright.chromium.launch(
-                        headless=True,
-                        args=[
-                            '--no-sandbox',
-                            '--disable-setuid-sandbox',
-                            '--disable-dev-shm-usage',
-                            '--disable-gpu',
-                            '--disable-extensions',
-                            '--disable-audio-output',
-                            '--disable-web-security',
-                            '--disable-features=site-per-process',
-                            '--disable-site-isolation-trials',
-                            '--disable-blink-features=AutomationControlled',
-                            '--window-size=1280,720',
-                        ]
-                    )
+                    launch_kw = chrome_launch_kwargs(headless=True)
+                    try:
+                        browser = await self.playwright.chromium.launch(**launch_kw)
+                    except Exception:
+                        launch_kw.pop("channel", None)
+                        browser = await self.playwright.chromium.launch(**launch_kw)
                     self.browsers.append(browser)
                     await self.available_browsers.put(browser)
                     logger.info(f"浏览器 {i+1}/{self.max_browsers} 已启动")
@@ -274,16 +266,12 @@ class BrowserPool:
                 logger.warning("检测到浏览器崩溃，正在替换...")
                 try:
                     self.browsers.remove(browser)
-                    new_browser = await self.playwright.chromium.launch(
-                        headless=True,
-                        args=[
-                            '--no-sandbox',
-                            '--disable-setuid-sandbox',
-                            '--disable-dev-shm-usage',
-                            '--disable-blink-features=AutomationControlled',
-                            '--window-size=1280,720',
-                        ]
-                    )
+                    launch_kw = chrome_launch_kwargs(headless=True)
+                    try:
+                        new_browser = await self.playwright.chromium.launch(**launch_kw)
+                    except Exception:
+                        launch_kw.pop("channel", None)
+                        new_browser = await self.playwright.chromium.launch(**launch_kw)
                     self.browsers.append(new_browser)
                     browser = new_browser
                 except Exception as e2:
