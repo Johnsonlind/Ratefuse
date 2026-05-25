@@ -7057,79 +7057,17 @@ def canonical_platform_name(name: str) -> str:
 def canonical_chart_name(name: str) -> str:
     return (name or "").strip()
 
-def _infer_updater_key(platform: str, chart_name: str) -> Optional[str]:
-    platform_norm = canonical_platform_name(platform).lower()
-    chart_norm = canonical_chart_name(chart_name).lower()
-    if not platform_norm:
+def _resolve_updater_callable(
+    scraper: Any,
+    updater_key: str,
+) -> Optional[Callable[[], Awaitable[int]]]:
+    key = str(updater_key or "").strip()
+    if not key:
         return None
 
-    direct_map: dict[tuple[str, str], str] = {
-        ("豆瓣", "豆瓣 电影 top 250"): "douban_top250",
-        ("imdb", "imdb 电影 top 250"): "imdb_top250_movies",
-        ("imdb", "imdb 剧集 top 250"): "imdb_top250_tv",
-        ("metacritic", "metacritic 史上最佳电影 top 250"): "metacritic_best_movies",
-        ("metacritic", "metacritic 史上最佳剧集 top 250"): "metacritic_best_tv",
-        ("letterboxd", "letterboxd 电影 top 250"): "letterboxd_top250",
-        ("tmdb", "tmdb 高分电影 top 250"): "tmdb_top250_movies",
-        ("tmdb", "tmdb 高分剧集 top 250"): "tmdb_top250_tv",
-        ("trakt", "上周电影 top 榜"): "trakt_movies_weekly",
-        ("trakt", "trakt 上周电影 top 榜"): "trakt_movies_weekly",
-        ("trakt", "上周剧集 top 榜"): "trakt_shows_weekly",
-        ("trakt", "trakt 上周剧集 top 榜"): "trakt_shows_weekly",
-    }
-    direct = direct_map.get((platform_norm, chart_norm))
-    if direct:
-        return direct
-
-    if platform_norm == "豆瓣" and "top 250" in chart_norm:
-        return "douban_top250"
-    if platform_norm == "imdb":
-        if "剧集" in chart_norm or "tv" in chart_norm:
-            return "imdb_top250_tv"
-        if "电影" in chart_norm or "movie" in chart_norm:
-            return "imdb_top250_movies"
-    if platform_norm == "metacritic":
-        if "剧集" in chart_norm or "tv" in chart_norm:
-            return "metacritic_best_tv"
-        if "电影" in chart_norm or "movie" in chart_norm:
-            return "metacritic_best_movies"
-    if platform_norm == "letterboxd" and "top 250" in chart_norm:
-        return "letterboxd_top250"
-    if platform_norm == "tmdb":
-        if "剧集" in chart_norm or "tv" in chart_norm:
-            return "tmdb_top250_tv"
-        if "电影" in chart_norm or "movie" in chart_norm:
-            return "tmdb_top250_movies"
-    if platform_norm == "trakt":
-        if "电影" in chart_norm or "movie" in chart_norm:
-            return "trakt_movies_weekly"
-        if "剧集" in chart_norm or "tv" in chart_norm or "show" in chart_norm:
-            return "trakt_shows_weekly"
-    return None
-
-def _build_updater_registry(scraper: Any) -> dict[str, dict[str, Any]]:
-    return {
-        "douban_weekly_movie": {"fn": scraper.update_douban_weekly_movie, "media_type": "movie"},
-        "douban_weekly_chinese_tv": {"fn": scraper.update_douban_weekly_chinese_tv, "media_type": "tv"},
-        "douban_weekly_global_tv": {"fn": scraper.update_douban_weekly_global_tv, "media_type": "tv"},
-        "douban_top250": {"fn": scraper.update_douban_top250, "media_type": "movie"},
-        "imdb_top10": {"fn": scraper.update_imdb_top10, "media_type": "both"},
-        "imdb_top250_movies": {"fn": scraper.update_imdb_top250_movies, "media_type": "movie"},
-        "imdb_top250_tv": {"fn": scraper.update_imdb_top250_tv, "media_type": "tv"},
-        "letterboxd_popular": {"fn": scraper.update_letterboxd_popular, "media_type": "movie"},
-        "letterboxd_top250": {"fn": scraper.update_letterboxd_top250, "media_type": "movie"},
-        "rotten_movies_weekly": {"fn": scraper.update_rotten_movies, "media_type": "movie"},
-        "rotten_tv_weekly": {"fn": scraper.update_rotten_tv, "media_type": "tv"},
-        "metacritic_movies_weekly": {"fn": scraper.update_metacritic_movies, "media_type": "movie"},
-        "metacritic_shows_weekly": {"fn": scraper.update_metacritic_shows, "media_type": "tv"},
-        "metacritic_best_movies": {"fn": scraper.update_metacritic_best_movies, "media_type": "movie"},
-        "metacritic_best_tv": {"fn": scraper.update_metacritic_best_tv, "media_type": "tv"},
-        "tmdb_trending_all_week": {"fn": scraper.update_tmdb_trending_all_week, "media_type": "both"},
-        "tmdb_top250_movies": {"fn": scraper.update_tmdb_top250_movies, "media_type": "movie"},
-        "tmdb_top250_tv": {"fn": scraper.update_tmdb_top250_tv, "media_type": "tv"},
-        "trakt_movies_weekly": {"fn": scraper.update_trakt_movies_weekly, "media_type": "movie"},
-        "trakt_shows_weekly": {"fn": scraper.update_trakt_shows_weekly, "media_type": "tv"},
-    }
+    method_name = key if key.startswith("update_") else f"update_{key}"
+    fn = getattr(scraper, method_name, None)
+    return fn if callable(fn) else None
 
 def _is_batch_chart_update_mode(update_mode: Optional[str]) -> bool:
     return str(update_mode or "all").strip().lower() != "single"
@@ -7161,8 +7099,16 @@ def _configured_updater_keys(
             continue
         plat = canonical_platform_name(r.platform)
         chart = canonical_chart_name(r.chart_name)
-        key = str(r.updater_key or "").strip() or (_infer_updater_key(plat, chart) or "")
-        if not key or not plat or not chart:
+        key = str(r.updater_key or "").strip()
+        if not plat or not chart:
+            continue
+        if not key:
+            logger.warning(
+                "跳过榜单（未配置 updater_key，无法执行更新）: platform=%s chart=%s update_mode=%s",
+                plat,
+                chart,
+                getattr(r, "update_mode", None),
+            )
             continue
         dedup_key = (plat, chart)
         if dedup_key in seen:
@@ -7224,12 +7170,69 @@ def _resolve_config_updater_key(
         ChartConfig.chart_name == chart_name,
     ).first()
     if not cfg or not cfg.updater_key:
-        return _infer_updater_key(platform, chart_name)
-    value = str(cfg.updater_key).strip()
-    return value or _infer_updater_key(platform, chart_name)
+        return None
+    return str(cfg.updater_key).strip() or None
+
+async def execute_batch_chart_updates(
+    db: Session,
+    *,
+    platform: Optional[str] = None,
+    request: Optional[Request] = None,
+    operation_key: Optional[str] = None,
+    cancel_check: Optional[Callable[[], bool]] = None,
+) -> tuple[dict[str, int], bool]:
+    """
+    按 ChartConfig.update_mode 执行批量更新：仅 update_mode != single（跟随全部更新）且已配置 updater_key。
+    """
+    from chart_scrapers import ChartScraper
+
+    scraper = ChartScraper(db, cancel_check=cancel_check)
+    configured_keys = _configured_updater_keys(db, platform=platform, batch_only=True)
+    results: dict[str, int] = {}
+    error_occurred = False
+
+    if not configured_keys:
+        scope = f"平台 {platform}" if platform else "全部平台"
+        logger.warning(
+            "%s 没有可批量更新的榜单（需「跟随全部更新」且已配置 updater_key）",
+            scope,
+        )
+        return results, error_occurred
+
+    for platform_name, chart_name, updater_key, _ in configured_keys:
+        if cancel_check and cancel_check():
+            logger.info("批量更新已取消")
+            break
+        updater = _resolve_updater_callable(scraper, updater_key)
+        if not updater:
+            logger.warning(
+                "跳过未知 updater_key（未找到 ChartScraper.update_* 方法）: %s",
+                updater_key,
+            )
+            continue
+        run_label = f"{platform_name}:{chart_name}"
+        try:
+            if request is not None or operation_key:
+                count = await _run_updater_with_disconnect_cancel(
+                    request,
+                    updater,
+                    run_label,
+                    operation_key=operation_key,
+                )
+            else:
+                count = await updater()
+            results[run_label] = count
+            logger.info("%s 更新完成，获得 %s 条记录", run_label, count)
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error("%s 更新失败: %s", run_label, e)
+            results[run_label] = 0
+            error_occurred = True
+    return results, error_occurred
 
 async def _run_updater_with_disconnect_cancel(
-    request: Request,
+    request: Optional[Request],
     updater: Callable[[], Awaitable[int]],
     label: str,
     operation_key: Optional[str] = None,
@@ -7250,7 +7253,7 @@ async def _run_updater_with_disconnect_cancel(
                 except asyncio.CancelledError:
                     pass
                 raise HTTPException(status_code=499, detail=f"已取消更新：{label}")
-            if not operation_key and await request.is_disconnected():
+            if request is not None and not operation_key and await request.is_disconnected():
                 logger.info(f"客户端已断开连接，取消更新任务: {label}")
                 task.cancel()
                 try:
@@ -7288,17 +7291,13 @@ async def list_chart_configs(db: Session = Depends(get_db)):
     needs_fallback = (not rows) or (len(existing_by_key) < len(distinct_keys))
     if needs_fallback:
         fallback_rules = {
-            "table_layout_keywords": [],
-            "single_update_keywords": [],
-            "table_rows_for_table_layout": 10,
+            "table_rows_default": 10,
             "card_count_default": 10,
             "input_mode_default": "both",
             "layout_default": "card",
             "update_mode_default": "all",
             "rank_label_mode_default": "number",
         }
-        table_keywords = [str(x).lower() for x in (fallback_rules.get("table_layout_keywords") or [])]
-        single_keywords = [str(x).lower() for x in (fallback_rules.get("single_update_keywords") or [])]
         platform_orders: dict[str, int] = {}
         dedup_by_chart: dict[tuple[str, str], dict] = {}
         for platform, chart_name, media_type in grouped:
@@ -7312,9 +7311,6 @@ async def list_chart_configs(db: Session = Depends(get_db)):
                 continue
             order = platform_orders.get(platform, 0)
             platform_orders[platform] = order + 1
-            chart_name_lc = (chart_name or "").lower()
-            use_table_layout = any(k and k in chart_name_lc for k in table_keywords)
-            use_single_update = any(k and k in chart_name_lc for k in single_keywords)
             cfg = existing_by_key.get(key)
             dedup_by_chart[key] = {
                 "platform": platform,
@@ -7323,11 +7319,11 @@ async def list_chart_configs(db: Session = Depends(get_db)):
                 "sort_order": (cfg.sort_order if cfg and cfg.sort_order is not None else order),
                 "visible": (cfg.visible if cfg is not None else True),
                 "input_mode": (cfg.input_mode if cfg and cfg.input_mode else (fallback_rules.get("input_mode_default") or "both")),
-                "layout": (cfg.layout if cfg and cfg.layout else ("table" if use_table_layout else (fallback_rules.get("layout_default") or "card"))),
-                "table_rows": int((cfg.table_rows if cfg and cfg.table_rows else (fallback_rules.get("table_rows_for_table_layout") or 10))),
+                "layout": (cfg.layout if cfg and cfg.layout else (fallback_rules.get("layout_default") or "card")),
+                "table_rows": int((cfg.table_rows if cfg and cfg.table_rows else (fallback_rules.get("table_rows_default") or 10))),
                 "card_count": int((cfg.card_count if cfg and cfg.card_count else (fallback_rules.get("card_count_default") or 10))),
-                "update_mode": (cfg.update_mode if cfg and cfg.update_mode else ("single" if use_single_update else (fallback_rules.get("update_mode_default") or "all"))),
-                "updater_key": (str(cfg.updater_key).strip() if cfg and cfg.updater_key else _infer_updater_key(platform, chart_name)),
+                "update_mode": (cfg.update_mode if cfg and cfg.update_mode else (fallback_rules.get("update_mode_default") or "all")),
+                "updater_key": (str(cfg.updater_key).strip() if cfg and cfg.updater_key else None),
                 "exportable": (cfg.exportable if cfg is not None else True),
                 "rank_label_mode": (cfg.rank_label_mode if cfg and cfg.rank_label_mode else (fallback_rules.get("rank_label_mode_default") or "number")),
             }
@@ -7854,26 +7850,22 @@ async def auto_update_charts(
         _update_operation_status[operation_key] = {"state": "running", "message": "全量更新进行中"}
     
     try:
-        from chart_scrapers import ChartScraper
-        
-        scraper = ChartScraper(
-            db,
-            cancel_check=(lambda: bool(operation_key) and _update_cancel_events.get(operation_key, asyncio.Event()).is_set()),
+        cancel_check = (
+            (lambda: bool(operation_key) and _update_cancel_events.get(operation_key, asyncio.Event()).is_set())
+            if operation_key
+            else None
         )
-        updater_registry = _build_updater_registry(scraper)
-        configured_keys = _configured_updater_keys(db)
-        run_items = configured_keys or [("", "", key, idx) for idx, key in enumerate(updater_registry.keys())]
-        results = {}
-        for platform_name, chart_name, updater_key, _ in run_items:
-            spec = updater_registry.get(updater_key)
-            if not spec:
-                logger.warning(f"跳过未知 updater_key: {updater_key}")
-                continue
-            updater: Callable[[], Awaitable[int]] = spec["fn"]
-            run_label = updater_key if not chart_name else f"{platform_name}:{chart_name}"
-            count = await _run_updater_with_disconnect_cancel(request, updater, run_label, operation_key=operation_key)
-            result_key = updater_key if not chart_name else f"{platform_name}:{chart_name}"
-            results[result_key] = count
+        results, _ = await execute_batch_chart_updates(
+            db,
+            request=request,
+            operation_key=operation_key,
+            cancel_check=cancel_check,
+        )
+        if not results:
+            raise HTTPException(
+                status_code=400,
+                detail="没有可批量更新的榜单（需「跟随全部更新」且已配置 updater_key）",
+            )
         
         update_time = datetime.now(_TZ_SHANGHAI)
         update_time_naive = update_time.replace(tzinfo=None)
@@ -7933,30 +7925,23 @@ async def auto_update_platform_charts(
         _update_operation_status[operation_key] = {"state": "running", "message": f"{platform} 平台更新进行中"}
     
     try:
-        from chart_scrapers import ChartScraper
-        
-        scraper = ChartScraper(
-            db,
-            cancel_check=(lambda: bool(operation_key) and _update_cancel_events.get(operation_key, asyncio.Event()).is_set()),
+        cancel_check = (
+            (lambda: bool(operation_key) and _update_cancel_events.get(operation_key, asyncio.Event()).is_set())
+            if operation_key
+            else None
         )
-        updater_registry = _build_updater_registry(scraper)
-        configured_keys = _configured_updater_keys(db, platform=platform, batch_only=True)
-        if not configured_keys:
+        results, _ = await execute_batch_chart_updates(
+            db,
+            platform=platform,
+            request=request,
+            operation_key=operation_key,
+            cancel_check=cancel_check,
+        )
+        if not results:
             raise HTTPException(
                 status_code=400,
-                detail=f"{platform} 平台没有可批量更新的榜单（单独更新榜单请使用各榜单的「更新」按钮）",
+                detail=f"{platform} 平台没有可批量更新的榜单（「单独更新」请使用各榜单的「更新」按钮；跟随全部更新需配置 updater_key）",
             )
-        
-        results = {}
-        for i, (platform_name, chart_name, updater_key, _) in enumerate(configured_keys):
-            spec = updater_registry.get(updater_key)
-            if not spec:
-                logger.warning(f"跳过未知 updater_key: {updater_key}")
-                continue
-            updater: Callable[[], Awaitable[int]] = spec["fn"]
-            run_label = f"{platform_name}:{chart_name or updater_key}"
-            count = await _run_updater_with_disconnect_cancel(request, updater, run_label, operation_key=operation_key)
-            results[f"{platform_name}:{chart_name or updater_key}:{i+1}"] = count
         
         return {
             "status": "success",
@@ -8014,8 +7999,6 @@ async def update_single_chart(
             db,
             cancel_check=(lambda: bool(operation_key) and _update_cancel_events.get(operation_key, asyncio.Event()).is_set()),
         )
-        updater_registry = _build_updater_registry(scraper)
-
         resolved_key: Optional[str] = None
         if updater_key:
             resolved_key = updater_key
@@ -8027,7 +8010,7 @@ async def update_single_chart(
             .first()
         )
         if cfg_row and not _is_batch_chart_update_mode(cfg_row.update_mode):
-            cfg_key = str(cfg_row.updater_key or "").strip() or (_infer_updater_key(platform, chart_name) or "")
+            cfg_key = str(cfg_row.updater_key or "").strip()
             if resolved_key and cfg_key and resolved_key != cfg_key:
                 raise HTTPException(
                     status_code=400,
@@ -8035,14 +8018,18 @@ async def update_single_chart(
                 )
             resolved_key = resolved_key or cfg_key
 
-        resolved = updater_registry.get(resolved_key or "")
-        if not resolved or not resolved_key:
+        if not resolved_key:
             raise HTTPException(
                 status_code=400,
-                detail=f"无法识别榜单更新器：{platform} / {chart_name}。请先为该榜单配置 updater_key。",
+                detail=f"无法识别榜单更新器：{platform} / {chart_name}。请先在榜单配置中填写 updater_key（ChartScraper 方法名，如 update_imdb_top10）。",
             )
 
-        updater: Callable[[], Awaitable[int]] = resolved["fn"]
+        updater = _resolve_updater_callable(scraper, resolved_key)
+        if not updater:
+            raise HTTPException(
+                status_code=400,
+                detail=f"updater_key 无效：{resolved_key}。请填写 ChartScraper 中存在的 update_* 方法名。",
+            )
         count = await _run_updater_with_disconnect_cancel(
             request,
             updater,
