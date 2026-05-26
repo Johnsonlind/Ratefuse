@@ -5,12 +5,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from typing import Optional
 
 from scrapers.playwright_common import apply_stealth
 
 logger = logging.getLogger(__name__)
+
+_LETTERBOXD_GOTO_TIMEOUT_MS = int(
+    os.environ.get("LETTERBOXD_GOTO_TIMEOUT_MS", "45000")
+)
 
 _CF_BLOCK_TITLE_PARTS = ("Just a moment", "Security check")
 _CF_BLOCK_PHRASES = (
@@ -256,6 +261,49 @@ async def wait_letterboxd_film_redirect(page, *, timeout_sec: float = 12.0) -> b
         await asyncio.sleep(0.35)
     return False
 
+async def _install_lightweight_routes(page) -> None:
+    async def _route(route):
+        if route.request.resource_type in ("image", "media", "font"):
+            await route.abort()
+        else:
+            await route.continue_()
+
+    try:
+        await page.route("**/*", _route)
+    except Exception:
+        pass
+
+async def _goto_with_fallback(
+    page,
+    url: str,
+    *,
+    wait_until: str,
+    timeout_ms: int,
+) -> bool:
+    strategies = [wait_until]
+    if wait_until != "commit":
+        strategies.append("commit")
+    last_err: Optional[Exception] = None
+    for idx, strategy in enumerate(strategies):
+        per_attempt = timeout_ms if idx == 0 else max(12000, timeout_ms // 2)
+        try:
+            await page.goto(url, wait_until=strategy, timeout=per_attempt)
+            if strategy != wait_until:
+                logger.info("Letterboxd: goto 使用 %s 回退成功", strategy)
+            return True
+        except Exception as exc:
+            last_err = exc
+            if "Timeout" not in str(exc):
+                raise
+            logger.warning(
+                "Letterboxd: goto wait_until=%s 超时 (%sms)",
+                strategy,
+                per_attempt,
+            )
+    if last_err:
+        raise last_err
+    return False
+
 async def goto_and_settle(
     page,
     url: str,
@@ -266,30 +314,35 @@ async def goto_and_settle(
 ) -> bool:
     await apply_stealth(page)
 
+    if block_images:
+        await _install_lightweight_routes(page)
+
     start = time.monotonic()
-    await page.goto(url, wait_until="load", timeout=min(30000, int(budget_sec * 1000)))
+    goto_timeout_ms = min(
+        _LETTERBOXD_GOTO_TIMEOUT_MS,
+        max(15000, int(budget_sec * 1000)),
+    )
+    try:
+        await _goto_with_fallback(
+            page,
+            url,
+            wait_until=wait_until,
+            timeout_ms=goto_timeout_ms,
+        )
+    except Exception:
+        return False
 
     cf_remain = max(6.0, budget_sec * 0.55)
     ok = await bypass_cloudflare(page, budget_sec=cf_remain)
     if not ok:
         return False
 
-    if block_images:
-
-        async def _route(route):
-            if route.request.resource_type in ("image", "media", "font"):
-                await route.abort()
-            else:
-                await route.continue_()
-
-        try:
-            await page.route("**/*", _route)
-        except Exception:
-            pass
-
     remain = max(1.0, budget_sec - (time.monotonic() - start))
     try:
-        await page.wait_for_load_state("load", timeout=int(min(remain, 8) * 1000))
+        await page.wait_for_load_state(
+            "domcontentloaded",
+            timeout=int(min(remain, 6) * 1000),
+        )
     except Exception:
         pass
 
