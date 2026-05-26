@@ -167,11 +167,7 @@ export function useMediaRatings({ mediaId, mediaType }: UseMediaRatingsOptions):
               }
             }));
             try {
-              if (
-                platform === 'douban' &&
-                String(data?.status || '') === 'RateLimit' &&
-                Boolean((data as { _douban_captcha_exhausted?: boolean })?._douban_captcha_exhausted)
-              ) {
+              if (platform === 'douban' && String(data?.status || '') === 'RateLimit') {
                 const message = String(data?.popup_message || data?.status_reason || '').trim();
                 if (message && lastPopupRef.current[platform] !== message) {
                   lastPopupRef.current[platform] = message;
