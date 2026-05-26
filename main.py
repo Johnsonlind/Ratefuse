@@ -589,82 +589,6 @@ async def clear_platform_absent_marker(platform: str, media_type: str, tmdb_id: 
     except Exception as e:
         logger.warning(f"清理 platform absent 冷却失败: {e}")
 
-def _ensure_permanent_unlisted_lock(
-    db: Session,
-    *,
-    media_type: str,
-    tmdb_id: int,
-    platform: str,
-    title: Optional[str] = None,
-) -> None:
-    """确保“往年未收录，永久锁定”已写入平台锁定状态列表。"""
-    media_type = (media_type or "").lower()
-    platform = (platform or "").lower()
-    reason = "往年未收录，永久锁定"
-    record = (
-        db.query(MediaPlatformStatus)
-        .filter(
-            func.lower(MediaPlatformStatus.media_type) == media_type,
-            MediaPlatformStatus.tmdb_id == int(tmdb_id),
-            func.lower(MediaPlatformStatus.platform) == platform,
-        )
-        .one_or_none()
-    )
-
-    changed = False
-    now = _shanghai_naive_now()
-    if record is None:
-        record = MediaPlatformStatus(
-            media_type=media_type,
-            tmdb_id=int(tmdb_id),
-            platform=platform,
-            status="locked",
-            lock_source="auto",
-            remark=reason,
-            failure_count=0,
-            title_snapshot=title,
-            last_status_changed_at=now,
-        )
-        db.add(record)
-        changed = True
-    else:
-        from_status = record.status
-        if record.status != "locked":
-            record.status = "locked"
-            changed = True
-        if (record.lock_source or "").lower() != "auto":
-            record.lock_source = "auto"
-            changed = True
-        remark = str(record.remark or "")
-        if reason not in remark:
-            record.remark = (remark + " | " if remark else "") + reason
-            changed = True
-        if title and not record.title_snapshot:
-            record.title_snapshot = title
-            changed = True
-        if changed:
-            record.last_status_changed_at = now
-            db.add(
-                MediaPlatformStatusLog(
-                    media_type=media_type,
-                    tmdb_id=int(tmdb_id),
-                    platform=platform,
-                    from_status=from_status,
-                    to_status="locked",
-                    change_type="auto_update",
-                    reason=reason,
-                )
-            )
-
-    if changed:
-        db.commit()
-        logger.info(
-            "已补写平台永久锁定状态: platform=%s media_type=%s tmdb_id=%s",
-            platform,
-            media_type,
-            tmdb_id,
-        )
-
 def _should_mark_platform_absent(rating_info: Any) -> bool:
     if not isinstance(rating_info, dict):
         return False
@@ -4043,16 +3967,6 @@ async def get_platform_rating(
                 except Exception:
                     media_year = None
                 if isinstance(media_year, int) and media_year < now_year:
-                    try:
-                        _ensure_permanent_unlisted_lock(
-                            db,
-                            media_type=(media_type or "").lower(),
-                            tmdb_id=int(tmdb_id),
-                            platform=(platform or "").lower(),
-                            title=tmdb_info.get("title") or tmdb_info.get("name"),
-                        )
-                    except Exception as _lock_e:
-                        logger.warning(f"补写平台永久锁定状态失败: {_lock_e}")
                     rating_info = create_rating_data(
                         RATING_STATUS["LOCKED"],
                         f"平台已锁定（往年未收录，永久锁定；如需修改请联系管理员）",
