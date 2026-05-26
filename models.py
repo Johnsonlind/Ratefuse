@@ -569,7 +569,6 @@ _LEGACY_CHART_UPDATER_KEYS: dict[str, str] = {
 }
 
 def _normalize_chart_config_update_modes(engine: Engine) -> None:
-    """将非法 update_mode 规范为 single；all/single 保持不动。"""
     with engine.begin() as conn:
         try:
             conn.execute(text("SELECT 1 FROM chart_configs LIMIT 1"))
@@ -588,7 +587,6 @@ def _normalize_chart_config_update_modes(engine: Engine) -> None:
         )
 
 def _migrate_legacy_chart_updater_keys(engine: Engine) -> None:
-    """将历史 updater_key 写成 ChartScraper 方法名（启动时一次性修正）。"""
     with engine.begin() as conn:
         try:
             conn.execute(text("SELECT 1 FROM chart_configs LIMIT 1"))
@@ -603,6 +601,28 @@ def _migrate_legacy_chart_updater_keys(engine: Engine) -> None:
                 {"old_key": old_key, "new_key": new_key},
             )
 
+def _repair_chart_config_updater_keys(engine: Engine) -> None:
+    from chart_scrapers import CHART_UPDATER_REGISTRY, normalize_updater_key
+
+    with engine.begin() as conn:
+        try:
+            rows = conn.execute(
+                text("SELECT id, platform, chart_name, updater_key FROM chart_configs")
+            ).fetchall()
+        except Exception:
+            return
+        for row in rows:
+            row_id, platform, chart_name, updater_key = row[0], row[1], row[2], row[3]
+            plat = str(platform or "").strip()
+            chart = str(chart_name or "").strip()
+            reg_key = CHART_UPDATER_REGISTRY.get((plat, chart))
+            if not reg_key:
+                continue
+            if normalize_updater_key(updater_key) != normalize_updater_key(reg_key):
+                conn.execute(
+                    text("UPDATE chart_configs SET updater_key = :key WHERE id = :id"),
+                    {"key": reg_key, "id": row_id},
+                )
 
 def init_db():
     Base.metadata.create_all(bind=engine)
@@ -610,6 +630,7 @@ def init_db():
     _ensure_chart_configs_columns(engine)
     _normalize_chart_config_update_modes(engine)
     _migrate_legacy_chart_updater_keys(engine)
+    _repair_chart_config_updater_keys(engine)
 
 if __name__ == "__main__":
     init_db()
