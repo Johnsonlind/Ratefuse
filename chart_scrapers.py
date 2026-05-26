@@ -1853,7 +1853,7 @@ class ChartScraper:
                     if page_num > 0:
                         await asyncio.sleep(random.uniform(0.8, 1.5))
 
-                    if not await _douban_goto_and_pass_captcha(page, url, timeout_ms=20000):
+                    if not await _douban_goto_and_pass_captcha(page, url, timeout_ms=30000):
                         logger.error(f"第 {page_num + 1} 页豆瓣验证未通过")
                         raise Exception("ANTI_SCRAPING_DETECTED")
 
@@ -2397,7 +2397,7 @@ class ChartScraper:
                     if cookies:
                         await page.context.add_cookies(cookies)
                         logger.debug("Letterboxd 详情: 已注入 LETTERBOXD_COOKIE")
-                if not await _letterboxd_goto_and_pass_cf(page, letterboxd_url, timeout_ms=20000):
+                if not await _letterboxd_goto_and_pass_cf(page, letterboxd_url, timeout_ms=30000):
                     logger.warning(f"Letterboxd 详情页 Cloudflare 未通过: {letterboxd_url}")
                     return None
                 content = await page.content()
