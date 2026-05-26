@@ -38,7 +38,9 @@ from scrapers.letterboxd_playwright import (
 from scrapers.douban_captcha import (
     ensure_douban_access,
     goto_douban_and_ensure,
+    is_douban_captcha_html,
     is_douban_captcha_page,
+    is_douban_hard_block_html,
 )
 
 class LogFormatter:
@@ -100,8 +102,6 @@ def _douban_log(stage: str, **fields) -> None:
     print(f"[douban][{stage}]{extra}")
 
 def _douban_limited_signals(content: str, page_url: str = "", page_title: str = "") -> list[str]:
-    from scrapers.douban_captcha import is_douban_captcha_html, is_douban_hard_block_html
-
     hits: list[str] = []
     if is_douban_captcha_html(content, page_url, page_title):
         hits.append("captcha-page")
@@ -1165,8 +1165,6 @@ async def check_rate_limit(page, platform: str) -> dict | None:
     rules = rate_limit_rules[platform]
     
     if platform == "douban":
-        from scrapers.douban_captcha import is_douban_captcha_html, is_douban_hard_block_html
-
         page_html = await page.content()
         page_url = str(getattr(page, "url", "") or "")
         try:
@@ -1476,7 +1474,7 @@ async def search_platform(platform, tmdb_info, request=None, douban_cookie=None)
                     await context.route("**/stats/**", lambda route: route.abort())
 
                 page = await context.new_page()
-                page.set_default_timeout(20000)
+                page.set_default_timeout(30000)
                 if platform == "letterboxd":
                     try:
                         from playwright_stealth import stealth_async  # type: ignore[reportMissingImports]
@@ -1714,7 +1712,7 @@ async def search_platform(platform, tmdb_info, request=None, douban_cookie=None)
                         await _apply_douban_light_blocking_routes(context)
                         
                         page = await context.new_page()
-                        page.set_default_timeout(20000)
+                        page.set_default_timeout(30000)
                         await _playwright_stealth_optional(page)
                         
                         headers = {}
@@ -1836,7 +1834,7 @@ async def _new_douban_browser_context(browser, request=None, douban_cookie=None)
     context = await browser.new_context(**context_options)
     await _apply_douban_light_blocking_routes(context)
     page = await context.new_page()
-    page.set_default_timeout(20000)
+    page.set_default_timeout(30000)
     from scrapers.playwright_common import apply_stealth
 
     await apply_stealth(page)
