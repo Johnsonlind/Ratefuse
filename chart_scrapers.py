@@ -11,7 +11,7 @@ import httpx
 import requests
 import json
 from urllib.parse import quote
-from typing import List, Dict, Optional, TYPE_CHECKING, Callable
+from typing import List, Dict, Optional, TYPE_CHECKING, Callable, Any
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from sqlalchemy.orm import Session
@@ -471,6 +471,52 @@ class ChartScraper:
             logger.error(f"抓取 豆瓣 一周华语剧集口碑榜 失败: {e}")
             return []
 
+    @staticmethod
+    def _parse_imdb_top10_rank(raw_rank: Any) -> Optional[int]:
+        if raw_rank is None:
+            return None
+        if isinstance(raw_rank, bool):
+            return None
+        if isinstance(raw_rank, int):
+            return raw_rank if raw_rank >= 1 else None
+        if isinstance(raw_rank, float):
+            return int(raw_rank) if raw_rank >= 1 else None
+        try:
+            parsed = int(str(raw_rank).strip())
+            return parsed if parsed >= 1 else None
+        except (TypeError, ValueError):
+            return None
+
+    def _parse_imdb_top_meter_edges(self, edges: list) -> List[Dict]:
+        results: list[dict] = []
+        for edge in edges or []:
+            node = (edge or {}).get("node") or {}
+            imdb_id = str(node.get("id") or "").strip()
+            rank = self._parse_imdb_top10_rank((node.get("meterRanking") or {}).get("currentRank"))
+            title = ((node.get("titleText") or {}).get("text")) or ""
+            if imdb_id and rank is not None:
+                results.append(
+                    {
+                        "rank": rank,
+                        "title": title,
+                        "imdb_id": imdb_id,
+                        "url": f"https://www.imdb.com/title/{imdb_id}/",
+                    }
+                )
+        return results
+
+    def _extract_imdb_top_meter_edges(self, payload: dict) -> list:
+        data = (payload or {}).get("data") or {}
+        top_edges = (data.get("topMeterTitles") or {}).get("edges") or []
+        if top_edges:
+            return top_edges
+        batch_list = (data.get("batch") or {}).get("responseList") or []
+        for item in batch_list:
+            inner_edges = ((item.get("data") or {}).get("topMeterTitles") or {}).get("edges") or []
+            if inner_edges:
+                return inner_edges
+        return []
+
     async def scrape_imdb_top_10(self) -> List[Dict]:
         """IMDb 本周 Top 10"""
         try:
@@ -480,16 +526,23 @@ class ChartScraper:
             import urllib3
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
             
-            api_url = "https://api.graphql.imdb.com/"
-            today = datetime.now(_TZ_SHANGHAI).strftime("%Y-%m-%d")
-            
+            query_hash = (
+                os.getenv("IMDB_HOME_MAIN_QUERY_HASH")
+                or "f6ccf12469ab9e9f3faed4718a6c0c447065d8db21afe7ce18f05488424c3bd1"
+            ).strip()
             variables_dict = {
-                "fanPicksFirst": 30, "first": 30, "locale": "zh-CN",
-                "placement": "home", "today": today, "topPicksFirst": 30, "topTenFirst": 10
+                "fanPicksFirst": 30,
+                "locale": "zh-CN",
+                "placement": "home",
+                "topPicksFirst": 30,
+                "topTenFirst": 10,
             }
             variables_json = json.dumps(variables_dict, separators=(",", ":"))
             variables_encoded = quote(variables_json)
-            extensions_json = '{"persistedQuery":{"sha256Hash":"51f4fbaaf115fd73779d9f31b267e432d40e9eb96a0b49293507a4da4c6b30ce","version":1}}'
+            extensions_json = json.dumps(
+                {"persistedQuery": {"sha256Hash": query_hash, "version": 1}},
+                separators=(",", ":"),
+            )
             extensions_encoded = quote(extensions_json)
             api_url = f"https://api.graphql.imdb.com/?operationName=BatchPage_HomeMain&variables={variables_encoded}&extensions={extensions_encoded}"
 
@@ -522,7 +575,10 @@ class ChartScraper:
                 'x-imdb-client-name': 'imdb-web-next',
                 'x-imdb-user-country': 'CN',
                 'x-imdb-user-language': 'zh-CN',
-                'x-imdb-weblab-treatment-overrides': '{"IMDB_DISCO_KNOWNFOR_V2_1328450":"T1","IMDB_SEARCH_DISCOVER_MODERN_1367402":"T1"}',
+                'x-imdb-weblab-treatment-overrides': (
+                    os.getenv("IMDB_WEBLAB_OVERRIDES")
+                    or '{"IMDB_DISCO_KNOWNFOR_V2_1328450":"T1","IMDB_NEXT_SSO_US_LAUNCH_1374904":"T1","IMDB_SEARCH_DISCOVER_MODERN_1367402":"T2"}'
+                ).strip(),
                 'x-imdb-consent-info': imdb_consent,
             }
             if imdb_amazon_session:
@@ -538,42 +594,28 @@ class ChartScraper:
             
             if response.status_code == 200:
                 data = response.json()
-                results = []
-                top_edges = (data.get("data", {}).get("topMeterTitles", {}) or {}).get("edges", [])
-                if not top_edges:
-                    batch_list = data.get("data", {}).get("batch", {}).get("responseList", [])
-                    for item in batch_list:
-                        inner_data = item.get("data", {})
-                        top_edges = inner_data.get("topMeterTitles", {}).get("edges", [])
-                        for edge in top_edges:
-                            node = edge.get("node", {})
-                            imdb_id = node.get("id")
-                            rank = (node.get("meterRanking", {}) or {}).get("currentRank")
-                            title = ((node.get("titleText") or {}).get("text")) or ""
-                            if imdb_id and isinstance(rank, int) and rank >= 1:
-                                results.append({
-                                    "rank": rank,
-                                    "title": title,
-                                    "imdb_id": imdb_id,
-                                    "url": f"https://www.imdb.com/title/{imdb_id}/"
-                                })
-                else:
-                    for edge in top_edges:
-                        node = edge.get("node", {})
-                        imdb_id = node.get("id")
-                        rank = (node.get("meterRanking", {}) or {}).get("currentRank")
-                        title = ((node.get("titleText") or {}).get("text")) or ""
-                        if imdb_id and isinstance(rank, int) and rank >= 1:
-                            results.append({
-                                "rank": rank,
-                                "title": title,
-                                "imdb_id": imdb_id,
-                                "url": f"https://www.imdb.com/title/{imdb_id}/"
-                            })
+                errors = data.get("errors") or []
+                for err in errors:
+                    msg = str(err.get("message") or err)
+                    if "PersistedQueryNotFound" in msg or "PERSISTED_QUERY_NOT_FOUND" in msg:
+                        logger.error(
+                            "IMDb GraphQL persistedQuery 已失效，请更新 IMDB_HOME_MAIN_QUERY_HASH: %s",
+                            query_hash,
+                        )
+                    elif "topMeterTitles" not in msg.lower():
+                        logger.warning("IMDb GraphQL 非致命错误: %s", msg[:200])
 
+                top_edges = self._extract_imdb_top_meter_edges(data)
+                results = self._parse_imdb_top_meter_edges(top_edges)
                 results.sort(key=lambda x: x["rank"])
                 results = results[:10]
 
+                if not results:
+                    logger.warning(
+                        "IMDb 本周 Top 10 解析为 0 条: topMeterTitles.edges=%s, query_hash=%s",
+                        len(top_edges),
+                        query_hash,
+                    )
                 logger.info(f"IMDb 本周 Top 10 获取到 {len(results)} 条（GraphQL）")
                 return results
             else:
