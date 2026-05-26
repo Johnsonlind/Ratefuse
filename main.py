@@ -7111,6 +7111,8 @@ def _configured_updater_keys(
         ChartConfig.sort_order.asc(),
         ChartConfig.id.asc(),
     ).all()
+    from chart_scrapers import resolve_chart_updater_key
+
     result: list[tuple[str, str, str, int]] = []
     seen: set[tuple[str, str]] = set()
     for r in rows:
@@ -7118,7 +7120,7 @@ def _configured_updater_keys(
             continue
         plat = canonical_platform_name(r.platform)
         chart = canonical_chart_name(r.chart_name)
-        key = str(r.updater_key or "").strip()
+        key = resolve_chart_updater_key(plat, chart, str(r.updater_key or "").strip() or None)
         if not plat or not chart:
             continue
         if not key:
@@ -7213,7 +7215,7 @@ async def execute_batch_chart_updates(
             "%s 批量更新将执行 %s 个榜单（update_mode=跟随全部更新）: %s",
             scope,
             len(configured_keys),
-            ", ".join(f"{p}/{c}" for p, c, _, _ in configured_keys),
+            ", ".join(f"{p}/{c}({k})" for p, c, k, _ in configured_keys),
         )
 
     if not configured_keys:
@@ -7224,10 +7226,25 @@ async def execute_batch_chart_updates(
         )
         return results, error_occurred
 
+    from chart_scrapers import resolve_chart_updater_key, updater_key_target_chart
+
     for platform_name, chart_name, updater_key, _ in configured_keys:
         if cancel_check and cancel_check():
             logger.info("批量更新已取消")
             break
+        updater_key = resolve_chart_updater_key(platform_name, chart_name, updater_key) or updater_key
+        target = updater_key_target_chart(updater_key)
+        if target and (target[0] != platform_name or target[1] != chart_name):
+            logger.error(
+                "跳过榜单（updater_key 指向其他榜单）: 配置=%s/%s key=%s 实际目标=%s/%s",
+                platform_name,
+                chart_name,
+                updater_key,
+                target[0],
+                target[1],
+            )
+            error_occurred = True
+            continue
         updater = _resolve_updater_callable(scraper, updater_key)
         if not updater:
             logger.warning(
@@ -7420,11 +7437,19 @@ async def save_chart_configs(
                 continue
             dedup_items[key] = item
 
+        from chart_scrapers import registry_updater_key, resolve_chart_updater_key
+
         for item in dedup_items.values():
             platform = canonical_platform_name(item.platform)
             chart_name = canonical_chart_name(item.chart_name)
             order = dedup_sort_order.get(platform, 0)
             dedup_sort_order[platform] = order + 1
+            raw_updater = (
+                str(item.updater_key).strip()
+                if item.updater_key
+                else existing_updater_by_chart.get((platform, chart_name))
+            )
+            resolved_updater = resolve_chart_updater_key(platform, chart_name, raw_updater)
             db.add(
                 ChartConfig(
                     platform=platform,
@@ -7437,11 +7462,7 @@ async def save_chart_configs(
                     table_rows=max(1, int(item.table_rows)),
                     card_count=max(1, int(item.card_count)),
                     update_mode=_normalize_chart_update_mode(item.update_mode),
-                    updater_key=(
-                        str(item.updater_key).strip()
-                        if item.updater_key
-                        else existing_updater_by_chart.get((platform, chart_name))
-                    ),
+                    updater_key=resolved_updater or registry_updater_key(platform, chart_name),
                     exportable=bool(item.exportable),
                     rank_label_mode=item.rank_label_mode if item.rank_label_mode in ("number", "month") else "number",
                 )
@@ -8040,6 +8061,9 @@ async def update_single_chart(
             resolved_key = updater_key
         if not resolved_key:
             resolved_key = _resolve_config_updater_key(db, platform, chart_name)
+        from chart_scrapers import resolve_chart_updater_key
+
+        resolved_key = resolve_chart_updater_key(platform, chart_name, resolved_key) or resolved_key
         cfg_row = (
             db.query(ChartConfig)
             .filter(ChartConfig.platform == platform, ChartConfig.chart_name == chart_name)
