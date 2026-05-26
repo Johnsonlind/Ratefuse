@@ -1189,14 +1189,16 @@ async def check_rate_limit(page, platform: str) -> dict | None:
     
     if platform == "letterboxd":
         try:
-            title = await page.title()
-            content = await page.content()
-            if title and "Just a moment" in title:
-                print("Letterboxd: 检测到 Cloudflare 安全验证页 (title)")
-                return {"status": RATING_STATUS["RATE_LIMIT"], "status_reason": "Cloudflare 安全验证拦截，请稍后重试"}
-            if "Enable JavaScript and cookies to continue" in content or "cf_chl_opt" in content or "challenge-platform" in content:
-                print("Letterboxd: 检测到 Cloudflare 安全验证页 (content)")
-                return {"status": RATING_STATUS["RATE_LIMIT"], "status_reason": "Cloudflare 安全验证拦截，请稍后重试"}
+            if await letterboxd_is_cloudflare_challenge(page):
+                print("Letterboxd: 检测到 Cloudflare 安全验证页，尝试自动通过…")
+                cf_budget = float(os.environ.get("LETTERBOXD_CF_BYPASS_SEC", "18"))
+                ok = await letterboxd_bypass_cloudflare(page, budget_sec=cf_budget)
+                if not ok or await letterboxd_is_cloudflare_challenge(page):
+                    print("Letterboxd: Cloudflare 验证未通过")
+                    return {
+                        "status": RATING_STATUS["RATE_LIMIT"],
+                        "status_reason": "Cloudflare 安全验证拦截，请稍后重试",
+                    }
         except Exception as e:
             print(f"Letterboxd Cloudflare 检测异常: {e}")
     
@@ -3647,13 +3649,6 @@ async def handle_letterboxd_search(page, direct_url, tmdb_info):
                 }
             print("Letterboxd: 直连页未跳转到 /film/")
             return {"status": RATING_STATUS["NO_FOUND"], "status_reason": "平台未收录"}
-
-        if await letterboxd_is_cloudflare_challenge(page):
-            if not await letterboxd_bypass_cloudflare(page, budget_sec=18.0):
-                return {
-                    "status": RATING_STATUS["RATE_LIMIT"],
-                    "status_reason": "Cloudflare 安全验证拦截，请稍后重试",
-                }
 
         rate_limit = await check_rate_limit(page, "letterboxd")
         if rate_limit:
