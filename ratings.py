@@ -3542,10 +3542,16 @@ async def _letterboxd_hit_from_film_page(
     try:
         meta = await page.evaluate(
             """() => {
-                const h = document.querySelector('h1.headline, h1[class*="headline"], h1');
+                const og = document.querySelector('meta[property="og:title"]');
+                const ogTitle = og ? (og.getAttribute('content') || '').trim() : '';
+                const h = document.querySelector(
+                    'h1.headline-1, h1[class*="headline-1"], h1.film-title, h1[itemprop="name"]'
+                );
+                const hText = h ? (h.textContent || '').trim() : '';
+                const title = hText && !/your life in film/i.test(hText) ? hText : ogTitle;
                 const y = document.querySelector('.releaseyear, [class*="releaseyear"]');
                 return {
-                    title: h ? (h.textContent || '').trim() : '',
+                    title: title || '',
                     year: y ? (y.textContent || '').replace(/[^0-9]/g, '') : '',
                 };
             }"""
@@ -3657,8 +3663,17 @@ def _extract_letterboxd_external_ids_from_html(html: str) -> tuple[Optional[str]
             break
     return tmdb_id, imdb_id
 
-def _letterboxd_detail_page_matches_tmdb(tmdb_info: dict, html: str) -> tuple[bool, str]:
-    """Letterboxd详情页与ID匹配检查"""
+def _letterboxd_detail_page_matches_tmdb(
+    tmdb_info: dict,
+    html: str,
+    *,
+    trusted_verify: str = "",
+) -> tuple[bool, str]:
+    """Letterboxd详情页与 ID 匹配检查。"""
+    trusted = (trusted_verify or "").strip().lower()
+    if trusted in ("tmdb_id", "imdb_id"):
+        return True, f"trusted_{trusted}"
+
     want_tmdb = str(tmdb_info.get("tmdb_id") or tmdb_info.get("id") or "").strip()
     want_imdb = str(tmdb_info.get("imdb_id") or "").strip()
     want_imdb_norm = want_imdb if want_imdb.startswith("tt") else (f"tt{want_imdb}" if want_imdb.isdigit() else want_imdb)
@@ -3898,24 +3913,38 @@ async def extract_rating_info(media_type, platform, tmdb_info, search_results, r
                             cookies = _parse_letterboxd_cookie_string(letterboxd_cookie)
                             if cookies:
                                 await context.add_cookies(cookies)
-                        await page.goto(detail_url, wait_until="domcontentloaded", timeout=12000)
-                        if await _is_cloudflare_challenge(page):
-                            if not await letterboxd_bypass_cloudflare(page, budget_sec=25.0):
+                        lb_budget = float(os.environ.get("LETTERBOXD_NAV_BUDGET_SEC", "40"))
+                        if not await letterboxd_goto_and_settle(
+                            page, detail_url, block_images=True, budget_sec=lb_budget
+                        ):
+                            if await _is_cloudflare_challenge(page):
                                 ret = create_empty_rating_data("letterboxd", media_type, RATING_STATUS["RATE_LIMIT"])
                                 ret["status_reason"] = "详情页触发 Cloudflare 安全验证，请稍后重试"
                                 return ret
-                        
+                            ret = create_empty_rating_data("letterboxd", media_type, RATING_STATUS["FETCH_FAILED"])
+                            ret["status_reason"] = "Letterboxd 详情页加载失败"
+                            ret["url"] = detail_url
+                            return ret
+
                         try:
                             html = await page.content()
                         except Exception:
                             html = ""
-                        ok_lb, why = _letterboxd_detail_page_matches_tmdb(tmdb_info, html or "")
+                        trusted_verify = str(best_match.get("_letterboxd_verify") or "").strip()
+                        ok_lb, why = _letterboxd_detail_page_matches_tmdb(
+                            tmdb_info, html or "", trusted_verify=trusted_verify
+                        )
                         if not ok_lb:
+                            print(
+                                f"Letterboxd 详情页 ID 校验未通过: {why} "
+                                f"(trusted={trusted_verify or 'none'})"
+                            )
                             ret = create_rating_data(
                                 RATING_STATUS["NO_FOUND"],
                                 "Letterboxd 页面无法校验为同一部 TMDB 作品（可能未收录或链接不匹配）",
                             )
                             ret["_letterboxd_verify_fail"] = why
+                            ret["url"] = detail_url
                             return ret
                     elif platform == "rottentomatoes":
                         await page.goto(detail_url, wait_until="domcontentloaded", timeout=9000)
@@ -3969,6 +3998,9 @@ async def extract_rating_info(media_type, platform, tmdb_info, search_results, r
                                 rating_data["_match_score"] = float(best_match.get("match_score") or 0)
                             except Exception:
                                 rating_data["_match_score"] = None
+                            lb_verify = str(best_match.get("_letterboxd_verify") or "").strip()
+                            if lb_verify:
+                                rating_data["_letterboxd_verify"] = lb_verify
 
                             if platform in ["rottentomatoes", "metacritic"]:
                                 if "series" in rating_data:
