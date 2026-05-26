@@ -4499,7 +4499,22 @@ async def get_platform_rating(
                     db.commit()
                     logger.info(f"已写入链接映射: platform={platform} tmdb_id={tmdb_id} patch_keys={list(patch.keys())}")
                 else:
-                    logger.info(f"跳过写入链接映射（patch为空或平台已锁定）: platform={platform} tmdb_id={tmdb_id}")
+                    locked_now = False
+                    try:
+                        locked_now = tmdb_id is not None and is_platform_locked(
+                            db, media_type, int(tmdb_id), platform
+                        )
+                    except Exception:
+                        locked_now = False
+                    if locked_now:
+                        logger.info(
+                            f"跳过写入链接映射（平台已锁定）: platform={platform} tmdb_id={tmdb_id}"
+                        )
+                    else:
+                        logger.info(
+                            f"跳过写入链接映射（patch 为空，status={rating_info.get('status')}）: "
+                            f"platform={platform} tmdb_id={tmdb_id}"
+                        )
             except Exception:
                 db.rollback()
                 logger.exception(f"写入链接映射失败: platform={platform} tmdb_id={tmdb_id}")
