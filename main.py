@@ -3105,11 +3105,6 @@ async def _notify_douban_rate_limit_for_admin(
 ) -> None:
     if cookie_source != "admin_user":
         return
-    exhausted = isinstance(rating_info, dict) and bool(
-        rating_info.get("_douban_captcha_exhausted")
-    )
-    if not exhausted:
-        return
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_ADMIN_CHAT_IDS:
         return
     now = time.time()
@@ -3119,10 +3114,10 @@ async def _notify_douban_rate_limit_for_admin(
             return
         _douban_rate_limit_notified_until["admin_user"] = now + 600.0
     text = (
-        "⚠️ 豆瓣图形点选验证自动破解失败\n\n"
-        "Playwright 与 ddddocr 均未通过验证。请管理员在浏览器打开 douban.com 完成验证，"
+        "⚠️ 豆瓣访问受限\n\n"
+        "请管理员在浏览器打开 douban.com 完成人机验证，"
         "或更新系统默认 Cookie 后重试。\n"
-        f"原因：{reason or '图形验证未通过'}"
+        f"原因：{reason or '访问频率限制'}"
     )
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -3144,8 +3139,6 @@ def _decorate_rate_limit_popup(
         return rating_info
     status = str(rating_info.get("status") or "")
     if status != RATING_STATUS["RATE_LIMIT"]:
-        return rating_info
-    if not rating_info.get("_douban_captcha_exhausted"):
         return rating_info
     if cookie_source == "user":
         popup = "豆瓣触发访问限制，请先访问 douban.com 完成人机验证，或更新你的豆瓣 Cookie 后重试。"
