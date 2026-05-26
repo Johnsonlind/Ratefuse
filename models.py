@@ -156,7 +156,7 @@ class ChartConfig(Base):
     layout = Column(String(10), nullable=False, default="card")
     table_rows = Column(Integer, nullable=False, default=10)
     card_count = Column(Integer, nullable=False, default=10)
-    update_mode = Column(String(10), nullable=False, default="all")
+    update_mode = Column(String(10), nullable=False, default="single")
     updater_key = Column(String(100), nullable=True, index=True)
     exportable = Column(Boolean, nullable=False, default=True)
     rank_label_mode = Column(String(10), nullable=False, default="number")
@@ -568,6 +568,24 @@ _LEGACY_CHART_UPDATER_KEYS: dict[str, str] = {
     "metacritic_shows_weekly": "update_metacritic_shows",
 }
 
+def _normalize_chart_config_update_modes(engine: Engine) -> None:
+    """将非法 update_mode 规范为 single；all/single 保持不动。"""
+    with engine.begin() as conn:
+        try:
+            conn.execute(text("SELECT 1 FROM chart_configs LIMIT 1"))
+        except Exception:
+            return
+        conn.execute(
+            text(
+                """
+                UPDATE chart_configs
+                SET update_mode = 'single'
+                WHERE update_mode IS NULL
+                   OR TRIM(update_mode) = ''
+                   OR LOWER(TRIM(update_mode)) NOT IN ('all', 'single')
+                """
+            )
+        )
 
 def _migrate_legacy_chart_updater_keys(engine: Engine) -> None:
     """将历史 updater_key 写成 ChartScraper 方法名（启动时一次性修正）。"""
@@ -590,6 +608,7 @@ def init_db():
     Base.metadata.create_all(bind=engine)
     _ensure_users_table_columns(engine)
     _ensure_chart_configs_columns(engine)
+    _normalize_chart_config_update_modes(engine)
     _migrate_legacy_chart_updater_keys(engine)
 
 if __name__ == "__main__":
