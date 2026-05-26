@@ -267,7 +267,7 @@ async def goto_and_settle(
     await apply_stealth(page)
 
     start = time.monotonic()
-    await page.goto(url, wait_until="load", timeout=min(20000, int(budget_sec * 1000)))
+    await page.goto(url, wait_until="load", timeout=min(30000, int(budget_sec * 1000)))
 
     cf_remain = max(6.0, budget_sec * 0.55)
     ok = await bypass_cloudflare(page, budget_sec=cf_remain)
