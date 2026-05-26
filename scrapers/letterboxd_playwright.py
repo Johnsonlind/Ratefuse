@@ -6,8 +6,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import time
 from typing import Optional
+from urllib.parse import urlparse
 
 from scrapers.playwright_common import apply_stealth
 
@@ -33,24 +35,71 @@ async def _has_cf_clearance(page) -> bool:
     except Exception:
         return False
 
-async def _letterboxd_film_page_ready(page) -> bool:
-    url = (getattr(page, "url", "") or "").lower()
-    if "/film/" in url:
-        return True
+def _is_cf_challenge_url(url: str) -> bool:
+    u = (url or "").lower()
+    return "__cf_chl" in u or "cf_chl_rt_tk" in u
+
+def canonical_letterboxd_film_url(url: str) -> Optional[str]:
+    """去掉 Cloudflare 等查询参数，得到干净的 /film/slug/ URL。"""
+    if not url:
+        return None
+    raw = url.split("#", 1)[0]
+    m = re.search(
+        r"https?://(?:www\.)?letterboxd\.com/film/([a-z0-9\-]+)",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if m:
+        return f"https://letterboxd.com/film/{m.group(1)}/"
+    path = urlparse(raw).path if "://" in raw else raw
+    m2 = re.search(r"/film/([a-z0-9\-]+)", path, flags=re.IGNORECASE)
+    if m2:
+        return f"https://letterboxd.com/film/{m2.group(1)}/"
+    return None
+
+async def _letterboxd_has_film_body(page) -> bool:
+    """影片页 DOM（非 CF 中转页）。"""
     try:
         return bool(
             await page.evaluate(
-                """() => !!(
-                    document.querySelector('.film-header, #content-nav, .film-poster')
-                )"""
+                """() => {
+                    if (document.querySelector(
+                        'span.average-rating, .display-rating .average-rating, #rating-histogram'
+                    )) return true;
+                    const scripts = document.querySelectorAll('script[type="application/ld+json"]');
+                    for (const s of scripts) {
+                        const t = (s.textContent || '');
+                        if (t.includes('aggregateRating') && t.includes('ratingValue')) return true;
+                    }
+                    const h = document.querySelector(
+                        'h1.headline-1, h1.film-title, h1[itemprop="name"]'
+                    );
+                    if (!h) return false;
+                    const title = (h.textContent || '').trim();
+                    if (!title || /your life in film|just a moment|security check/i.test(title)) {
+                        return false;
+                    }
+                    return !!document.querySelector('.film-header, #content-nav, .film-poster');
+                }"""
             )
         )
     except Exception:
         return False
 
+async def _letterboxd_film_page_ready(page) -> bool:
+    url = getattr(page, "url", "") or ""
+    if _is_cf_challenge_url(url):
+        return False
+    if "/film/" not in url.lower():
+        return False
+    return await _letterboxd_has_film_body(page)
+
 async def _letterboxd_content_visible(page, *, url: str = "") -> bool:
-    if await _letterboxd_film_page_ready(page):
-        return True
+    cur = (url or getattr(page, "url", "") or "")
+    if _is_cf_challenge_url(cur):
+        return False
+    if "/film/" in cur.lower():
+        return await _letterboxd_film_page_ready(page)
 
     selectors = (
         "#content-nav",
@@ -68,6 +117,8 @@ async def _letterboxd_content_visible(page, *, url: str = "") -> bool:
 
 async def is_cloudflare_challenge(page) -> bool:
     try:
+        if _is_cf_challenge_url(getattr(page, "url", "") or ""):
+            return True
         if await _letterboxd_content_visible(page):
             return False
         if await _has_cf_clearance(page):
@@ -254,12 +305,78 @@ async def bypass_cloudflare(
     return ok
 
 async def wait_letterboxd_film_redirect(page, *, timeout_sec: float = 12.0) -> bool:
+    target = canonical_letterboxd_film_url(getattr(page, "url", "") or "")
+    return await await_clean_letterboxd_film_page(
+        page, target or "", timeout_sec=timeout_sec
+    )
+
+async def await_clean_letterboxd_film_page(
+    page,
+    target_url: str,
+    *,
+    timeout_sec: float = 12.0,
+) -> bool:
+    """等待并落到无 CF 查询参数的影片页（可重新 goto 干净 URL）。"""
+    clean = canonical_letterboxd_film_url(target_url) or canonical_letterboxd_film_url(
+        getattr(page, "url", "") or ""
+    )
+    if not clean:
+        return False
+
     deadline = time.monotonic() + timeout_sec
+    reloads = 0
+    max_reloads = 2
+
     while time.monotonic() < deadline:
+        cur = getattr(page, "url", "") or ""
+        remain = deadline - time.monotonic()
+
+        if _is_cf_challenge_url(cur) or await is_cloudflare_challenge(page):
+            if remain > 2.0:
+                await bypass_cloudflare(page, budget_sec=min(14.0, remain * 0.6))
+            if reloads < max_reloads and remain > 1.5:
+                reloads += 1
+                try:
+                    await page.goto(
+                        clean,
+                        wait_until="domcontentloaded",
+                        timeout=int(min(20000, remain * 1000)),
+                    )
+                except Exception:
+                    pass
+            await asyncio.sleep(0.45)
+            continue
+
         if await _letterboxd_film_page_ready(page):
+            cur_clean = canonical_letterboxd_film_url(cur) or clean
+            if cur_clean and cur != cur_clean and "?" in cur and reloads < max_reloads:
+                reloads += 1
+                try:
+                    await page.goto(
+                        cur_clean,
+                        wait_until="domcontentloaded",
+                        timeout=int(min(15000, remain * 1000)),
+                    )
+                except Exception:
+                    pass
+                await asyncio.sleep(0.35)
+                if await _letterboxd_film_page_ready(page):
+                    return True
             return True
+
+        if reloads < max_reloads and remain > 1.5:
+            reloads += 1
+            try:
+                await page.goto(
+                    clean,
+                    wait_until="domcontentloaded",
+                    timeout=int(min(20000, remain * 1000)),
+                )
+            except Exception:
+                pass
         await asyncio.sleep(0.35)
-    return False
+
+    return await _letterboxd_film_page_ready(page)
 
 async def _install_lightweight_routes(page) -> None:
     async def _route(route):
@@ -347,11 +464,19 @@ async def goto_and_settle(
         pass
 
     film_remain = max(4.0, budget_sec - (time.monotonic() - start))
-    if not await wait_letterboxd_film_redirect(page, timeout_sec=film_remain):
-        logger.warning("Letterboxd: %.1fs 内未进入 /film/ 页面", film_remain)
+    clean_target = canonical_letterboxd_film_url(url) or canonical_letterboxd_film_url(
+        getattr(page, "url", "") or ""
+    )
+    if not await await_clean_letterboxd_film_page(
+        page, clean_target or url, timeout_sec=film_remain
+    ):
+        logger.warning("Letterboxd: %.1fs 内未进入干净的 /film/ 页面", film_remain)
         return False
 
-    logger.info("Letterboxd: 影片页就绪 %s", getattr(page, "url", ""))
+    final_url = canonical_letterboxd_film_url(getattr(page, "url", "") or "") or getattr(
+        page, "url", ""
+    )
+    logger.info("Letterboxd: 影片页就绪 %s", final_url)
     return True
 
 async def goto_letterboxd_film_by_ids(
