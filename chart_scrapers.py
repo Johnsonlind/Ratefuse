@@ -18,7 +18,6 @@ from sqlalchemy.orm import Session
 
 from browser_pool import browser_pool, wait_turn
 from models import ChartEntry, SessionLocal
-from scrapers.douban_captcha import ensure_douban_access, is_douban_captcha_page
 from scrapers.letterboxd_playwright import (
     bypass_cloudflare as letterboxd_bypass_cloudflare,
     is_cloudflare_challenge as letterboxd_is_cloudflare_challenge,
@@ -62,13 +61,6 @@ async def _letterboxd_goto_and_pass_cf(page, url: str, *, timeout_ms: int = 1500
     if await _is_cloudflare_challenge(page):
         logger.info("Letterboxd: 检测到 Cloudflare，Playwright 自动处理…")
         return await letterboxd_bypass_cloudflare(page, budget_sec=25.0)
-    return True
-
-async def _douban_goto_and_pass_captcha(page, url: str, *, timeout_ms: int = 15000) -> bool:
-    await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-    if await is_douban_captcha_page(page):
-        ok, _ = await ensure_douban_access(page, budget_sec=20.0)
-        return ok
     return True
 
 def _parse_letterboxd_cookie_string(s: str) -> list:
@@ -235,12 +227,12 @@ class ChartScraper:
         async def scrape_with_browser(browser):
             page = await browser.new_page()
             try:
-                await apply_stealth(page)
-                if not await _douban_goto_and_pass_captcha(page, "https://movie.douban.com/", timeout_ms=15000):
-                    logger.warning("豆瓣一周口碑榜: 验证未通过")
-                    return []
-
+                await page.goto("https://movie.douban.com/", wait_until="domcontentloaded")
+                await asyncio.sleep(3)
+                
                 await page.wait_for_load_state("domcontentloaded")
+                
+                await asyncio.sleep(3)
                 
                 try:
                     await page.wait_for_selector('#billboard .billboard-bd table tr', timeout=10000)
@@ -1836,9 +1828,10 @@ class ChartScraper:
                 
                 logger.info("访问豆瓣首页建立会话...")
                 try:
-                    await _douban_goto_and_pass_captcha(page, "https://www.douban.com/", timeout_ms=12000)
-                    await page.evaluate("window.scrollTo(0, Math.random() * 300)")
-                    await asyncio.sleep(0.5)
+                    await page.goto("https://www.douban.com/", wait_until="domcontentloaded", timeout=30000)
+                    await asyncio.sleep(2)
+                    await page.evaluate("window.scrollTo(0, Math.random() * 500)")
+                    await asyncio.sleep(1)
                 except Exception as e:
                     logger.warning(f"访问豆瓣首页失败: {e}")
                 
@@ -1851,14 +1844,14 @@ class ChartScraper:
                     logger.info(f"访问豆瓣 Top 250 第 {page_num + 1} 页: {url}")
                     
                     if page_num > 0:
-                        await asyncio.sleep(random.uniform(0.8, 1.5))
-
-                    if not await _douban_goto_and_pass_captcha(page, url, timeout_ms=30000):
-                        logger.error(f"第 {page_num + 1} 页豆瓣验证未通过")
-                        raise Exception("ANTI_SCRAPING_DETECTED")
-
+                        delay = random.uniform(3, 8)
+                        logger.debug(f"随机延迟 {delay:.2f} 秒")
+                        await asyncio.sleep(delay)
+                    
+                    await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                    
                     await page.evaluate("window.scrollTo(0, Math.random() * 300)")
-                    await asyncio.sleep(random.uniform(0.3, 0.8))
+                    await asyncio.sleep(random.uniform(1, 3))
                     
                     try:
                         await page.wait_for_load_state("domcontentloaded", timeout=30000)
