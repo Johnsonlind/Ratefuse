@@ -1462,6 +1462,7 @@ async def search_platform(platform, tmdb_info, request=None, douban_cookie=None)
                 if platform == "douban":
                     await _apply_douban_light_blocking_routes(context)
                 elif platform == "letterboxd":
+                    await context.route("**/*.{png,jpg,jpeg,gif,webp,svg,woff,woff2,ttf}", lambda route: route.abort())
                     await context.route("**/(analytics|tracking|advertisement)", lambda route: route.abort())
                     await context.route("**/beacon/**", lambda route: route.abort())
                     await context.route("**/telemetry/**", lambda route: route.abort())
@@ -1474,7 +1475,11 @@ async def search_platform(platform, tmdb_info, request=None, douban_cookie=None)
                     await context.route("**/stats/**", lambda route: route.abort())
 
                 page = await context.new_page()
-                page.set_default_timeout(30000)
+                if platform == "letterboxd":
+                    lb_page_timeout = int(os.environ.get("LETTERBOXD_GOTO_TIMEOUT_MS", "45000"))
+                    page.set_default_timeout(lb_page_timeout)
+                else:
+                    page.set_default_timeout(30000)
                 if platform == "letterboxd":
                     try:
                         from playwright_stealth import stealth_async  # type: ignore[reportMissingImports]
@@ -3592,8 +3597,9 @@ async def handle_letterboxd_search(page, direct_url, tmdb_info):
             print(f"Letterboxd: 首页预热失败: {e}")
 
         print(f"访问 Letterboxd 直连页面: {direct_url}")
+        lb_budget = float(os.environ.get("LETTERBOXD_NAV_BUDGET_SEC", "40"))
         if not await letterboxd_goto_and_settle(
-            page, direct_url, block_images=False, budget_sec=32.0
+            page, direct_url, block_images=True, budget_sec=lb_budget
         ):
             if await letterboxd_is_cloudflare_challenge(page):
                 return {
@@ -6160,15 +6166,17 @@ async def parallel_extract_ratings(tmdb_info, media_type, request=None, douban_c
 
     platforms = ["douban", "imdb", "letterboxd", "rottentomatoes", "metacritic"]
 
+    letterboxd_deadline = float(os.environ.get("LETTERBOXD_DEADLINE_SEC", "45"))
+
     platform_timeouts = {
         "douban": 30.0,
         "imdb": 30.0,
-        "letterboxd": 30.0,
+        "letterboxd": letterboxd_deadline,
         "rottentomatoes": 30.0,
         "metacritic": 30.0,
     }
 
-    GLOBAL_DEADLINE_SEC = 30.0
+    GLOBAL_DEADLINE_SEC = max(30.0, letterboxd_deadline)
     
     title = tmdb_info.get('zh_title') or tmdb_info.get('title', 'Unknown')
     print(log.section(f"并行获取评分: {title} ({media_type})"))
