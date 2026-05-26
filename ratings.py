@@ -31,7 +31,9 @@ from browser_pool import (
 )
 from anthology_handler import anthology_handler
 from scrapers.letterboxd_playwright import (
+    await_clean_letterboxd_film_page,
     bypass_cloudflare as letterboxd_bypass_cloudflare,
+    canonical_letterboxd_film_url,
     goto_and_settle as letterboxd_goto_and_settle,
     is_cloudflare_challenge as letterboxd_is_cloudflare_challenge,
 )
@@ -5764,6 +5766,29 @@ async def extract_metacritic_rating(page, media_type, tmdb_info):
 async def extract_letterboxd_rating(page):
     """从Letterboxd详情页提取评分数据"""
     try:
+        clean_url = canonical_letterboxd_film_url(getattr(page, "url", "") or "")
+        settle_sec = max(
+            12.0,
+            float(os.environ.get("LETTERBOXD_NAV_BUDGET_SEC", "40")) * 0.45,
+        )
+        if clean_url and not await await_clean_letterboxd_film_page(
+            page, clean_url, timeout_sec=settle_sec
+        ):
+            if await letterboxd_is_cloudflare_challenge(page):
+                print("Letterboxd: 详情页仍处于 Cloudflare 验证中")
+                return {
+                    "rating": "暂无",
+                    "rating_count": "暂无",
+                    "status": RATING_STATUS["RATE_LIMIT"],
+                    "status_reason": "Cloudflare 安全验证拦截，请稍后重试",
+                }
+            print("Letterboxd: 详情页未加载完整（可能为 CF 中转 URL）")
+            return {
+                "rating": "暂无",
+                "rating_count": "暂无",
+                "status": RATING_STATUS["NO_RATING"],
+            }
+
         content = await page.content()
         
         json_match = re.search(r'"aggregateRating":\s*{\s*"bestRating":\s*(\d+),\s*"reviewCount":\s*(\d+),\s*"@type":\s*"aggregateRating",\s*"ratingValue":\s*([\d.]+),\s*"description":\s*"[^"]*",\s*"ratingCount":\s*(\d+),\s*"worstRating":\s*(\d+)\s*}', content)
