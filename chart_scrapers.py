@@ -3935,6 +3935,70 @@ class TelegramNotifier:
 
 telegram_notifier = TelegramNotifier()
 
+CHART_UPDATER_REGISTRY: dict[tuple[str, str], str] = {
+    ("Rotten Tomatoes", "本周热门流媒体电影"): "rotten_movies",
+    ("Rotten Tomatoes", "本周热门剧集"): "rotten_tv",
+    ("Letterboxd", "本周热门影视"): "letterboxd_popular",
+    ("Letterboxd", "Letterboxd 电影 Top 250"): "letterboxd_top250",
+    ("Metacritic", "本周趋势电影"): "metacritic_movies",
+    ("Metacritic", "本周趋势剧集"): "metacritic_shows",
+    ("Metacritic", "Metacritic 史上最佳电影 Top 250"): "metacritic_best_movies",
+    ("Metacritic", "Metacritic 史上最佳剧集 Top 250"): "metacritic_best_tv",
+    ("TMDB", "本周趋势影视"): "tmdb_trending_all_week",
+    ("TMDB", "TMDB 高分电影 Top 250"): "tmdb_top250_movies",
+    ("TMDB", "TMDB 高分剧集 Top 250"): "tmdb_top250_tv",
+    ("IMDb", "IMDb 本周 Top 10"): "imdb_top10",
+    ("IMDb", "IMDb 电影 Top 250"): "imdb_top250_movies",
+    ("IMDb", "IMDb 剧集 Top 250"): "imdb_top250_tv",
+    ("Trakt", "上周电影 Top 榜"): "trakt_movies_weekly",
+    ("Trakt", "上周剧集 Top 榜"): "trakt_shows_weekly",
+    ("豆瓣", "一周口碑榜"): "douban_weekly_movie",
+    ("豆瓣", "一周华语剧集口碑榜"): "douban_weekly_chinese_tv",
+    ("豆瓣", "一周全球剧集口碑榜"): "douban_weekly_global_tv",
+    ("豆瓣", "豆瓣 电影 Top 250"): "douban_top250",
+}
+
+def normalize_updater_key(key: Optional[str]) -> str:
+    k = str(key or "").strip()
+    if k.startswith("update_"):
+        return k[len("update_") :]
+    return k
+
+def registry_updater_key(platform: str, chart_name: str) -> Optional[str]:
+    plat = (platform or "").strip()
+    chart = (chart_name or "").strip()
+    return CHART_UPDATER_REGISTRY.get((plat, chart))
+
+def updater_key_target_chart(updater_key: str) -> Optional[tuple[str, str]]:
+    norm = normalize_updater_key(updater_key)
+    if not norm:
+        return None
+    for (plat, chart), key in CHART_UPDATER_REGISTRY.items():
+        if normalize_updater_key(key) == norm:
+            return plat, chart
+    return None
+
+def resolve_chart_updater_key(
+    platform: str,
+    chart_name: str,
+    configured_key: Optional[str] = None,
+) -> Optional[str]:
+    plat = (platform or "").strip()
+    chart = (chart_name or "").strip()
+    reg_key = registry_updater_key(plat, chart)
+    cfg_key = str(configured_key or "").strip() or None
+    if reg_key:
+        if cfg_key and normalize_updater_key(cfg_key) != normalize_updater_key(reg_key):
+            logger.warning(
+                "updater_key 与榜单不匹配，已按注册表修正: platform=%s chart=%s 配置=%r 正确=%r",
+                plat,
+                chart,
+                cfg_key,
+                reg_key,
+            )
+        return reg_key
+    return cfg_key
+
 class AutoUpdateScheduler:
     def __init__(self):
         self.running = False
