@@ -7077,8 +7077,19 @@ def _resolve_updater_callable(
     fn = getattr(scraper, method_name, None)
     return fn if callable(fn) else None
 
+CHART_UPDATE_MODE_FOLLOW_ALL = "all"
+CHART_UPDATE_MODE_SINGLE = "single"
+
+def _normalize_chart_update_mode(update_mode: Optional[str]) -> str:
+    """榜单更新模式仅允许 all（跟随全部更新）/ single（单独更新）。"""
+    mode = str(update_mode or "").strip().lower()
+    if mode == CHART_UPDATE_MODE_FOLLOW_ALL:
+        return CHART_UPDATE_MODE_FOLLOW_ALL
+    return CHART_UPDATE_MODE_SINGLE
+
 def _is_batch_chart_update_mode(update_mode: Optional[str]) -> bool:
-    return str(update_mode or "all").strip().lower() != "single"
+    return _normalize_chart_update_mode(update_mode) == CHART_UPDATE_MODE_FOLLOW_ALL
+
 
 def _configured_updater_keys(
     db: Session,
@@ -7189,15 +7200,21 @@ async def execute_batch_chart_updates(
     operation_key: Optional[str] = None,
     cancel_check: Optional[Callable[[], bool]] = None,
 ) -> tuple[dict[str, int], bool]:
-    """
-    按 ChartConfig.update_mode 执行批量更新：仅 update_mode != single（跟随全部更新）且已配置 updater_key。
-    """
     from chart_scrapers import ChartScraper
 
     scraper = ChartScraper(db, cancel_check=cancel_check)
     configured_keys = _configured_updater_keys(db, platform=platform, batch_only=True)
     results: dict[str, int] = {}
     error_occurred = False
+
+    if configured_keys:
+        scope = f"平台 {platform}" if platform else "全部平台"
+        logger.info(
+            "%s 批量更新将执行 %s 个榜单（update_mode=跟随全部更新）: %s",
+            scope,
+            len(configured_keys),
+            ", ".join(f"{p}/{c}" for p, c, _, _ in configured_keys),
+        )
 
     if not configured_keys:
         scope = f"平台 {platform}" if platform else "全部平台"
@@ -7303,7 +7320,7 @@ async def list_chart_configs(db: Session = Depends(get_db)):
             "card_count_default": 10,
             "input_mode_default": "both",
             "layout_default": "card",
-            "update_mode_default": "all",
+            "update_mode_default": "single",
             "rank_label_mode_default": "number",
         }
         platform_orders: dict[str, int] = {}
@@ -7330,7 +7347,9 @@ async def list_chart_configs(db: Session = Depends(get_db)):
                 "layout": (cfg.layout if cfg and cfg.layout else (fallback_rules.get("layout_default") or "card")),
                 "table_rows": int((cfg.table_rows if cfg and cfg.table_rows else (fallback_rules.get("table_rows_default") or 10))),
                 "card_count": int((cfg.card_count if cfg and cfg.card_count else (fallback_rules.get("card_count_default") or 10))),
-                "update_mode": (cfg.update_mode if cfg and cfg.update_mode else (fallback_rules.get("update_mode_default") or "all")),
+                "update_mode": _normalize_chart_update_mode(
+                    cfg.update_mode if cfg and cfg.update_mode else fallback_rules.get("update_mode_default")
+                ),
                 "updater_key": (str(cfg.updater_key).strip() if cfg and cfg.updater_key else None),
                 "exportable": (cfg.exportable if cfg is not None else True),
                 "rank_label_mode": (cfg.rank_label_mode if cfg and cfg.rank_label_mode else (fallback_rules.get("rank_label_mode_default") or "number")),
@@ -7347,7 +7366,7 @@ async def list_chart_configs(db: Session = Depends(get_db)):
             "layout": r.layout,
             "table_rows": r.table_rows,
             "card_count": r.card_count,
-            "update_mode": r.update_mode,
+            "update_mode": _normalize_chart_update_mode(r.update_mode),
             "updater_key": r.updater_key,
             "exportable": r.exportable,
             "rank_label_mode": r.rank_label_mode,
@@ -7364,7 +7383,13 @@ async def save_chart_configs(
     require_admin(current_user)
     try:
         existing_config_rows = (
-            db.query(ChartConfig.platform, ChartConfig.sort_order, ChartConfig.chart_name, ChartConfig.updater_key)
+            db.query(
+                ChartConfig.platform,
+                ChartConfig.sort_order,
+                ChartConfig.chart_name,
+                ChartConfig.updater_key,
+                ChartConfig.update_mode,
+            )
             .order_by(ChartConfig.platform.asc(), ChartConfig.sort_order.asc())
             .all()
         )
@@ -7372,8 +7397,11 @@ async def save_chart_configs(
             (canonical_platform_name(r.platform), int(r.sort_order or 0)): canonical_chart_name(r.chart_name)
             for r in existing_config_rows
         }
-        existing_updater_by_slot: dict[tuple[str, int], Optional[str]] = {
-            (canonical_platform_name(r.platform), int(r.sort_order or 0)): (str(r.updater_key).strip() if r.updater_key else None)
+        existing_updater_by_chart: dict[tuple[str, str], Optional[str]] = {
+            (
+                canonical_platform_name(r.platform),
+                canonical_chart_name(r.chart_name),
+            ): (str(r.updater_key).strip() if r.updater_key else None)
             for r in existing_config_rows
         }
         db.query(ChartConfig).delete()
@@ -7408,11 +7436,11 @@ async def save_chart_configs(
                     layout=item.layout,
                     table_rows=max(1, int(item.table_rows)),
                     card_count=max(1, int(item.card_count)),
-                    update_mode=item.update_mode,
+                    update_mode=_normalize_chart_update_mode(item.update_mode),
                     updater_key=(
                         str(item.updater_key).strip()
                         if item.updater_key
-                        else existing_updater_by_slot.get((platform, order))
+                        else existing_updater_by_chart.get((platform, chart_name))
                     ),
                     exportable=bool(item.exportable),
                     rank_label_mode=item.rank_label_mode if item.rank_label_mode in ("number", "month") else "number",
