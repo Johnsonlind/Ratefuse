@@ -120,6 +120,7 @@ export default function AdminChartsPage() {
   const [forceRefresh, setForceRefresh] = useState(0);
   const updateControllersRef = useRef<Record<string, AbortController>>({});
   const updateOperationIdsRef = useRef<Record<string, string>>({});
+  const skipConfigAutoSaveRef = useRef(true);
   const [schedulerState, setSchedulerState] = useState<{
     running: boolean;
     next_update: string | null;
@@ -424,7 +425,7 @@ export default function AdminChartsPage() {
           layout: row.layout,
           table_rows: row.table_rows,
           card_count: row.card_count,
-          update_mode: row.update_mode,
+          update_mode: row.update_mode === 'all' ? 'all' : 'single',
           exportable: row.exportable ?? true,
           rank_label_mode: (row as { rank_label_mode?: 'number' | 'month' }).rank_label_mode ?? 'number',
         });
@@ -432,12 +433,17 @@ export default function AdminChartsPage() {
       });
     const allPlatforms = Array.from(new Set(remoteConfigs.map((x) => PLATFORM_NAME_MAP[x.platform] || x.platform)));
     const next = allPlatforms.map((p) => ({ platform: p, sections: grouped.get(p) || [] }));
+    skipConfigAutoSaveRef.current = true;
     setChartConfigs(next);
     setConfigLoaded(true);
   }, [remoteConfigs]);
 
   useEffect(() => {
     if (!configLoaded) return;
+    if (skipConfigAutoSaveRef.current) {
+      skipConfigAutoSaveRef.current = false;
+      return;
+    }
     const run = async () => {
       const items = chartConfigs.flatMap((cfg) =>
         cfg.sections.map((sec, index) => ({
@@ -450,7 +456,7 @@ export default function AdminChartsPage() {
           layout: sec.layout,
           table_rows: sec.table_rows,
           card_count: sec.card_count,
-          update_mode: sec.update_mode,
+          update_mode: sec.update_mode === 'all' ? 'all' : 'single',
           updater_key: sec.updater_key,
           exportable: sec.exportable,
           rank_label_mode: sec.rank_label_mode,
