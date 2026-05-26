@@ -37,14 +37,6 @@ from scrapers.letterboxd_playwright import (
     goto_and_settle as letterboxd_goto_and_settle,
     is_cloudflare_challenge as letterboxd_is_cloudflare_challenge,
 )
-from scrapers.douban_captcha import (
-    ensure_douban_access,
-    goto_douban_and_ensure,
-    is_douban_captcha_html,
-    is_douban_captcha_page,
-    is_douban_hard_block_html,
-)
-
 class LogFormatter:
     """结构化日志输出"""
     COLORS = {
@@ -104,15 +96,26 @@ def _douban_log(stage: str, **fields) -> None:
     print(f"[douban][{stage}]{extra}")
 
 def _douban_limited_signals(content: str, page_url: str = "", page_title: str = "") -> list[str]:
-    hits: list[str] = []
-    if is_douban_captcha_html(content, page_url, page_title):
-        hits.append("captcha-page")
-    if is_douban_hard_block_html(content, page_url, page_title):
-        hits.append("hard-block")
     c = (content or "").lower()
-    if "error code: 008" in c:
-        hits.append("error code: 008")
-    if "sec.douban.com" in (page_url or "").lower() and "/subject/" not in (page_url or "").lower():
+    t = (page_title or "").lower()
+    u = (page_url or "").lower()
+    signals = (
+        "error code: 008",
+        "你访问豆瓣的方式有点像机器人程序",
+        "点击证明",
+        "有异常请求从你的ip发出",
+        "请求过于频繁",
+        "访问受限",
+        "访问太频繁",
+        "异常请求",
+        "安全验证",
+    )
+    hits: list[str] = []
+    for s in signals:
+        sl = s.lower()
+        if sl in c or sl in t:
+            hits.append(s)
+    if "sec.douban.com" in u:
         hits.append("sec.douban.com(url)")
     return hits
 
@@ -1140,6 +1143,7 @@ async def check_rate_limit(page, platform: str) -> dict | None:
             "phrases": [
                 "rate limit exceeded",
                 "too many requests",
+                "Just a moment",
                 "you are being rate limited",
                 "access denied",
                 "please wait and try again",
@@ -1168,35 +1172,31 @@ async def check_rate_limit(page, platform: str) -> dict | None:
     
     if platform == "douban":
         page_html = await page.content()
-        page_url = str(getattr(page, "url", "") or "")
-        try:
-            page_title = await page.title()
-        except Exception:
-            page_title = ""
         if "error code: 008" in page_html:
             print("豆瓣访问频率限制: error code 008")
             _douban_log("rl.check", source="check_rate_limit", reason="error code: 008")
             return {"status": RATING_STATUS["RATE_LIMIT"], "status_reason": "访问频率限制"}
-        if is_douban_captcha_html(page_html, page_url, page_title):
-            print("豆瓣人机验证页（图形点选）")
-            _douban_log("rl.check", source="check_rate_limit", reason="captcha-page")
+        if (
+            "你访问豆瓣的方式有点像机器人程序" in page_html
+            or "点击证明" in page_html
+        ):
+            print("豆瓣人机验证页（机器人拦截）")
+            _douban_log("rl.check", source="check_rate_limit", reason="robot-challenge")
             return {
                 "status": RATING_STATUS["RATE_LIMIT"],
                 "status_reason": "豆瓣人机验证：请在本地浏览器打开 douban.com 完成验证后，更新账号中的豆瓣 Cookie 再试",
             }
-        if is_douban_hard_block_html(page_html, page_url, page_title):
-            print("豆瓣访问限制（风控页）")
-            _douban_log("rl.check", source="check_rate_limit", reason="hard-block")
-            return {"status": RATING_STATUS["RATE_LIMIT"], "status_reason": "访问频率限制"}
-
+    
     if platform == "letterboxd":
         try:
-            if await letterboxd_is_cloudflare_challenge(page):
-                print("Letterboxd: 仍处于 Cloudflare 验证页")
-                return {
-                    "status": RATING_STATUS["RATE_LIMIT"],
-                    "status_reason": "Cloudflare 安全验证拦截，请稍后重试",
-                }
+            title = await page.title()
+            content = await page.content()
+            if title and "Just a moment" in title:
+                print("Letterboxd: 检测到 Cloudflare 安全验证页 (title)")
+                return {"status": RATING_STATUS["RATE_LIMIT"], "status_reason": "Cloudflare 安全验证拦截，请稍后重试"}
+            if "Enable JavaScript and cookies to continue" in content or "cf_chl_opt" in content or "challenge-platform" in content:
+                print("Letterboxd: 检测到 Cloudflare 安全验证页 (content)")
+                return {"status": RATING_STATUS["RATE_LIMIT"], "status_reason": "Cloudflare 安全验证拦截，请稍后重试"}
         except Exception as e:
             print(f"Letterboxd Cloudflare 检测异常: {e}")
     
@@ -1224,12 +1224,6 @@ async def check_rate_limit(page, platform: str) -> dict | None:
 async def _is_cloudflare_challenge(page) -> bool:
     """检测当前页面是否为 Cloudflare 安全验证"""
     return await letterboxd_is_cloudflare_challenge(page)
-
-def _douban_rate_limit_result(reason: str, *, captcha_exhausted: bool = False) -> dict:
-    out = {"status": RATING_STATUS["RATE_LIMIT"], "status_reason": reason}
-    if captcha_exhausted:
-        out["_douban_captcha_exhausted"] = True
-    return out
 
 def _looks_like_douban_access_limited(content: str, page_url: str = "", page_title: str = "") -> bool:
     return len(_douban_limited_signals(content, page_url, page_title)) > 0
@@ -3006,26 +3000,12 @@ async def handle_douban_search(
             await douban_human_wait("before_search_nav")
         await wait_before_douban_request_async(douban_cookie, "search")
         print(f"访问豆瓣搜索页面: {search_url}")
-        captcha_budget = 14.0 if fast_mode else 16.0
-        ok, exhausted, _html = await goto_douban_and_ensure(
-            page,
+        await page.goto(
             search_url,
-            budget_sec=captcha_budget,
             wait_until="domcontentloaded",
+            timeout=(12000 if fast_mode else 20000),
         )
-        if not ok:
-            _douban_log(
-                "search.blocked",
-                url=search_url,
-                exhausted=exhausted,
-            )
-            reason = (
-                "豆瓣点选验证失败，请完成验证或更新 Cookie"
-                if exhausted
-                else "豆瓣人机验证：请在本地浏览器打开 douban.com 完成验证后，更新账号中的豆瓣 Cookie 再试"
-            )
-            return _douban_rate_limit_result(reason, captcha_exhausted=exhausted)
-
+        
         if not fast_mode:
             try:
                 await page.wait_for_load_state('domcontentloaded', timeout=3000)
@@ -3040,33 +3020,84 @@ async def handle_douban_search(
         rate_limit = await check_rate_limit(page, "douban")
         if rate_limit:
             print("检测到豆瓣访问限制")
-            _douban_log("search.rate_limit", reason=rate_limit.get("status_reason"))
-            return {"status": RATING_STATUS["RATE_LIMIT"], "status_reason": "访问频率限制"}
-
+            return {"status": RATING_STATUS["RATE_LIMIT"], "status_reason": "访问频率限制"} 
+        
         try:
-            results = await _douban_parse_search_results(page)
+            try:
+                await page.wait_for_selector('a[href*="/subject/"]', timeout=(6000 if fast_mode else 4000))
+            except Exception:
+                pass
+
+            results = await page.evaluate(
+                """(args) => {
+                    const maxItems = args.maxItems || 5;
+                    const anchors = Array.from(document.querySelectorAll('a[href*="/subject/"]'));
+                    const seen = new Set();
+                    const out = [];
+                    const titleRe = /(.*?)\\s*\\((\\d{4})\\)/;
+
+                    function rowTitleFromAnchor(a) {
+                        let t = (a.textContent || '').replace(/\\s+/g, ' ').trim();
+                        if (t) return t;
+                        const tt = a.querySelector && a.querySelector('.title-text');
+                        if (tt && tt.textContent) return tt.textContent.replace(/\\s+/g, ' ').trim();
+                        let p = a;
+                        for (let d = 0; d < 6 && p; d++) {
+                            const x = p.closest && p.closest('.item-root, .sc-bZQynM, li, .subject-item, [class*=\"item\"]');
+                            if (x) {
+                                const titleEl = x.querySelector('.title-text, .title, h3, [class*=\"title\"]');
+                                if (titleEl && titleEl.textContent) return titleEl.textContent.replace(/\\s+/g, ' ').trim();
+                            }
+                            p = p.parentElement;
+                        }
+                        const img = a.querySelector && a.querySelector('img[alt]');
+                        if (img && img.getAttribute('alt')) return (img.getAttribute('alt') || '').trim();
+                        return '';
+                    }
+
+                    for (const a of anchors) {
+                        if (out.length >= maxItems) break;
+                        let href = (a.getAttribute('href') || '').trim();
+                        if (!href || !/subject\\/\\d+/.test(href)) continue;
+                        if (href.startsWith('//')) href = 'https:' + href;
+                        if (seen.has(href)) continue;
+                        seen.add(href);
+
+                        const text = rowTitleFromAnchor(a);
+                        if (!text) continue;
+
+                        const m = text.match(titleRe);
+                        const title = (m ? (m[1] || '').trim() : text).trim();
+                        const year = m ? (m[2] || '') : '';
+                        if (!title) continue;
+                        out.push({ title, year, url: href });
+                    }
+                    return out;
+                }""",
+                {"maxItems": MAX_MATCH_CANDIDATES_PER_PLATFORM},
+            )
 
             if not results:
                 raw = await page.content()
-                current_url = str(getattr(page, "url", "") or "")
+                current_url = ""
+                title = ""
+                try:
+                    current_url = str(getattr(page, "url", "") or "")
+                except Exception:
+                    current_url = ""
                 try:
                     title = await page.title()
                 except Exception:
                     title = ""
-                if await is_douban_captcha_page(page) or _looks_like_douban_access_limited(
-                    raw, current_url, title
+                if (
+                    "你访问豆瓣的方式有点像机器人程序" in raw
+                    or "点击证明" in raw
                 ):
-                    _douban_log("search.retry_captcha", url=current_url[:80])
-                    ok2, exhausted2 = await ensure_douban_access(page, budget_sec=28.0)
-                    if ok2:
-                        results = await _douban_parse_search_results(page)
-                    else:
-                        return _douban_rate_limit_result(
-                            "豆瓣点选验证失败，请完成验证或更新 Cookie",
-                            captcha_exhausted=exhausted2,
-                        )
-                if not results and _looks_like_douban_access_limited(raw, current_url, title):
-                    _douban_log("search.limited", hits="|".join(_douban_limited_signals(raw, current_url, title)))
+                    return {
+                        "status": RATING_STATUS["RATE_LIMIT"],
+                        "status_reason": "豆瓣人机验证：请在本地浏览器打开 douban.com 完成验证后，更新账号中的豆瓣 Cookie 再试",
+                    }
+                if _looks_like_douban_access_limited(raw, current_url, title):
                     return {
                         "status": RATING_STATUS["RATE_LIMIT"],
                         "status_reason": "豆瓣访问限制或安全验证拦截",
@@ -3895,14 +3926,9 @@ async def extract_rating_info(media_type, platform, tmdb_info, search_results, r
                         await page.goto(detail_url, wait_until="domcontentloaded", timeout=9000)
                         await asyncio.sleep(0.3)
                     elif platform == "douban":
-                        await page.goto(detail_url, wait_until="domcontentloaded", timeout=12000)
-                        if await is_douban_captcha_page(page):
-                            ok, exhausted = await ensure_douban_access(page, budget_sec=28.0)
-                            if not ok:
-                                return _douban_rate_limit_result(
-                                    "豆瓣点选验证失败",
-                                    captcha_exhausted=exhausted,
-                                )
+                        await page.goto(detail_url, wait_until="domcontentloaded", timeout=15000)
+                        await douban_human_wait("after_detail_dom")
+                        await douban_simulate_light_browsing(page)
                         rl_d = await check_rate_limit(page, "douban")
                         if rl_d:
                             return create_rating_data(
@@ -4711,21 +4737,12 @@ async def extract_douban_rating(page, media_type, matched_results, tmdb_info=Non
         if (
             "你访问豆瓣的方式有点像机器人程序" in content
             or "点击证明" in content
-            or await is_douban_captcha_page(page)
         ):
-            ok, exhausted = await ensure_douban_access(page, budget_sec=28.0)
-            if ok:
-                content = await page.content()
-            else:
-                ret = create_empty_rating_data("douban", media_type, RATING_STATUS["RATE_LIMIT"])
-                ret["status_reason"] = (
-                    "豆瓣点选验证失败，请完成验证或更新 Cookie"
-                    if exhausted
-                    else "豆瓣人机验证：请在本地浏览器打开 douban.com 完成验证后，更新账号中的豆瓣 Cookie 再试"
-                )
-                if exhausted:
-                    ret["_douban_captcha_exhausted"] = True
-                return ret
+            ret = create_empty_rating_data("douban", media_type, RATING_STATUS["RATE_LIMIT"])
+            ret["status_reason"] = (
+                "豆瓣人机验证：请在本地浏览器打开 douban.com 完成验证后，更新账号中的豆瓣 Cookie 再试"
+            )
+            return ret
 
         try:
             initial_page_url = str(getattr(page, "url", "") or "").rstrip("/")
@@ -4737,24 +4754,12 @@ async def extract_douban_rating(page, media_type, matched_results, tmdb_info=Non
         except Exception:
             current_host = ""
         if current_host.startswith("sec.douban.com") or "/b?r=" in (initial_page_url or ""):
-            ok, exhausted = await ensure_douban_access(page, budget_sec=28.0)
-            if ok:
-                content = await page.content()
-                try:
-                    initial_page_url = str(getattr(page, "url", "") or "").rstrip("/")
-                except Exception:
-                    pass
-            else:
-                ret = create_empty_rating_data("douban", media_type, RATING_STATUS["RATE_LIMIT"])
-                ret["status_reason"] = (
-                    "豆瓣点选验证失败，请完成验证或更新 Cookie"
-                    if exhausted
-                    else "豆瓣安全验证拦截（sec.douban.com）：请在本地浏览器完成验证后重试，或稍后再试"
-                )
-                if exhausted:
-                    ret["_douban_captcha_exhausted"] = True
-                print(f"豆瓣详情页被安全验证重定向: {initial_page_url}")
-                return ret
+            ret = create_empty_rating_data("douban", media_type, RATING_STATUS["RATE_LIMIT"])
+            ret["status_reason"] = (
+                "豆瓣安全验证拦截（sec.douban.com）：请在本地浏览器完成验证后重试，或稍后再试"
+            )
+            print(f"豆瓣详情页被安全验证重定向: {initial_page_url}")
+            return ret
         
         rating, rating_people = await _douban_extract_rating_values(page, content or "")
 
