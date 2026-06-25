@@ -4281,6 +4281,41 @@ def _letterboxd_scores_has_rating(rating: object, rating_count: object) -> bool:
         and str(rating_count if rating_count is not None else "").strip().lower() not in invalid
     )
 
+def _strip_json_ld_cdata(raw: str) -> str:
+    text = (raw or "").strip()
+    text = re.sub(r"/\*\s*<!\[CDATA\[\s*\*/", "", text)
+    text = re.sub(r"/\*\s*\]\]>\s*\*/", "", text)
+    return text.strip()
+
+def _parse_letterboxd_json_ld_rating(content: str) -> Optional[tuple[str, str]]:
+    """从 Letterboxd 页面 JSON-LD 提取 ratingValue 与 ratingCount。"""
+    if not content:
+        return None
+    for match in re.finditer(
+        r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+        content,
+        re.DOTALL | re.IGNORECASE,
+    ):
+        raw = _strip_json_ld_cdata(match.group(1))
+        if not raw:
+            continue
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        items = data if isinstance(data, list) else [data]
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            agg = item.get("aggregateRating")
+            if not isinstance(agg, dict):
+                continue
+            rating_value = agg.get("ratingValue")
+            rating_count = agg.get("ratingCount")
+            if rating_value is not None and rating_count is not None:
+                return str(rating_value), str(rating_count)
+    return None
+
 async def rt_extract_rating_from_season_urls(
     tmdb_info: dict,
     *,
@@ -5790,14 +5825,11 @@ async def extract_letterboxd_rating(page):
             }
 
         content = await page.content()
-        
-        json_match = re.search(r'"aggregateRating":\s*{\s*"bestRating":\s*(\d+),\s*"reviewCount":\s*(\d+),\s*"@type":\s*"aggregateRating",\s*"ratingValue":\s*([\d.]+),\s*"description":\s*"[^"]*",\s*"ratingCount":\s*(\d+),\s*"worstRating":\s*(\d+)\s*}', content)
-        
-        if json_match:
-            rating = json_match.group(3)
-            rating_count = json_match.group(4)
-            print(f"Letterboxd评分获取成功")
-            
+
+        parsed = _parse_letterboxd_json_ld_rating(content)
+        if parsed:
+            rating, rating_count = parsed
+            print("Letterboxd评分获取成功")
             return {
                 "rating": rating,
                 "rating_count": rating_count,
@@ -5805,30 +5837,24 @@ async def extract_letterboxd_rating(page):
                     RATING_STATUS["SUCCESSFUL"]
                     if _letterboxd_scores_has_rating(rating, rating_count)
                     else RATING_STATUS["NO_RATING"]
-                )
+                ),
             }
-        else:            
-            rating_elem = await page.query_selector('span.average-rating a.tooltip')
-            
-            if not rating_elem:
-                print("Letterboxd 未找到评分元素")
-                return {
-                    "rating": "暂无",
-                    "rating_count": "暂无",
-                    "status": RATING_STATUS["NO_RATING"]
-                }
-                
+
+        rating_elem = await page.query_selector(
+            'span.average-rating a.tooltip, span.average-rating, .display-rating .average-rating'
+        )
+        if rating_elem:
             rating = await rating_elem.inner_text()
-            
+
             tooltip = await rating_elem.get_attribute('data-original-title')
             if tooltip:
                 match = re.search(r'based on ([\d,]+)', tooltip)
                 rating_count = match.group(1).replace(',', '') if match else "暂无"
             else:
                 rating_count = "暂无"
-            
-            print(f"Letterboxd评分获取成功")
-            
+
+            print("Letterboxd评分获取成功")
+
             return {
                 "rating": rating,
                 "rating_count": rating_count,
@@ -5836,9 +5862,15 @@ async def extract_letterboxd_rating(page):
                     RATING_STATUS["SUCCESSFUL"]
                     if _letterboxd_scores_has_rating(rating, rating_count)
                     else RATING_STATUS["NO_RATING"]
-                )
+                ),
             }
-            
+
+        print("Letterboxd 未找到评分元素")
+        return {
+            "rating": "暂无",
+            "rating_count": "暂无",
+            "status": RATING_STATUS["NO_RATING"],
+        }
     except Exception as e:
         print(f"提取Letterboxd评分数据时出错: {e}")
         return {
