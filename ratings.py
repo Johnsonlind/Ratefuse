@@ -5767,60 +5767,79 @@ async def extract_letterboxd_rating(page):
     """从Letterboxd详情页提取评分数据"""
     try:
         clean_url = canonical_letterboxd_film_url(getattr(page, "url", "") or "")
+
         settle_sec = max(
             12.0,
             float(os.environ.get("LETTERBOXD_NAV_BUDGET_SEC", "40")) * 0.45,
         )
-        if clean_url and not await await_clean_letterboxd_film_page(
-            page, clean_url, timeout_sec=settle_sec
-        ):
-            if await letterboxd_is_cloudflare_challenge(page):
+
+        if clean_url:
+            ok = await await_clean_letterboxd_film_page(
+                page, clean_url, timeout_sec=settle_sec
+            )
+            if not ok:
+                if await letterboxd_is_cloudflare_challenge(page):
+                    return {
+                        "rating": "暂无",
+                        "rating_count": "暂无",
+                        "status": RATING_STATUS["RATE_LIMIT"],
+                        "status_reason": "Cloudflare 安全验证拦截，请稍后重试",
+                    }
+
                 return {
                     "rating": "暂无",
                     "rating_count": "暂无",
-                    "status": RATING_STATUS["RATE_LIMIT"],
-                    "status_reason": "Cloudflare 安全验证拦截，请稍后重试",
+                    "status": RATING_STATUS["NO_RATING"],
                 }
-            return {
-                "rating": "暂无",
-                "rating_count": "暂无",
-                "status": RATING_STATUS["NO_RATING"],
-            }
+                
+        try:
+            await page.wait_for_selector(
+                'script[type="application/ld+json"]',
+                timeout=5000
+            )
+        except:
+            pass
 
-        content = await page.content()
+        json_ld_scripts = await page.eval_on_selector_all(
+            'script[type="application/ld+json"]',
+            "els => els.map(e => e.textContent)"
+        )
 
         rating = None
         rating_count = None
 
-        json_ld_scripts = re.findall(
-            r'<script\s+type="application/ld\+json"[^>]*>(.*?)</script>',
-            content,
-            re.DOTALL | re.IGNORECASE
-        )
-
         for script_content in json_ld_scripts:
-            try:
-                data = json.loads(script_content.strip())
-                if isinstance(data, list):
-                    items = data
-                else:
-                    items = [data]
-
-                for item in items:
-                    agg = _find_aggregate_rating(item)
-                    if agg and isinstance(agg, dict):
-                        rating = agg.get("ratingValue")
-                        count = agg.get("ratingCount") or agg.get("reviewCount")
-                        if rating is not None and count is not None:
-                            rating = str(rating).strip()
-                            rating_count = str(count).strip()
-                            break
-                if rating and rating_count:
-                    break
-            except json.JSONDecodeError:
+            if not script_content:
                 continue
 
-        if rating and rating_count and _letterboxd_scores_has_rating(rating, rating_count):
+            try:
+                data = json.loads(script_content)
+                
+                items = data if isinstance(data, list) else [data]
+                
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+
+                    agg = item.get("aggregateRating")
+                    if not agg:
+                        continue
+
+                    rating = agg.get("ratingValue")
+                    rating_count = agg.get("ratingCount") or agg.get("reviewCount")
+
+                    if rating is not None and rating_count is not None:
+                        rating = str(rating).strip()
+                        rating_count = str(rating_count).strip()
+                        break
+
+                if rating and rating_count:
+                    break
+
+            except Exception:
+                continue
+
+        if _letterboxd_scores_has_rating(rating, rating_count):
             print("Letterboxd评分获取成功 (JSON-LD)")
             return {
                 "rating": rating,
@@ -5828,24 +5847,53 @@ async def extract_letterboxd_rating(page):
                 "status": RATING_STATUS["SUCCESSFUL"]
             }
 
-        rating_elem = await page.query_selector('span.average-rating a.tooltip')
-        if rating_elem:
-            rating = await rating_elem.inner_text()
-            tooltip = await rating_elem.get_attribute('data-original-title')
-            if tooltip:
-                match = re.search(r'based on ([\d,]+)', tooltip)
-                rating_count = match.group(1).replace(',', '') if match else "暂无"
-            else:
+        try:
+            meta_text = await page.get_attribute(
+                'meta[name="twitter:data2"]',
+                "content"
+            )
+            
+            if meta_text:
+                match = re.search(r"([\d.]+)", meta_text)
+                if match:
+                    rating = match.group(1)
+                    rating_count = "暂无"
+
+                    if _letterboxd_scores_has_rating(rating, rating_count):
+                        print("Letterboxd评分获取成功 (META)")
+                        return {
+                            "rating": rating,
+                            "rating_count": rating_count,
+                            "status": RATING_STATUS["SUCCESSFUL"]
+                        }
+        except:
+            pass
+
+        try:
+            rating_elem = await page.query_selector(
+                'span.average-rating a.tooltip'
+            )
+            if rating_elem:
+                rating = await rating_elem.inner_text()
+                
+                tooltip = await rating_elem.get_attribute('data-original-title')
                 rating_count = "暂无"
+                
+                if tooltip:
+                    match = re.search(r"based on ([\d,]+)", tooltip)
+                    if match:
+                        rating_count = match.group(1).replace(",", "")
 
-            if _letterboxd_scores_has_rating(rating, rating_count):
-                print("Letterboxd评分获取成功 (CSS)")
-                return {
-                    "rating": rating,
-                    "rating_count": rating_count,
-                    "status": RATING_STATUS["SUCCESSFUL"]
-                }
-
+                if _letterboxd_scores_has_rating(rating, rating_count):
+                    print("Letterboxd评分获取成功 (CSS)")
+                    return {
+                        "rating": rating,
+                        "rating_count": rating_count,
+                        "status": RATING_STATUS["SUCCESSFUL"]
+                    }
+        except:
+            pass
+            
         return {
             "rating": "暂无",
             "rating_count": "暂无",
@@ -5859,25 +5907,7 @@ async def extract_letterboxd_rating(page):
             "rating_count": "暂无",
             "status": RATING_STATUS["FETCH_FAILED"]
         }
-
-def _find_aggregate_rating(obj):
-    """递归查找 aggregateRating 对象"""
-    if isinstance(obj, dict):
-        # 直接命中
-        if "aggregateRating" in obj:
-            return obj["aggregateRating"]
-        # 遍历值
-        for value in obj.values():
-            result = _find_aggregate_rating(value)
-            if result:
-                return result
-    elif isinstance(obj, list):
-        for item in obj:
-            result = _find_aggregate_rating(item)
-            if result:
-                return result
-    return None
-
+        
 def _resolve_failed_status_with_reason(platform_data: dict) -> str:
     reason = str((platform_data or {}).get("status_reason") or "").lower()
     if "timeout" in reason or "超时" in reason:
