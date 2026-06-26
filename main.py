@@ -7657,7 +7657,7 @@ async def get_aggregate_charts(db: Session = Depends(get_db)):
         (canonical_platform_name("Metacritic"), canonical_chart_name("本周趋势电影")),
         (canonical_platform_name("Letterboxd"), canonical_chart_name("本周热门影视")),
         (canonical_platform_name("TMDB"), canonical_chart_name("本周趋势影视")),
-        (canonical_platform_name("Trakt"), canonical_chart_name("电影 Top 榜")),
+        (canonical_platform_name("Trakt"), canonical_chart_name("热门电影")),
     ]
     
     tv_include_pairs = [
@@ -7667,7 +7667,7 @@ async def get_aggregate_charts(db: Session = Depends(get_db)):
         (canonical_platform_name("Metacritic"), canonical_chart_name("本周趋势剧集")),
         (canonical_platform_name("Letterboxd"), canonical_chart_name("本周热门影视")),
         (canonical_platform_name("TMDB"), canonical_chart_name("本周趋势影视")),
-        (canonical_platform_name("Trakt"), canonical_chart_name("剧集 Top 榜")),
+        (canonical_platform_name("Trakt"), canonical_chart_name("热门剧集")),
     ]
     
     movies = aggregate_top(db, media_type="movie", limit=10, chinese_only=False, include_pairs=movie_include_pairs)
