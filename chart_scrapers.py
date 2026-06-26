@@ -3017,9 +3017,9 @@ class ChartScraper:
         return saved
 
     async def update_trakt_movies_weekly(self) -> int:
-        """Trakt 电影 Top 榜"""
+        """Trakt 热门电影"""
         platform = 'Trakt'
-        chart_name = '电影 Top 榜'
+        chart_name = '热门电影'
         import urllib3, requests
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         headers = {
@@ -3070,9 +3070,9 @@ class ChartScraper:
         return saved
 
     async def update_trakt_shows_weekly(self) -> int:
-        """Trakt 剧集 Top 榜"""
+        """Trakt 热门剧集"""
         platform = 'Trakt'
-        chart_name = '剧集 Top 榜'
+        chart_name = '热门剧集'
         import urllib3, requests
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         headers = {
@@ -4060,8 +4060,8 @@ CHART_UPDATER_REGISTRY: dict[tuple[str, str], str] = {
     ("IMDb", "IMDb 本周 Top 10"): "imdb_top10",
     ("IMDb", "IMDb 电影 Top 250"): "imdb_top250_movies",
     ("IMDb", "IMDb 剧集 Top 250"): "imdb_top250_tv",
-    ("Trakt", "电影 Top 榜"): "trakt_movies_weekly",
-    ("Trakt", "剧集 Top 榜"): "trakt_shows_weekly",
+    ("Trakt", "热门电影"): "trakt_movies_weekly",
+    ("Trakt", "热门剧集"): "trakt_shows_weekly",
     ("豆瓣", "一周口碑榜"): "douban_weekly_movie",
     ("豆瓣", "一周华语剧集口碑榜"): "douban_weekly_chinese_tv",
     ("豆瓣", "一周全球剧集口碑榜"): "douban_weekly_global_tv",
