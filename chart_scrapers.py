@@ -472,38 +472,141 @@ class ChartScraper:
             return []
 
     @staticmethod
-    def _parse_imdb_top10_rank(raw_rank: Any) -> Optional[int]:
-        if raw_rank is None:
-            return None
-        if isinstance(raw_rank, bool):
-            return None
-        if isinstance(raw_rank, int):
-            return raw_rank if raw_rank >= 1 else None
-        if isinstance(raw_rank, float):
-            return int(raw_rank) if raw_rank >= 1 else None
-        try:
-            parsed = int(str(raw_rank).strip())
-            return parsed if parsed >= 1 else None
-        except (TypeError, ValueError):
-            return None
+    def _build_imdb_graphql_get_url(operation_name: str, variables_dict: dict, query_hash: str) -> str:
+        variables_json = json.dumps(variables_dict, separators=(",", ":"))
+        variables_encoded = quote(variables_json)
+        extensions_json = json.dumps(
+            {"persistedQuery": {"sha256Hash": query_hash, "version": 1}},
+            separators=(",", ":"),
+        )
+        extensions_encoded = quote(extensions_json)
+        return (
+            f"https://api.graphql.imdb.com/?operationName={operation_name}"
+            f"&variables={variables_encoded}&extensions={extensions_encoded}"
+        )
 
-    def _parse_imdb_top_meter_edges(self, edges: list) -> List[Dict]:
-        results: list[dict] = []
+    def _build_imdb_graphql_headers(self) -> dict:
+        imdb_cookie = (os.getenv("IMDB_GRAPHQL_COOKIE") or "").strip()
+        imdb_client_rid = (os.getenv("IMDB_CLIENT_RID") or "").strip()
+        imdb_amazon_session = (os.getenv("IMDB_AMAZON_SESSION_ID") or "").strip()
+        imdb_consent = (os.getenv("IMDB_CONSENT_INFO") or "eyJhZ2VTaWduYWwiOiJBRFVMVCIsImlzR2RwciI6ZmFsc2V9").strip()
+        imdb_ua = (
+            os.getenv("IMDB_GRAPHQL_USER_AGENT")
+            or "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
+        ).strip()
+
+        headers = {
+            "accept": "application/graphql+json, application/json",
+            "accept-encoding": "gzip, deflate",
+            "accept-language": "zh-CN,zh;q=0.9",
+            "content-type": "application/json",
+            "origin": "https://www.imdb.com",
+            "priority": "u=1, i",
+            "referer": "https://www.imdb.com/",
+            "sec-ch-ua": '"Not:A-Brand";v="99", "Google Chrome";v="145", "Chromium";v="145"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"macOS"',
+            "sec-fetch-dest": "empty",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-site": "same-site",
+            "user-agent": imdb_ua,
+            "x-imdb-client-name": "imdb-web-next",
+            "x-imdb-user-country": "CN",
+            "x-imdb-user-language": "zh-CN",
+            "x-imdb-weblab-treatment-overrides": (
+                os.getenv("IMDB_WEBLAB_OVERRIDES")
+                or '{"IMDB_DISCO_KNOWNFOR_V2_1328450":"T1","IMDB_NEXT_SSO_US_LAUNCH_1374904":"T1","IMDB_SEARCH_DISCOVER_MODERN_1367402":"T2"}'
+            ).strip(),
+            "x-imdb-consent-info": imdb_consent,
+        }
+        if imdb_cookie:
+            headers["cookie"] = imdb_cookie
+        if imdb_amazon_session:
+            headers["x-amzn-sessionid"] = imdb_amazon_session
+        if imdb_client_rid:
+            headers["x-imdb-client-rid"] = imdb_client_rid
+        return headers
+
+    def _extract_imdb_top10_id_array(self, edges: list) -> List[str]:
+        id_array: list[str] = []
+        for edge in edges or []:
+            imdb_id = str(((edge or {}).get("node") or {}).get("id") or "").strip()
+            if imdb_id:
+                id_array.append(imdb_id)
+        return id_array
+
+    def _build_imdb_top10_title_map(self, edges: list) -> dict[str, str]:
+        title_by_id: dict[str, str] = {}
         for edge in edges or []:
             node = (edge or {}).get("node") or {}
             imdb_id = str(node.get("id") or "").strip()
-            rank = self._parse_imdb_top10_rank((node.get("meterRanking") or {}).get("currentRank"))
             title = ((node.get("titleText") or {}).get("text")) or ""
-            if imdb_id and rank is not None:
-                results.append(
-                    {
-                        "rank": rank,
-                        "title": title,
-                        "imdb_id": imdb_id,
-                        "url": f"https://www.imdb.com/title/{imdb_id}/",
-                    }
-                )
+            if imdb_id:
+                title_by_id[imdb_id] = title
+        return title_by_id
+
+    def _parse_imdb_top10_from_id_array(self, id_array: list, title_by_id: dict[str, str]) -> List[Dict]:
+        results: list[dict] = []
+        for rank, imdb_id in enumerate(id_array[:10], 1):
+            results.append(
+                {
+                    "rank": rank,
+                    "title": title_by_id.get(imdb_id, ""),
+                    "imdb_id": imdb_id,
+                    "url": f"https://www.imdb.com/title/{imdb_id}/",
+                }
+            )
         return results
+
+    def _fetch_imdb_personalized_titles_id_array(
+        self,
+        session: requests.Session,
+        id_array: list[str],
+    ) -> List[str]:
+        if not id_array:
+            return []
+
+        query_hash = (
+            os.getenv("IMDB_PERSONALIZED_TITLES_QUERY_HASH")
+            or "a746c4218025e024a8899cd06927c73b311178c2a51ef64bbd3a87fc7b6268cd"
+        ).strip()
+        api_url = self._build_imdb_graphql_get_url(
+            "PersonalizedTitlesData",
+            {"idArray": id_array, "locale": "zh-CN"},
+            query_hash,
+        )
+
+        response = session.get(api_url, timeout=30, verify=False)
+        logger.info(f"IMDb PersonalizedTitlesData 响应状态: {response.status_code}")
+        if response.status_code != 200:
+            logger.warning(
+                "IMDb PersonalizedTitlesData 请求失败 (%s)，回退使用 HomeMain id 顺序",
+                response.status_code,
+            )
+            return id_array
+
+        payload = response.json()
+        for err in payload.get("errors") or []:
+            msg = str(err.get("message") or err)
+            if "PersistedQueryNotFound" in msg or "PERSISTED_QUERY_NOT_FOUND" in msg:
+                logger.error(
+                    "IMDb PersonalizedTitlesData persistedQuery 已失效，请更新 IMDB_PERSONALIZED_TITLES_QUERY_HASH: %s",
+                    query_hash,
+                )
+                return id_array
+            if err.get("extensions", {}).get("code") not in ("FORBIDDEN", "UNAUTHENTICATED"):
+                logger.warning("IMDb PersonalizedTitlesData 非致命错误: %s", msg[:200])
+
+        titles = (payload.get("data") or {}).get("titles") or []
+        ranked_ids = [
+            str(item.get("id") or "").strip()
+            for item in titles
+            if str(item.get("id") or "").strip()
+        ]
+        if not ranked_ids:
+            logger.warning("IMDb PersonalizedTitlesData 未返回 titles，回退使用 HomeMain id 顺序")
+            return id_array
+        return ranked_ids[:10]
 
     def _extract_imdb_top_meter_edges(self, payload: dict) -> list:
         data = (payload or {}).get("data") or {}
@@ -521,109 +624,71 @@ class ChartScraper:
         """IMDb 本周 Top 10"""
         try:
             logger.info("开始爬取 IMDb 本周 Top 10 榜单")
-            
-            import requests
+
             import urllib3
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-            
-            query_hash = (
+
+            home_query_hash = (
                 os.getenv("IMDB_HOME_MAIN_QUERY_HASH")
                 or "f6ccf12469ab9e9f3faed4718a6c0c447065d8db21afe7ce18f05488424c3bd1"
             ).strip()
-            variables_dict = {
-                "fanPicksFirst": 30,
-                "locale": "zh-CN",
-                "placement": "home",
-                "topPicksFirst": 30,
-                "topTenFirst": 10,
-            }
-            variables_json = json.dumps(variables_dict, separators=(",", ":"))
-            variables_encoded = quote(variables_json)
-            extensions_json = json.dumps(
-                {"persistedQuery": {"sha256Hash": query_hash, "version": 1}},
-                separators=(",", ":"),
+            home_api_url = self._build_imdb_graphql_get_url(
+                "BatchPage_HomeMain",
+                {
+                    "fanPicksFirst": 30,
+                    "locale": "zh-CN",
+                    "placement": "home",
+                    "topPicksFirst": 30,
+                    "topTenFirst": 10,
+                },
+                home_query_hash,
             )
-            extensions_encoded = quote(extensions_json)
-            api_url = f"https://api.graphql.imdb.com/?operationName=BatchPage_HomeMain&variables={variables_encoded}&extensions={extensions_encoded}"
 
-            imdb_cookie = (os.getenv("IMDB_GRAPHQL_COOKIE") or "").strip()
-            if not imdb_cookie:
-                logger.warning("未配置 IMDB_GRAPHQL_COOKIE，跳过 IMDb 本周 Top 10 抓取（请在 .env 中设置浏览器 Cookie）")
-                return []
-
-            imdb_client_rid = (os.getenv("IMDB_CLIENT_RID") or "").strip()
-            imdb_amazon_session = (os.getenv("IMDB_AMAZON_SESSION_ID") or "").strip()
-            imdb_consent = (os.getenv("IMDB_CONSENT_INFO") or "eyJhZ2VTaWduYWwiOiJBRFVMVCIsImlzR2RwciI6ZmFsc2V9").strip()
-            imdb_ua = (os.getenv("IMDB_GRAPHQL_USER_AGENT") or "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36").strip()
-
-            headers = {
-                'accept': 'application/graphql+json, application/json',
-                'accept-encoding': 'gzip, deflate',
-                'accept-language': 'zh-CN,zh;q=0.9',
-                'content-type': 'application/json',
-                'cookie': imdb_cookie,
-                'origin': 'https://www.imdb.com',
-                'priority': 'u=1, i',
-                'referer': 'https://www.imdb.com/',
-                'sec-ch-ua': '"Not:A-Brand";v="99", "Google Chrome";v="145", "Chromium";v="145"',
-                'sec-ch-ua-mobile': '?0',
-                'sec-ch-ua-platform': '"macOS"',
-                'sec-fetch-dest': 'empty',
-                'sec-fetch-mode': 'cors',
-                'sec-fetch-site': 'same-site',
-                'user-agent': imdb_ua,
-                'x-imdb-client-name': 'imdb-web-next',
-                'x-imdb-user-country': 'CN',
-                'x-imdb-user-language': 'zh-CN',
-                'x-imdb-weblab-treatment-overrides': (
-                    os.getenv("IMDB_WEBLAB_OVERRIDES")
-                    or '{"IMDB_DISCO_KNOWNFOR_V2_1328450":"T1","IMDB_NEXT_SSO_US_LAUNCH_1374904":"T1","IMDB_SEARCH_DISCOVER_MODERN_1367402":"T2"}'
-                ).strip(),
-                'x-imdb-consent-info': imdb_consent,
-            }
-            if imdb_amazon_session:
-                headers['x-amzn-sessionid'] = imdb_amazon_session
-            if imdb_client_rid:
-                headers['x-imdb-client-rid'] = imdb_client_rid
+            if not (os.getenv("IMDB_GRAPHQL_COOKIE") or "").strip():
+                logger.warning(
+                    "未配置 IMDB_GRAPHQL_COOKIE，仍将尝试抓取 IMDb 本周 Top 10（topMeterTitles 通常无需登录）"
+                )
 
             session = requests.Session()
-            session.headers.update(headers)
+            session.headers.update(self._build_imdb_graphql_headers())
 
-            response = session.get(api_url, timeout=30, verify=False)
-            logger.info(f"IMDb API响应状态: {response.status_code}")
-            
-            if response.status_code == 200:
-                data = response.json()
-                errors = data.get("errors") or []
-                for err in errors:
-                    msg = str(err.get("message") or err)
-                    if "PersistedQueryNotFound" in msg or "PERSISTED_QUERY_NOT_FOUND" in msg:
-                        logger.error(
-                            "IMDb GraphQL persistedQuery 已失效，请更新 IMDB_HOME_MAIN_QUERY_HASH: %s",
-                            query_hash,
-                        )
-                    elif "topMeterTitles" not in msg.lower():
-                        logger.warning("IMDb GraphQL 非致命错误: %s", msg[:200])
+            response = session.get(home_api_url, timeout=30, verify=False)
+            logger.info(f"IMDb HomeMain API 响应状态: {response.status_code}")
 
-                top_edges = self._extract_imdb_top_meter_edges(data)
-                results = self._parse_imdb_top_meter_edges(top_edges)
-                results.sort(key=lambda x: x["rank"])
-                results = results[:10]
-
-                if not results:
-                    logger.warning(
-                        "IMDb 本周 Top 10 解析为 0 条: topMeterTitles.edges=%s, query_hash=%s",
-                        len(top_edges),
-                        query_hash,
-                    )
-                logger.info(f"IMDb 本周 Top 10 获取到 {len(results)} 条（GraphQL）")
-                return results
-            else:
-                logger.error(f"IMDB API请求失败: {response.status_code}")
-                error_text = response.text
-                logger.error(f"错误响应: {error_text[:500]}")
+            if response.status_code != 200:
+                logger.error(f"IMDB HomeMain API 请求失败: {response.status_code}")
+                logger.error(f"错误响应: {response.text[:500]}")
                 return []
-                        
+
+            data = response.json()
+            for err in data.get("errors") or []:
+                msg = str(err.get("message") or err)
+                if "PersistedQueryNotFound" in msg or "PERSISTED_QUERY_NOT_FOUND" in msg:
+                    logger.error(
+                        "IMDb HomeMain persistedQuery 已失效，请更新 IMDB_HOME_MAIN_QUERY_HASH: %s",
+                        home_query_hash,
+                    )
+                elif "topMeterTitles" not in msg.lower():
+                    logger.warning("IMDb HomeMain GraphQL 非致命错误: %s", msg[:200])
+
+            top_edges = self._extract_imdb_top_meter_edges(data)
+            id_array = self._extract_imdb_top10_id_array(top_edges)
+            title_by_id = self._build_imdb_top10_title_map(top_edges)
+
+            if not id_array:
+                logger.warning(
+                    "IMDb 本周 Top 10 未解析到 idArray: topMeterTitles.edges=%s, query_hash=%s",
+                    len(top_edges),
+                    home_query_hash,
+                )
+                return []
+
+            ranked_id_array = self._fetch_imdb_personalized_titles_id_array(session, id_array[:10])
+            results = self._parse_imdb_top10_from_id_array(ranked_id_array, title_by_id)
+
+            logger.info(f"IMDb 本周 Top 10 获取到 {len(results)} 条（idArray 顺序）")
+            return results
+
         except Exception as e:
             logger.error(f"爬取 IMDb 本周 Top 10 榜单失败: {e}")
             import traceback
@@ -3064,9 +3129,12 @@ class ChartScraper:
         matcher = TMDBMatcher(self.db)
         items = await self.scrape_imdb_top_10()
         entries: list[dict] = []
-        for idx, it in enumerate(items[:10], 1):
+        for it in items[:10]:
             title = it.get('title') or ''
             imdb_id = it.get('imdb_id') or ''
+            rank = it.get('rank')
+            if not isinstance(rank, int) or rank < 1:
+                continue
             match = None
             if imdb_id:
                 match = await matcher.match_imdb_with_tmdb(imdb_id, title, 'both')
@@ -3076,7 +3144,7 @@ class ChartScraper:
             entries.append(
                 {
                     "media_type": media_type,
-                    "rank": idx,
+                    "rank": rank,
                     "tmdb_id": match["tmdb_id"],
                     "title": match.get("title", title),
                     "poster": match.get("poster", ""),
