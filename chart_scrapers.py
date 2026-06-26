@@ -2963,7 +2963,7 @@ class ChartScraper:
             'trakt-api-key': TRAKT_CLIENT_ID,
             'User-Agent': 'Mozilla/5.0'
         }
-        r = requests.get(f'{TRAKT_BASE_URL}/movies/watched/weekly', params={'limit':10}, headers=headers, timeout=25, verify=False)
+        r = requests.get(f'{TRAKT_BASE_URL}/movies/trending', params={'limit':10}, headers=headers, timeout=25, verify=False)
         if r.status_code != 200:
             return 0
         from chart_scrapers import TMDBMatcher
@@ -3016,7 +3016,7 @@ class ChartScraper:
             'trakt-api-key': TRAKT_CLIENT_ID,
             'User-Agent': 'Mozilla/5.0'
         }
-        r = requests.get(f'{TRAKT_BASE_URL}/shows/watched/weekly', params={'limit':10}, headers=headers, timeout=25, verify=False)
+        r = requests.get(f'{TRAKT_BASE_URL}/shows/trending', params={'limit':10}, headers=headers, timeout=25, verify=False)
         if r.status_code != 200:
             return 0
         from chart_scrapers import TMDBMatcher
