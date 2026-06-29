@@ -789,8 +789,14 @@ class ChartScraper:
                 
         return await browser_pool.execute_in_browser(scrape_with_browser)
 
-    async def _rt_extract_itemlist(self, url: str, item_type: str) -> List[Dict]:
-        """使用浏览器读取 JSON-LD ItemList"""
+    async def _rt_extract_homepage_list(self, section_header: str) -> List[Dict]:
+        """从 Rotten Tomatoes 首页抓取榜单"""
+        from bs4 import BeautifulSoup
+        import html as html_module
+
+        url = "https://www.rottentomatoes.com/"
+        target_header = section_header.strip()
+
         async def scrape(browser):
             page = await browser.new_page()
             try:
@@ -801,64 +807,35 @@ class ChartScraper:
                 except Exception:
                     pass
                 await asyncio.sleep(0.2)
-                
-                handles = await page.query_selector_all('script[type="application/ld+json"]')
-                for h in handles:
-                    raw = await h.inner_text()
-                    if not raw:
+
+                soup = BeautifulSoup(await page.content(), "html.parser")
+                for section in soup.select("section.dynamic-text-list text-list"):
+                    header = section.select_one('h2[slot="header"] rt-text')
+                    if not header or header.get_text(strip=True) != target_header:
                         continue
-                    data = None
-                    try:
-                        data = json.loads(raw)
-                    except Exception:
-                        m = re.search(r'\{\s*"@context"\s*:\s*"http://schema.org"[\s\S]*?\}', raw)
-                        if m:
-                            try:
-                                data = json.loads(m.group(0))
-                            except Exception:
-                                data = None
-                    if data is None:
+                    list_ul = section.select_one('ul[slot="list-items"]')
+                    if not list_ul:
                         continue
-                    candidates = data if isinstance(data, list) else [data]
-                    for obj in candidates:
-                        if not isinstance(obj, dict):
+                    parsed = []
+                    for i, li in enumerate(list_ul.select("li"), 1):
+                        title_span = li.select_one(".dynamic-text-list__item-title")
+                        if not title_span:
                             continue
-                        if obj.get('@type') == 'ItemList' and obj.get('itemListElement'):
-                            inner = obj.get('itemListElement')
-                            if isinstance(inner, dict) and inner.get('@type') == 'ItemList':
-                                elements = inner.get('itemListElement') or []
-                            else:
-                                elements = inner or []
-                            parsed = []
-                            for it in elements:
-                                node = it.get('item') if isinstance(it, dict) and 'item' in it else it
-                                if not isinstance(node, dict) or node.get('@type') != item_type:
-                                    continue
-                                name = node.get('name') or ''
-                                year = None
-                                dc = node.get('dateCreated')
-                                if isinstance(dc, str):
-                                    y = dc[:4]
-                                    if re.match(r'^\d{4}$', y):
-                                        try:
-                                            year = int(y)
-                                        except Exception:
-                                            year = None
-                                pos = it.get('position') if isinstance(it, dict) else None
-                                if pos is None:
-                                    pos = node.get('position')
-                                try:
-                                    position = int(pos) if pos is not None else None
-                                except Exception:
-                                    position = None
-                                parsed.append({'position': position, 'name': name, 'year': year, 'url': node.get('url')})
-                            if parsed:
-                                parsed.sort(key=lambda x: x.get('position') or 9999)
-                                return parsed
+                        title = html_module.unescape(title_span.get_text(strip=True))
+                        link_el = li.select_one("a[href]")
+                        href = (link_el.get("href") or "").strip() if link_el else ""
+                        full_url = (
+                            href
+                            if href.startswith("http")
+                            else f"https://www.rottentomatoes.com{href}" if href else None
+                        )
+                        parsed.append({"position": i, "name": title, "year": None, "url": full_url})
+                    if parsed:
+                        return parsed
                 return []
             finally:
                 await page.close()
-        import json
+
         return await browser_pool.execute_in_browser(scrape)
 
     async def update_rotten_movies(self) -> int:
@@ -867,12 +844,11 @@ class ChartScraper:
         chart_name = '本周热门流媒体电影'
         
         matcher = TMDBMatcher(self.db)
-        url = 'https://www.rottentomatoes.com/browse/movies_at_home/sort:popular'
         max_retries = 3
         for attempt in range(max_retries):
             try:
                 logger.info(f"Rotten Tomatoes 本周热门流媒体电影 榜单抓取尝试 {attempt + 1}/{max_retries}")
-                items = await self._rt_extract_itemlist(url, 'Movie')
+                items = await self._rt_extract_homepage_list("Popular Streaming Movies")
                 if not items:
                     raise Exception("未获取到 Rotten Tomatoes 本周热门流媒体电影 榜单数据")
                 break
@@ -3305,13 +3281,11 @@ class ChartScraper:
         platform = 'Rotten Tomatoes'
         chart_name = '本周热门剧集'
         matcher = TMDBMatcher(self.db)
-        url = 'https://www.rottentomatoes.com/browse/tv_series_browse/sort:popular'
-        
         max_retries = 3
         for attempt in range(max_retries):
             try:
                 logger.info(f"Rotten Tomatoes 本周热门剧集 抓取尝试 {attempt + 1}/{max_retries}")
-                items = await self._rt_extract_itemlist(url, 'TVSeries')
+                items = await self._rt_extract_homepage_list("Popular TV")
                 if not items:
                     raise Exception("未获取到 Rotten Tomatoes 本周热门剧集 榜单数据")
                 break
